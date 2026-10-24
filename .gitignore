@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Datasets
+datasets/raw/
+*.pcap
+
+# Generated data
+training/outputs/
+results/tmp/
+
+# Model artifacts
+artifacts/models/
+artifacts/preprocessors/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
