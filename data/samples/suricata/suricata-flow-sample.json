@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-10-25T10:36:30.116503+0000",
+  "flow_id": 2096586538574046,
+  "in_iface": "ens33",
+  "event_type": "flow",
+  "ip_v": 6,
+  "proto": "IPv6-ICMP",
+  "icmp_type": 135,
+  "icmp_code": 0,
+  "flow": {
+    "pkts_toserver": 1,
+    "pkts_toclient": 0,
+    "bytes_toserver": 86,
+    "bytes_toclient": 0,
+    "start": "2026-10-25T10:35:59.946901+0000",
+    "end": "2026-10-25T10:35:59.946901+0000",
+    "age": 0,
+    "state": "new",
+    "reason": "timeout",
+    "alerted": false
+  }
+}

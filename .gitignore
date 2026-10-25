@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 .venv/
 .env
+.env.*
+!.env.example
+*.pem
+*.key
 
 # Datasets
 datasets/raw/
@@ -19,5 +23,24 @@ artifacts/preprocessors/
 # Jupyter
 .ipynb_checkpoints/
 
-# IDE
-.vscode/
+# Temporary configuration imports
+config-import/
+
+# Suricata runtime logs
+eve.json
+fast.log
+stats.log
+
+# Large packet captures
+*.pcapng
+
+
+project-audit/
+# Phase 03.5 generated/private files
+.idea/
+data/raw/
+data/processed/
+datasets/
+results/project-audit/
+*.swp
+suricata.rules

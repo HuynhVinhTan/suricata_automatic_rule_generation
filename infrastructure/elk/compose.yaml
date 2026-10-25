@@ -1,0 +1,70 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+    container_name: suricata-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.ml.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    mem_limit: 3g
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.5.5
+    container_name: suricata-kibana
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  logstash:
+
+    image: docker.elastic.co/logstash/logstash:9.5.5
+
+
+
+    container_name: suricata-logstash
+
+
+
+    environment:
+
+      LS_JAVA_OPTS: "-Xms512m -Xmx512m"
+
+
+
+    mem_limit: 2g
+
+
+
+    ports:
+
+      - "192.168.10.30:5044:5044"
+
+
+
+    volumes:
+
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+
+
+
+    depends_on:
+
+      - elasticsearch
+
+
+
+    restart: unless-stopped
+
+volumes:
+  elasticsearch-data:
