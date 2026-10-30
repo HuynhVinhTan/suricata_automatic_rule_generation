@@ -11,6 +11,7 @@ from netids.app import run as run_inference
 from netids.lab_runtime import sha256
 import csv
 from netids.rulegen import build_syn_burst_review_rule
+from netids.port_diversity import analyze_port_diversity, read_pcap_syn
 
 
 def run(pcap, expected_sha, src, dst, private_root, output_dir):
@@ -226,6 +227,55 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
         "deployable": False,
         "deployed": False,
     })
+
+    # Port-diversity is independent heuristic evidence.
+    # It is not a learned model or an executable Suricata rule.
+    syn_events = [
+        event
+        for event in read_pcap_syn(pcap)
+        if event.src_ip == src and event.dst_ip == dst
+    ]
+
+    findings = analyze_port_diversity(
+        syn_events,
+        window_seconds=60,
+        min_distinct_ports=8,
+    )
+
+    finding = findings[0] if findings else None
+
+    review["port_diversity_evidence"] = {
+        "method": "offline_pcap_sliding_unique_dst_ports",
+        "evidence_type": "heuristic_not_ml_model",
+        "source_pcap_sha256": expected_sha.lower(),
+        "source_ip": src,
+        "destination_ip": dst,
+        "window_seconds": 60,
+        "min_distinct_ports": 8,
+        "total_syn_packets": (
+            finding.total_syn if finding else 0
+        ),
+        "total_distinct_ports": (
+            finding.total_distinct_ports if finding else 0
+        ),
+        "max_window_distinct_ports": (
+            finding.max_window_distinct_ports if finding else 0
+        ),
+        "triggered": (
+            finding.triggered if finding else False
+        ),
+        "first_trigger_timestamp_unix": (
+            finding.first_trigger_timestamp if finding else None
+        ),
+        "threshold_selected_using_known_attack_normal": True,
+        "independent_validation_passed": False,
+        "automatic_rule_approval": False,
+    }
+
+    # Evidence must never override the existing review gate.
+    review["approved"] = False
+    review["deployable"] = False
+    review["deployed"] = False
 
     with review_path.open("x", encoding="utf-8") as stream:
         json.dump(review, stream, indent=2)
