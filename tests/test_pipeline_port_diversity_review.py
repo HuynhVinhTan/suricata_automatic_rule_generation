@@ -14,11 +14,12 @@ DST = "192.168.10.10"
 
 
 @pytest.mark.parametrize(
-    "ports, expected_peak, expected_trigger, consensus",
+    "ports, expected_peak, expected_trigger, consensus, benign_like",
     [
-        (list(range(1000, 1008)), 8, True, 5),
-        ([80, 443, 80, 443], 2, False, 3),
-        ([80] * 61, 1, False, 6),
+        (list(range(1000, 1008)), 8, True, 5, False),
+        ([80, 443, 80, 443], 2, False, 3, True),
+        ([80] * 61, 1, False, 6, True),
+        (list(range(18080, 18088)), 8, True, 2, True),
     ],
 )
 def test_pipeline_keeps_review_gate_closed(
@@ -28,6 +29,7 @@ def test_pipeline_keeps_review_gate_closed(
     expected_peak,
     expected_trigger,
     consensus,
+    benign_like,
 ):
     private = tmp_path / "private"
     private.mkdir()
@@ -146,6 +148,30 @@ def test_pipeline_keeps_review_gate_closed(
         pipeline, "read_pcap_syn", lambda path: events
     )
 
+    def fake_handshake(
+        path, *, source_ip, destination_ip
+    ):
+        assert path == pcap
+        assert source_ip == SRC
+        assert destination_ip == DST
+
+        flow_count = len(ports)
+        completed = flow_count if benign_like else 0
+
+        return {
+            "method": "offline_tcp_three_way_handshake_evidence",
+            "evidence_type": "protocol_heuristic_not_ml",
+            "initial_syn_packets": len(ports),
+            "syn_flows": flow_count,
+            "flows_with_confirmed_handshake": completed,
+            "flows_with_bidirectional_payload": completed,
+            "flows_with_server_payload": completed,
+        }
+
+    monkeypatch.setattr(
+        pipeline, "summarize_tcp_handshake", fake_handshake
+    )
+
     output = private / "acceptance"
 
     pipeline.run(
@@ -184,13 +210,26 @@ def test_pipeline_keeps_review_gate_closed(
 
     gate = review["candidate_gate"]
 
-    assert gate["method"] == "ai_consensus_and_port_diversity"
+    assert gate["method"] == "ai_port_diversity_tcp_benign_veto_v1"
     assert gate["ai_consensus_present"] is True
     assert gate["port_diversity_triggered"] is expected_trigger
-    assert gate["passed"] is expected_trigger
+    tcp = review["tcp_handshake_evidence"]
+
+    assert tcp["method"] == (
+        "offline_tcp_three_way_handshake_evidence"
+    )
+    assert tcp["initial_syn_packets"] == len(ports)
+    assert tcp["benign_like_veto"] is benign_like
+    assert tcp["proves_benign"] is False
+    assert tcp["independent_validation_passed"] is False
+
+    assert gate["tcp_completed_payload_veto"] is benign_like
+
+    expected_gate = expected_trigger and not benign_like
+    assert gate["passed"] is expected_gate
     assert gate["rule_approval_authorized"] is False
 
-    if expected_trigger:
+    if expected_gate:
         assert review["status"] == "rejected_known_false_positive"
         assert review["matches_previous_failed_candidate"] is True
         assert review["rule_generated_in_this_run"] is True
@@ -206,9 +245,9 @@ def test_pipeline_keeps_review_gate_closed(
     assert review["deployed"] is False
 
     candidate_path = output / "candidate.rules"
-    assert candidate_path.exists() is expected_trigger
+    assert candidate_path.exists() is expected_gate
 
-    if expected_trigger:
+    if expected_gate:
         assert "sid:9102001;" in candidate_path.read_text(
             encoding="utf-8"
         )

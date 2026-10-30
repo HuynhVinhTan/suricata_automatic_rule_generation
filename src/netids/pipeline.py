@@ -12,6 +12,7 @@ from netids.lab_runtime import sha256
 import csv
 from netids.rulegen import build_syn_burst_review_rule
 from netids.port_diversity import analyze_port_diversity, read_pcap_syn
+from netids.tcp_handshake import summarize_tcp_handshake
 
 
 def run(pcap, expected_sha, src, dst, private_root, output_dir):
@@ -237,19 +238,56 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
     review["deployable"] = False
     review["deployed"] = False
 
-    # Both signals are required to propose a candidate.
+    # Protocol evidence is separate from ML and Port-Diversity.
+    # A complete bidirectional TCP exchange is a benign-like
+    # pattern, NOT proof that traffic is benign.
+    tcp_summary = summarize_tcp_handshake(
+        pcap,
+        source_ip=src,
+        destination_ip=dst,
+    )
+
+    if tcp_summary["initial_syn_packets"] != len(syn_events):
+        raise ValueError(
+            "TCP handshake and SYN evidence counts disagree"
+        )
+
+    tcp_benign_like_veto = (
+        tcp_summary["syn_flows"] > 0
+        and tcp_summary["flows_with_confirmed_handshake"]
+        == tcp_summary["syn_flows"]
+        and tcp_summary["flows_with_bidirectional_payload"]
+        == tcp_summary["syn_flows"]
+    )
+
+    review["tcp_handshake_evidence"] = {
+        **tcp_summary,
+        "source_pcap_sha256": expected_sha.lower(),
+        "benign_like_veto": tcp_benign_like_veto,
+        "proves_benign": False,
+        "independent_validation_passed": False,
+        "interpretation": (
+            "Complete TCP handshakes with bidirectional "
+            "payload can also occur in malicious traffic. "
+            "Incomplete captures can bias this evidence."
+        ),
+    }
+
+    # AI and Port-Diversity must pass; TCP may veto.
     # Passing this gate never approves a Suricata rule.
     candidate_gate_passed = (
         flagged > 0
         and review["port_diversity_evidence"]["triggered"]
+        and not tcp_benign_like_veto
     )
 
     review["candidate_gate"] = {
-        "method": "ai_consensus_and_port_diversity",
+        "method": "ai_port_diversity_tcp_benign_veto_v1",
         "ai_consensus_present": flagged > 0,
         "port_diversity_triggered": (
             review["port_diversity_evidence"]["triggered"]
         ),
+        "tcp_completed_payload_veto": tcp_benign_like_veto,
         "passed": candidate_gate_passed,
         "rule_approval_authorized": False,
     }
