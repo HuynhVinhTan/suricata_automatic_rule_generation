@@ -27,43 +27,17 @@ services:
     restart: unless-stopped
 
   logstash:
-
     image: docker.elastic.co/logstash/logstash:9.5.5
-
-
-
     container_name: suricata-logstash
-
-
-
     environment:
-
       LS_JAVA_OPTS: "-Xms512m -Xmx512m"
-
-
-
     mem_limit: 2g
-
-
-
     ports:
-
       - "192.168.10.30:5044:5044"
-
-
-
     volumes:
-
       - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
-
-
-
     depends_on:
-
       - elasticsearch
-
-
-
     restart: unless-stopped
 
 volumes:
