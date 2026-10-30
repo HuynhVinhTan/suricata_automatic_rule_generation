@@ -1,0 +1,12 @@
+# ============================================================
+# SURICATA AI PROJECT - LOCAL RULES
+# Purpose: Controlled VMware lab testing
+#
+# IMPORTANT:
+# These rules are examples stored in source control.
+# They are NOT automatically enabled on VM1.
+# ============================================================
+
+# Detect ICMP Echo Requests sent to HOME_NET.
+
+alert icmp any any -> $HOME_NET any (msg:"LAB ICMP Echo Request"; itype:8; sid:1000001; rev:1;)
