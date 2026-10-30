@@ -20,6 +20,7 @@ DST = "192.168.10.10"
         ([80, 443, 80, 443], 2, False, 3, True),
         ([80] * 61, 1, False, 6, True),
         (list(range(18080, 18088)), 8, True, 2, True),
+        (list(range(20000, 20008)), 8, True, 0, False),
     ],
 )
 def test_pipeline_keeps_review_gate_closed(
@@ -211,7 +212,7 @@ def test_pipeline_keeps_review_gate_closed(
     gate = review["candidate_gate"]
 
     assert gate["method"] == "ai_port_diversity_tcp_benign_veto_v1"
-    assert gate["ai_consensus_present"] is True
+    assert gate["ai_consensus_present"] is (consensus > 0)
     assert gate["port_diversity_triggered"] is expected_trigger
     tcp = review["tcp_handshake_evidence"]
 
@@ -225,9 +226,32 @@ def test_pipeline_keeps_review_gate_closed(
 
     assert gate["tcp_completed_payload_veto"] is benign_like
 
-    expected_gate = expected_trigger and not benign_like
+    expected_gate = (
+        consensus > 0 and expected_trigger and not benign_like
+    )
     assert gate["passed"] is expected_gate
     assert gate["rule_approval_authorized"] is False
+
+    triage = review["triage"]
+
+    correlated = consensus > 0 and expected_trigger
+    ambiguous = correlated and benign_like
+
+    expected_reason = (
+        "conflicting_tcp_completion_evidence"
+        if ambiguous
+        else "correlated_detection_requires_rule_review"
+        if correlated
+        else "no_correlated_detection_evidence"
+    )
+
+    assert triage["schema_version"] == "lab_triage_v0_1"
+    assert triage["requires_manual_review"] is correlated
+    assert triage["reason"] == expected_reason
+    assert triage["tcp_completion_proves_benign"] is False
+    assert triage["auto_approve"] is False
+    assert triage["auto_deploy"] is False
+
 
     if expected_gate:
         assert review["status"] == "rejected_known_false_positive"
@@ -238,7 +262,9 @@ def test_pipeline_keeps_review_gate_closed(
         assert review["matches_previous_failed_candidate"] is False
         assert review["rule_generated_in_this_run"] is False
 
-    assert review["existing_candidate_sid"] == 9102001
+    assert review["existing_candidate_sid"] == (
+        9102001 if consensus > 0 else None
+    )
 
     assert review["approved"] is False
     assert review["deployable"] is False

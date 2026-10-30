@@ -281,6 +281,30 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
         and not tcp_benign_like_veto
     )
 
+    # Correlated detection with complete TCP traffic is ambiguous.
+    # Keep the candidate gate unchanged, but preserve this signal
+    # for manual review instead of treating it as proof of benignity.
+    correlated_signals = (
+        flagged > 0
+        and review["port_diversity_evidence"]["triggered"]
+    )
+    ambiguous_tcp = correlated_signals and tcp_benign_like_veto
+
+    review["triage"] = {
+        "schema_version": "lab_triage_v0_1",
+        "requires_manual_review": correlated_signals,
+        "reason": (
+            "conflicting_tcp_completion_evidence"
+            if ambiguous_tcp
+            else "correlated_detection_requires_rule_review"
+            if correlated_signals
+            else "no_correlated_detection_evidence"
+        ),
+        "tcp_completion_proves_benign": False,
+        "auto_approve": False,
+        "auto_deploy": False,
+    }
+
     review["candidate_gate"] = {
         "method": "ai_port_diversity_tcp_benign_veto_v1",
         "ai_consensus_present": flagged > 0,
