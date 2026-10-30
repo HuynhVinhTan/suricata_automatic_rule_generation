@@ -188,46 +188,6 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
 
     normal_max = max(normal_counts)
 
-    generated_rule = (
-        build_syn_burst_review_rule(
-            destination_ip=dst,
-            normal_max_syn=normal_max,
-        )
-        if flagged > 0
-        else None
-    )
-
-    matches_failed = (
-        generated_rule is not None
-        and generated_rule == candidate_text
-    )
-
-    if generated_rule is not None:
-        (output_dir / "candidate.rules").write_text(
-            generated_rule + "\n", encoding="utf-8"
-        )
-
-    review.update({
-        "schema_version": "lab_rule_review_v0_2",
-        "generation_method": "normal_train_cal_syn_count_proxy",
-        "normal_train_cal_max_syn": normal_max,
-        "proposed_syn_threshold": max(3, normal_max + 1),
-        "rule_generated_in_this_run": generated_rule is not None,
-        "generated_rule": generated_rule,
-        "matches_previous_failed_candidate": matches_failed,
-        "status": (
-            "rejected_known_false_positive"
-            if matches_failed
-            else "needs_review"
-            if generated_rule is not None
-            else "no_candidate"
-        ),
-        "syntax_tested_in_this_run": False,
-        "normal_replay_tested_in_this_run": False,
-        "deployable": False,
-        "deployed": False,
-    })
-
     # Port-diversity is independent heuristic evidence.
     # It is not a learned model or an executable Suricata rule.
     syn_events = [
@@ -276,6 +236,63 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
     review["approved"] = False
     review["deployable"] = False
     review["deployed"] = False
+
+    # Both signals are required to propose a candidate.
+    # Passing this gate never approves a Suricata rule.
+    candidate_gate_passed = (
+        flagged > 0
+        and review["port_diversity_evidence"]["triggered"]
+    )
+
+    review["candidate_gate"] = {
+        "method": "ai_consensus_and_port_diversity",
+        "ai_consensus_present": flagged > 0,
+        "port_diversity_triggered": (
+            review["port_diversity_evidence"]["triggered"]
+        ),
+        "passed": candidate_gate_passed,
+        "rule_approval_authorized": False,
+    }
+
+    generated_rule = (
+        build_syn_burst_review_rule(
+            destination_ip=dst,
+            normal_max_syn=normal_max,
+        )
+        if candidate_gate_passed
+        else None
+    )
+
+    matches_failed = (
+        generated_rule is not None
+        and generated_rule == candidate_text
+    )
+
+    if generated_rule is not None:
+        (output_dir / "candidate.rules").write_text(
+            generated_rule + "\n", encoding="utf-8"
+        )
+
+    review.update({
+        "schema_version": "lab_rule_review_v0_2",
+        "generation_method": "normal_train_cal_syn_count_proxy",
+        "normal_train_cal_max_syn": normal_max,
+        "proposed_syn_threshold": max(3, normal_max + 1),
+        "rule_generated_in_this_run": generated_rule is not None,
+        "generated_rule": generated_rule,
+        "matches_previous_failed_candidate": matches_failed,
+        "status": (
+            "rejected_known_false_positive"
+            if matches_failed
+            else "needs_review"
+            if generated_rule is not None
+            else "no_candidate"
+        ),
+        "syntax_tested_in_this_run": False,
+        "normal_replay_tested_in_this_run": False,
+        "deployable": False,
+        "deployed": False,
+    })
 
     with review_path.open("x", encoding="utf-8") as stream:
         json.dump(review, stream, indent=2)

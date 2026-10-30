@@ -18,6 +18,7 @@ DST = "192.168.10.10"
     [
         (list(range(1000, 1008)), 8, True, 5),
         ([80, 443, 80, 443], 2, False, 3),
+        ([80] * 61, 1, False, 6),
     ],
 )
 def test_pipeline_keeps_review_gate_closed(
@@ -181,14 +182,33 @@ def test_pipeline_keeps_review_gate_closed(
     assert evidence["independent_validation_passed"] is False
     assert evidence["automatic_rule_approval"] is False
 
-    assert review["status"] == "rejected_known_false_positive"
-    assert review["matches_previous_failed_candidate"] is True
+    gate = review["candidate_gate"]
+
+    assert gate["method"] == "ai_consensus_and_port_diversity"
+    assert gate["ai_consensus_present"] is True
+    assert gate["port_diversity_triggered"] is expected_trigger
+    assert gate["passed"] is expected_trigger
+    assert gate["rule_approval_authorized"] is False
+
+    if expected_trigger:
+        assert review["status"] == "rejected_known_false_positive"
+        assert review["matches_previous_failed_candidate"] is True
+        assert review["rule_generated_in_this_run"] is True
+    else:
+        assert review["status"] == "no_candidate"
+        assert review["matches_previous_failed_candidate"] is False
+        assert review["rule_generated_in_this_run"] is False
+
     assert review["existing_candidate_sid"] == 9102001
 
     assert review["approved"] is False
     assert review["deployable"] is False
     assert review["deployed"] is False
 
-    assert "sid:9102001;" in (
-        output / "candidate.rules"
-    ).read_text(encoding="utf-8")
+    candidate_path = output / "candidate.rules"
+    assert candidate_path.exists() is expected_trigger
+
+    if expected_trigger:
+        assert "sid:9102001;" in candidate_path.read_text(
+            encoding="utf-8"
+        )
