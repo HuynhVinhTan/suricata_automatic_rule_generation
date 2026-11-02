@@ -1,0 +1,61 @@
+{
+  "experiment": "unsw_dl_dev_v01",
+  "stage": "DEVELOPMENT_ONLY",
+  "dataset": "UNSW-NB15",
+  "seed": 42,
+  "train_csv_sha256": "bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa",
+  "shared_ml_split_sha256": "b3e1ec2bf63eded12586dec88a192627a487003670d95254e91aa0063c3f4fc0",
+  "dev_rows": 100260,
+  "validation_rows": 21484,
+  "reserved_calibration_rows": 21485,
+  "reserved_calibration_used": false,
+  "ae_train_normal_rows": 29704,
+  "ae_early_normal_rows": 7426,
+  "official_test_accessed": false,
+  "selection_metric": "validation_average_precision",
+  "candidates": [
+    {
+      "name": "MLP_16x8",
+      "family": "MLP",
+      "validation_ap": 0.9682152745594185,
+      "epochs_executed": 50
+    },
+    {
+      "name": "MLP_24x12",
+      "family": "MLP",
+      "validation_ap": 0.9753501872803365,
+      "epochs_executed": 50
+    },
+    {
+      "name": "AE_8x2",
+      "family": "AE",
+      "validation_ap": 0.6294468055316167,
+      "epochs_executed": 60
+    },
+    {
+      "name": "AE_12x3",
+      "family": "AE",
+      "validation_ap": 0.7735987642389803,
+      "epochs_executed": 60
+    }
+  ],
+  "selected": {
+    "MLP": {
+      "name": "MLP_24x12",
+      "validation_ap": 0.9753501872803365,
+      "model_sha256": "58ba09f7c100ee738d214b8ea041a09764fe1b535e9737680a88500a2a141b10"
+    },
+    "AE": {
+      "name": "AE_12x3",
+      "validation_ap": 0.7735987642389803,
+      "model_sha256": "b4046ef527ec3103f4f57ba8677bc923338aa15e1ca1220d3772f69dbca7f0e0"
+    }
+  },
+  "figures": [
+    "mlp_loss.png",
+    "ae_loss.png",
+    "dl_pr_validation.png",
+    "ae_score_distribution_validation.png"
+  ],
+  "limitations": "Random row split may contain correlated flows. This is development validation, not final test. No final threshold calibrated."
+}

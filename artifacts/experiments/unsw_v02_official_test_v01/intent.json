@@ -1,0 +1,15 @@
+{
+  "status": "OFFICIAL_TEST_STARTED",
+  "test_sha256": "734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559",
+  "development_summary_sha256": "eab0b11048d467ab6124061e9e2606bc8ec6c216efcd7d49d64f3a56b864347d",
+  "calibration_manifest_sha256": "365e743c1ad832e83bcf1d16d1fa984d9c2904f7c38f225ff4f2f6ed0abf04d8",
+  "primary_model": "RF",
+  "frozen_fpr_budget": 0.01,
+  "families": [
+    "LogReg",
+    "RF",
+    "MLP",
+    "AE"
+  ],
+  "no_test_driven_tuning": true
+}

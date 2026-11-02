@@ -1,0 +1,191 @@
+{
+  "experiment": "unsw_v02_development",
+  "status": "DEVELOPMENT_ONLY",
+  "dataset": "UNSW-NB15",
+  "seed": 42,
+  "official_test_accessed": false,
+  "reserved_calibration_used": false,
+  "train_sha256": "bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa",
+  "shared_split_sha256": "313b9014624ea72f78a2812ffcc2677d307947d4f7a8e6d3cf3b8fd75fc16127",
+  "feature_names": [
+    "protocol_tcp",
+    "duration_log",
+    "packets_log",
+    "bytes_log"
+  ],
+  "dev_rows": 102305,
+  "validation_rows": 20462,
+  "reserved_calibration_rows": 20462,
+  "ae_train_normal_rows": 30309,
+  "ae_early_normal_rows": 7578,
+  "validation_attack_prevalence": 0.6296549701886424,
+  "selection_metric": "validation_average_precision",
+  "candidates": [
+    {
+      "name": "LogReg_C0.1",
+      "family": "LogReg",
+      "validation_ap": 0.87520153074235,
+      "precision_at_0_5": 0.7836362276568694,
+      "recall_at_0_5": 0.8132567525613164,
+      "f1_at_0_5": 0.7981717768044182,
+      "fpr_at_0_5": 0.38176299815254683,
+      "confusion_at_0_5": {
+        "tn": 4685,
+        "fp": 2893,
+        "fn": 2406,
+        "tp": 10478
+      }
+    },
+    {
+      "name": "LogReg_C1.0",
+      "family": "LogReg",
+      "validation_ap": 0.8752888314122985,
+      "precision_at_0_5": 0.7836685859567786,
+      "recall_at_0_5": 0.8134119838559454,
+      "f1_at_0_5": 0.7982633202574552,
+      "fpr_at_0_5": 0.38176299815254683,
+      "confusion_at_0_5": {
+        "tn": 4685,
+        "fp": 2893,
+        "fn": 2404,
+        "tp": 10480
+      }
+    },
+    {
+      "name": "RF_leaf1",
+      "family": "RF",
+      "validation_ap": 0.9922358059887928,
+      "precision_at_0_5": 0.9404094010614101,
+      "recall_at_0_5": 0.9627444892890407,
+      "f1_at_0_5": 0.9514458847894455,
+      "fpr_at_0_5": 0.10372129849564529,
+      "confusion_at_0_5": {
+        "tn": 6792,
+        "fp": 786,
+        "fn": 480,
+        "tp": 12404
+      }
+    },
+    {
+      "name": "RF_leaf5",
+      "family": "RF",
+      "validation_ap": 0.9924733216360244,
+      "precision_at_0_5": 0.9425374838267753,
+      "recall_at_0_5": 0.9611921763427507,
+      "f1_at_0_5": 0.951773431195481,
+      "fpr_at_0_5": 0.09963050936922671,
+      "confusion_at_0_5": {
+        "tn": 6823,
+        "fp": 755,
+        "fn": 500,
+        "tp": 12384
+      }
+    },
+    {
+      "name": "MLP_16x8",
+      "family": "MLP",
+      "validation_ap": 0.976349113264683,
+      "precision_at_0_5": 0.9065587164822105,
+      "recall_at_0_5": 0.9472989754734554,
+      "f1_at_0_5": 0.9264811933047405,
+      "fpr_at_0_5": 0.16600686196885722,
+      "confusion_at_0_5": {
+        "tn": 6320,
+        "fp": 1258,
+        "fn": 679,
+        "tp": 12205
+      },
+      "epochs_executed": 46
+    },
+    {
+      "name": "MLP_24x12",
+      "family": "MLP",
+      "validation_ap": 0.981574907731678,
+      "precision_at_0_5": 0.9180303030303031,
+      "recall_at_0_5": 0.9405464141570941,
+      "f1_at_0_5": 0.9291519705566631,
+      "fpr_at_0_5": 0.14278173660596463,
+      "confusion_at_0_5": {
+        "tn": 6496,
+        "fp": 1082,
+        "fn": 766,
+        "tp": 12118
+      },
+      "epochs_executed": 46
+    },
+    {
+      "name": "AE_8x2",
+      "family": "AE",
+      "validation_ap": 0.630555284282195,
+      "threshold_status": "NOT_CALIBRATED",
+      "epochs_executed": 60
+    },
+    {
+      "name": "AE_12x3",
+      "family": "AE",
+      "validation_ap": 0.7701492717032702,
+      "threshold_status": "NOT_CALIBRATED",
+      "epochs_executed": 60
+    }
+  ],
+  "selected": {
+    "LogReg": {
+      "name": "LogReg_C1.0",
+      "validation_ap": 0.8752888314122985,
+      "threshold_status": "NOT_CALIBRATED",
+      "model_file": "model_logreg.joblib",
+      "model_sha256": "b7bf34f137cdcddccd4c2cc13e42a601dc33b4e5d2689019b2511552835ebe49"
+    },
+    "RF": {
+      "name": "RF_leaf5",
+      "validation_ap": 0.9924733216360244,
+      "threshold_status": "NOT_CALIBRATED",
+      "model_file": "model_rf.joblib",
+      "model_sha256": "8ecd94033ecfa3eee3466418ea3c84c207c8af1b2965fb1889c3fd355d844d30"
+    },
+    "MLP": {
+      "name": "MLP_24x12",
+      "validation_ap": 0.981574907731678,
+      "threshold_status": "NOT_CALIBRATED",
+      "model_file": "model_mlp.joblib",
+      "model_sha256": "ab1853c777b41a73a10edadb3d8617140e30d7614a40e88a4957cee4a60420f9"
+    },
+    "AE": {
+      "name": "AE_12x3",
+      "validation_ap": 0.7701492717032702,
+      "threshold_status": "NOT_CALIBRATED",
+      "model_file": "model_ae.joblib",
+      "model_sha256": "d9114a33a332155e4e5ce46b86a4a4ecd02a106a598752136f23305e376ce626"
+    }
+  },
+  "figures": [
+    "ml/01_pr_curves_validation.png",
+    "ml/02_f1_comparison_validation.png",
+    "ml/03_confusion_matrix_validation.png",
+    "dl/mlp_loss.png",
+    "dl/ae_loss.png",
+    "dl/dl_pr_validation.png",
+    "dl/ae_score_distribution_validation.png"
+  ],
+  "validation_scores_sha256": "c883fabcff9991a2c3830ffcfc48b248d216cfb1d739e34dd9595e04bf60a66a",
+  "history_sha256": "02f7f6527d4af6ac3bae418e3bfb52bbac9f237da65a744ead6b5bc00b07b29f",
+  "source_sha256": {
+    "src/netids/experiments/run.py": "8148937b0eb99145db481e494187c5d248e5f68f11e1aa9bd100af56f093fa4e",
+    "src/netids/experiments/unsw_v02_development.py": "61e9de7ca87586c4260ba53c65b28b8272a51fe1238f57956ffb711de526c206",
+    "src/netids/experiments/unsw_group_split.py": "e753fe4fcbc5cc62e1a08c9a87372886b80356f8beeeab0e8ababb6e957610ed",
+    "src/netids/experiments/unsw_ml_development.py": "ff95c2b2cc25f5d4bca8080760cca5cc84e3ed545e32376f675829445416834d",
+    "src/netids/experiments/unsw_dl_development.py": "83ee2baf3bc8aea8b0e00c3b4eda8a8bbb47613c17a01d96ad6135d4d3dc752c",
+    "src/netids/models/dl.py": "50266cdcc02a549e5c4511bcd2744704c5ec03d40f90d0e77761a49efe287fc5",
+    "src/netids/models/autoencoder.py": "645d058ba096910a0f58e6adcbc4c09aa3025b0121cce77ff33226c06fd43eb4",
+    "src/netids/adapters/unsw.py": "ade086727a55b6bd46905292a06f18cfd5254935d9f170ef645741cb0e38c6a0",
+    "src/netids/evaluation/research_plots.py": "972fe478ce826e53b89a80268e0255f6ea246e2b7a7a3549a2a2d1367699f584",
+    "src/netids/evaluation/dl_plots.py": "0fff37510ff0e88f16aa824782138c759adcd3952e1fa6822a98e03bf2bf6a6e"
+  },
+  "limitations": [
+    "Feature-group-disjoint, not host/time-disjoint.",
+    "MLP early stopping and hyperparameter selection both use validation.",
+    "Threshold 0.5 is provisional for supervised classifiers.",
+    "Autoencoder has no calibrated decision threshold.",
+    "No official UNSW test accessed."
+  ]
+}

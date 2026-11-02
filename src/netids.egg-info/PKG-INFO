@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: netids
+Version: 0.1.0
+Summary: ML-based network intrusion detection and Suricata rule generation research
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scikit-learn
+Requires-Dist: joblib

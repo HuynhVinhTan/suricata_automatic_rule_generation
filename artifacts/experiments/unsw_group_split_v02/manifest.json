@@ -1,0 +1,64 @@
+{
+  "experiment": "unsw_group_split_v02",
+  "status": "SPLIT_PREPARED_NOT_TRAINED",
+  "dataset": "UNSW-NB15",
+  "train_file": "data/raw/unsw-nb15/UNSW_NB15_training-set.csv",
+  "train_sha256": "bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa",
+  "feature_names": [
+    "protocol_tcp",
+    "duration_log",
+    "packets_log",
+    "bytes_log"
+  ],
+  "seed": 42,
+  "method": "StratifiedGroupKFold",
+  "n_folds": 7,
+  "fold_assignments": {
+    "validation": [
+      0
+    ],
+    "calibration": [
+      1
+    ],
+    "development": [
+      2,
+      3,
+      4,
+      5,
+      6
+    ]
+  },
+  "group_definition": "Exact equality of all four transformed numeric feature values",
+  "unique_feature_groups": 81508,
+  "partitions": {
+    "development": {
+      "rows": 102305,
+      "normal": 37887,
+      "attack": 64418,
+      "attack_prevalence": 0.6296661942231563,
+      "unique_feature_groups": 57515
+    },
+    "validation": {
+      "rows": 20462,
+      "normal": 7578,
+      "attack": 12884,
+      "attack_prevalence": 0.6296549701886424,
+      "unique_feature_groups": 11868
+    },
+    "calibration": {
+      "rows": 20462,
+      "normal": 7578,
+      "attack": 12884,
+      "attack_prevalence": 0.6296549701886424,
+      "unique_feature_groups": 12125
+    }
+  },
+  "exact_feature_group_overlap": 0,
+  "official_test_scored": false,
+  "limitations": [
+    "Feature-disjoint is not host-disjoint.",
+    "Feature-disjoint is not time-disjoint.",
+    "Stratification may not perfectly balance classes when groups have different sizes."
+  ],
+  "split_sha256": "313b9014624ea72f78a2812ffcc2677d307947d4f7a8e6d3cf3b8fd75fc16127"
+}

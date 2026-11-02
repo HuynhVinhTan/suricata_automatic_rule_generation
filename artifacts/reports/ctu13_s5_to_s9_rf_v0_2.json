@@ -1,0 +1,178 @@
+{
+  "experiment_id": "ctu13_s5_to_s9_rf_v0_2",
+  "model_artifact": "ctu13_rf_purged_v0_2",
+  "model_sha256": "dc727edd3589666d4c8e2bd4bdbbe2a85802003db44aa5dd37cfaf8ecf44b62a",
+  "source_sha256": "c8de257b6207ec3624467da62e91841073256fbdad5434db5eb5667588178bab",
+  "policy_sha256": "4715d7d0d13bce9644d37d683171ec33039b97283187859e5b0078fc5ac58aed",
+  "schema_version": "flow_features_v0.1",
+  "training_records": 3736,
+  "threshold": 0.5,
+  "evaluation_records": 152978,
+  "positive_count": 123110,
+  "negative_count": 29868,
+  "positive_prevalence": 0.8047562394592687,
+  "metrics": {
+    "precision": 0.9802411361346722,
+    "recall": 0.2450085289578426,
+    "f1": 0.3920302051585316,
+    "pr_auc": 0.9461521571737814,
+    "fpr": 0.020356234096692113,
+    "tn": 29260,
+    "fp": 608,
+    "fn": 92947,
+    "tp": 30163
+  },
+  "by_protocol": {
+    "tcp": {
+      "normal": 11921,
+      "botnet": 52833,
+      "tp": 27134,
+      "fp": 565,
+      "fn": 25699,
+      "tn": 11356,
+      "recall": 0.5135805273219389,
+      "fpr": 0.04739535273886419,
+      "pr_auc": 0.9772967838493433
+    },
+    "udp": {
+      "normal": 17947,
+      "botnet": 70277,
+      "tp": 3029,
+      "fp": 43,
+      "fn": 67248,
+      "tn": 17904,
+      "recall": 0.043100872262617926,
+      "fpr": 0.0023959436117456955,
+      "pr_auc": 0.9115667991229851
+    }
+  },
+  "by_new_botnet_host": {
+    "147.32.84.193": {
+      "flows": 17961,
+      "detected": 3773,
+      "recall": 0.21006625466288067,
+      "by_protocol": {
+        "tcp": {
+          "flows": 7239,
+          "detected": 3306,
+          "recall": 0.4566929133858268
+        },
+        "udp": {
+          "flows": 10722,
+          "detected": 467,
+          "recall": 0.04355530684573774
+        }
+      }
+    },
+    "147.32.84.204": {
+      "flows": 18783,
+      "detected": 4966,
+      "recall": 0.2643880104349678,
+      "by_protocol": {
+        "tcp": {
+          "flows": 8361,
+          "detected": 4520,
+          "recall": 0.5406051907666547
+        },
+        "udp": {
+          "flows": 10422,
+          "detected": 446,
+          "recall": 0.04279408942621378
+        }
+      }
+    },
+    "147.32.84.205": {
+      "flows": 17533,
+      "detected": 3633,
+      "recall": 0.20720926253350824,
+      "by_protocol": {
+        "tcp": {
+          "flows": 7176,
+          "detected": 3207,
+          "recall": 0.4469063545150502
+        },
+        "udp": {
+          "flows": 10357,
+          "detected": 426,
+          "recall": 0.04113160181519745
+        }
+      }
+    },
+    "147.32.84.206": {
+      "flows": 18552,
+      "detected": 3790,
+      "recall": 0.20429064251832688,
+      "by_protocol": {
+        "tcp": {
+          "flows": 5954,
+          "detected": 3295,
+          "recall": 0.5534094726234464
+        },
+        "udp": {
+          "flows": 12598,
+          "detected": 495,
+          "recall": 0.03929195110334974
+        }
+      }
+    },
+    "147.32.84.207": {
+      "flows": 15999,
+      "detected": 3541,
+      "recall": 0.221326332895806,
+      "by_protocol": {
+        "tcp": {
+          "flows": 6469,
+          "detected": 3130,
+          "recall": 0.4838460349358479
+        },
+        "udp": {
+          "flows": 9530,
+          "detected": 411,
+          "recall": 0.04312696747114376
+        }
+      }
+    },
+    "147.32.84.208": {
+      "flows": 17906,
+      "detected": 5009,
+      "recall": 0.2797386350943818,
+      "by_protocol": {
+        "tcp": {
+          "flows": 7921,
+          "detected": 4573,
+          "recall": 0.5773260951900012
+        },
+        "udp": {
+          "flows": 9985,
+          "detected": 436,
+          "recall": 0.04366549824737106
+        }
+      }
+    },
+    "147.32.84.209": {
+      "flows": 16376,
+      "detected": 5451,
+      "recall": 0.33286516853932585,
+      "by_protocol": {
+        "tcp": {
+          "flows": 9713,
+          "detected": 5103,
+          "recall": 0.5253783589004427
+        },
+        "udp": {
+          "flows": 6663,
+          "detected": 348,
+          "recall": 0.05222872579918955
+        }
+      }
+    }
+  },
+  "notes": [
+    "Frozen RF v0.2, no retraining or threshold tuning.",
+    "Positive class includes seven previously unseen infected source hosts.",
+    "Normal source host independence is not guaranteed.",
+    "Cohort prevalence is deliberately enriched.",
+    "Background records are excluded as unlabeled.",
+    "This is cross-scenario evaluation, not proof of zero-day detection."
+  ]
+}

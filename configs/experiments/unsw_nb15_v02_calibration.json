@@ -1,0 +1,10 @@
+{
+  "experiment": "unsw_v02_calibration",
+  "dataset": "UNSW-NB15",
+  "development_run": "unsw_v02_development",
+  "normal_calibration_fpr_budget": 0.01,
+  "score_direction": "higher_means_more_likely_attack",
+  "decision_rule": "score >= threshold",
+  "model_families": ["LogReg", "RF", "MLP", "AE"],
+  "policy": "normal_calibration_only_no_attack_threshold_tuning"
+}

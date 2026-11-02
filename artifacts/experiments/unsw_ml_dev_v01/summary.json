@@ -1,0 +1,80 @@
+{
+  "experiment": "unsw_ml_dev_v01",
+  "status": "DEVELOPMENT_ONLY",
+  "seed": 42,
+  "dataset": "UNSW-NB15",
+  "dataset_sha256": "bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa",
+  "feature_names": [
+    "protocol_tcp",
+    "duration_log",
+    "packets_log",
+    "bytes_log"
+  ],
+  "accepted_train_rows": 143229,
+  "dev_rows": 100260,
+  "validation_rows": 21484,
+  "reserved_calibration_rows": 21485,
+  "official_test_accessed": false,
+  "split_method": "stratified_random_within_official_train",
+  "split_limitation": "May retain correlated flows across partitions; not a host- or time-disjoint evaluation.",
+  "selection_metric": "average_precision_validation",
+  "selected_model": "RF_leaf5",
+  "selected_model_sha256": "784ab3d21ff6760d7477c089af34ad6e5d7dd4fcfd35e932b533acffdb102d61",
+  "provisional_threshold": 0.5,
+  "results": [
+    {
+      "name": "LogReg_C0.1",
+      "ap": 0.8327058163640988,
+      "precision": 0.7831893165750197,
+      "recall": 0.8106889414547604,
+      "f1": 0.796701899676728,
+      "fpr": 0.3815987933634992,
+      "tn": 4920,
+      "fp": 3036,
+      "fn": 2561,
+      "tp": 10967
+    },
+    {
+      "name": "LogReg_C1.0",
+      "ap": 0.8327875243137526,
+      "precision": 0.7831333904598686,
+      "recall": 0.8106889414547604,
+      "f1": 0.7966729623710591,
+      "fpr": 0.3817244846656611,
+      "tn": 4919,
+      "fp": 3037,
+      "fn": 2561,
+      "tp": 10967
+    },
+    {
+      "name": "RF_leaf1",
+      "ap": 0.9897571082326484,
+      "precision": 0.9353457659095856,
+      "recall": 0.9528385570668244,
+      "f1": 0.9440111318612912,
+      "fpr": 0.11199095022624435,
+      "tn": 7065,
+      "fp": 891,
+      "fn": 638,
+      "tp": 12890
+    },
+    {
+      "name": "RF_leaf5",
+      "ap": 0.9898405404670154,
+      "precision": 0.9317199654278306,
+      "recall": 0.9562389118864577,
+      "f1": 0.9438202247191011,
+      "fpr": 0.1191553544494721,
+      "tn": 7008,
+      "fp": 948,
+      "fn": 592,
+      "tp": 12936
+    }
+  ],
+  "figures": [
+    "01_pr_curves_validation.png",
+    "02_f1_comparison_validation.png",
+    "03_confusion_matrix_validation.png"
+  ],
+  "notes": "No official test used. Model is development-only. Threshold 0.5 is not final calibrated threshold. AP is average precision, not trapezoidal PR-AUC."
+}

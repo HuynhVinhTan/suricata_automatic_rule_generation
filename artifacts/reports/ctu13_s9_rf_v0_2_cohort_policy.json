@@ -1,0 +1,75 @@
+{
+  "experiment_id": "ctu13_s5_to_s9_rf_v0_2",
+  "dataset": "CTU-13 Scenario 9",
+  "source_file": "capture20110817.binetflow",
+  "source_sha256": "c8de257b6207ec3624467da62e91841073256fbdad5434db5eb5667588178bab",
+  "model_artifact": "ctu13_rf_purged_v0_2",
+  "model_sha256": "dc727edd3589666d4c8e2bd4bdbbe2a85802003db44aa5dd37cfaf8ecf44b62a",
+  "fixed_threshold": 0.5,
+  "allowed_protocols": [
+    "tcp",
+    "udp"
+  ],
+  "positive_label_prefix": "From-Botnet",
+  "positive_source_hosts": [
+    "147.32.84.193",
+    "147.32.84.204",
+    "147.32.84.205",
+    "147.32.84.206",
+    "147.32.84.207",
+    "147.32.84.208",
+    "147.32.84.209"
+  ],
+  "negative_label_prefix": "From-Normal",
+  "excluded_groups": [
+    "Background",
+    "To-Normal",
+    "To-Botnet",
+    "Botnet flows from other source hosts",
+    "Unsupported protocols"
+  ],
+  "positive_tcp": 52833,
+  "positive_udp": 70277,
+  "positive_count": 123110,
+  "negative_count": 29868,
+  "cohort_size": 152978,
+  "positive_prevalence": 0.8047562394592687,
+  "positive_counts_by_host": {
+    "147.32.84.193": {
+      "tcp": 7239,
+      "udp": 10722,
+      "total": 17961
+    },
+    "147.32.84.204": {
+      "tcp": 8361,
+      "udp": 10422,
+      "total": 18783
+    },
+    "147.32.84.205": {
+      "tcp": 7176,
+      "udp": 10357,
+      "total": 17533
+    },
+    "147.32.84.206": {
+      "tcp": 5954,
+      "udp": 12598,
+      "total": 18552
+    },
+    "147.32.84.207": {
+      "tcp": 6469,
+      "udp": 9530,
+      "total": 15999
+    },
+    "147.32.84.208": {
+      "tcp": 7921,
+      "udp": 9985,
+      "total": 17906
+    },
+    "147.32.84.209": {
+      "tcp": 9713,
+      "udp": 6663,
+      "total": 16376
+    }
+  },
+  "status": "FROZEN_BEFORE_MODEL_SCORING"
+}

@@ -1,0 +1,77 @@
+{
+  "experiment": "unsw_v02_calibration",
+  "status": "FROZEN_THRESHOLD_CANDIDATES",
+  "dataset": "UNSW-NB15",
+  "config_sha256": "34edb8bbde10cf4b669c5aa2ae1670255886ac77910c55cee621ce6baf17f56d",
+  "development_summary_sha256": "eab0b11048d467ab6124061e9e2606bc8ec6c216efcd7d49d64f3a56b864347d",
+  "split_sha256": "313b9014624ea72f78a2812ffcc2677d307947d4f7a8e6d3cf3b8fd75fc16127",
+  "train_sha256": "bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa",
+  "normal_score_file_sha256": "29b55e5d83def118669e6f8435b68f772cb020347da24f5958f3ac87f85e6384",
+  "fpr_budget": 0.01,
+  "normal_calibration_rows": 7578,
+  "official_test_accessed": false,
+  "attack_calibration_scores_used": false,
+  "model_retrained": false,
+  "primary_model_family": "RF",
+  "model_selection_basis": "Highest validation AP among the frozen v02 supervised candidates",
+  "models": {
+    "LogReg": {
+      "selected_model": "LogReg_C1.0",
+      "frozen_model_sha256": "b7bf34f137cdcddccd4c2cc13e42a601dc33b4e5d2689019b2511552835ebe49",
+      "validation_ap": 0.8752888314122985,
+      "threshold": 0.9846939104237838,
+      "score_direction": "higher_means_more_likely_attack",
+      "comparison": ">=",
+      "normal_calibration_rows": 7578,
+      "allowed_false_positives": 75,
+      "observed_false_positives": 75,
+      "observed_normal_fpr": 0.009897070467141725,
+      "threshold_selected_using_attack_labels": false
+    },
+    "RF": {
+      "selected_model": "RF_leaf5",
+      "frozen_model_sha256": "8ecd94033ecfa3eee3466418ea3c84c207c8af1b2965fb1889c3fd355d844d30",
+      "validation_ap": 0.9924733216360244,
+      "threshold": 0.8429583700475838,
+      "score_direction": "higher_means_more_likely_attack",
+      "comparison": ">=",
+      "normal_calibration_rows": 7578,
+      "allowed_false_positives": 75,
+      "observed_false_positives": 75,
+      "observed_normal_fpr": 0.009897070467141725,
+      "threshold_selected_using_attack_labels": false
+    },
+    "MLP": {
+      "selected_model": "MLP_24x12",
+      "frozen_model_sha256": "ab1853c777b41a73a10edadb3d8617140e30d7614a40e88a4957cee4a60420f9",
+      "validation_ap": 0.981574907731678,
+      "threshold": 0.8796622173597104,
+      "score_direction": "higher_means_more_likely_attack",
+      "comparison": ">=",
+      "normal_calibration_rows": 7578,
+      "allowed_false_positives": 75,
+      "observed_false_positives": 75,
+      "observed_normal_fpr": 0.009897070467141725,
+      "threshold_selected_using_attack_labels": false
+    },
+    "AE": {
+      "selected_model": "AE_12x3",
+      "frozen_model_sha256": "d9114a33a332155e4e5ce46b86a4a4ecd02a106a598752136f23305e376ce626",
+      "validation_ap": 0.7701492717032702,
+      "threshold": 0.0045024396239292394,
+      "score_direction": "higher_means_more_likely_attack",
+      "comparison": ">=",
+      "normal_calibration_rows": 7578,
+      "allowed_false_positives": 75,
+      "observed_false_positives": 75,
+      "observed_normal_fpr": 0.009897070467141725,
+      "threshold_selected_using_attack_labels": false
+    }
+  },
+  "limitations": [
+    "FPR cap applies to Normal calibration rows only.",
+    "Does not guarantee test or network operational FPR.",
+    "Feature-disjoint is not host/time-disjoint.",
+    "Thresholds are post-development calibration outputs."
+  ]
+}

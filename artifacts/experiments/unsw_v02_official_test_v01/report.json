@@ -1,0 +1,153 @@
+{
+  "experiment": "unsw_v02_official_test_v01",
+  "status": "OFFICIAL_TEST_COMPLETED_FROZEN",
+  "official_test_scored": true,
+  "test_sha256": "734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559",
+  "test_original_rows": 82332,
+  "test_tcp_udp_rows": 72513,
+  "test_normal_rows": 35945,
+  "test_attack_rows": 36568,
+  "test_attack_prevalence": 0.5042957814460856,
+  "test_rows_matching_official_train_feature_vector": 28102,
+  "test_feature_vector_overlap_rate": 0.3875443024009488,
+  "primary_model_family": "RF",
+  "frozen_calibration_fpr_budget": 0.01,
+  "intent_sha256": "b12142b1d575322181cf1d92e5c0bad338d8564a4125e54b5723d07d6781daee",
+  "scores_sha256": "968d77656373badce695896a0edbe71b7f85f253525bec9c522cfb4b35429ef0",
+  "development_summary_sha256": "eab0b11048d467ab6124061e9e2606bc8ec6c216efcd7d49d64f3a56b864347d",
+  "calibration_manifest_sha256": "365e743c1ad832e83bcf1d16d1fa984d9c2904f7c38f225ff4f2f6ed0abf04d8",
+  "results": {
+    "LogReg": {
+      "model": "LogReg_C1.0",
+      "model_sha256": "b7bf34f137cdcddccd4c2cc13e42a601dc33b4e5d2689019b2511552835ebe49",
+      "validation_ap": 0.8752888314122985,
+      "frozen_threshold": 0.9846939104237838,
+      "calibration_normal_fpr": 0.009897070467141725,
+      "ap": 0.6237188009190666,
+      "roc_auc": 0.6977196358233315,
+      "accuracy": 0.49006385061988883,
+      "precision": 0.2545018007202881,
+      "recall": 0.005797418507985124,
+      "f1": 0.011336595278201118,
+      "fpr": 0.017276394491584364,
+      "tn": 35324,
+      "fp": 621,
+      "fn": 36356,
+      "tp": 212
+    },
+    "RF": {
+      "model": "RF_leaf5",
+      "model_sha256": "8ecd94033ecfa3eee3466418ea3c84c207c8af1b2965fb1889c3fd355d844d30",
+      "validation_ap": 0.9924733216360244,
+      "frozen_threshold": 0.8429583700475838,
+      "calibration_normal_fpr": 0.009897070467141725,
+      "ap": 0.9730182524962081,
+      "roc_auc": 0.9690366693639942,
+      "accuracy": 0.8835794960903562,
+      "precision": 0.9755511970783173,
+      "recall": 0.7889138044191643,
+      "f1": 0.8723616570910191,
+      "fpr": 0.020114063152037835,
+      "tn": 35222,
+      "fp": 723,
+      "fn": 7719,
+      "tp": 28849
+    },
+    "MLP": {
+      "model": "MLP_24x12",
+      "model_sha256": "ab1853c777b41a73a10edadb3d8617140e30d7614a40e88a4957cee4a60420f9",
+      "validation_ap": 0.981574907731678,
+      "frozen_threshold": 0.8796622173597104,
+      "calibration_normal_fpr": 0.009897070467141725,
+      "ap": 0.9373871227961678,
+      "roc_auc": 0.9321869973417359,
+      "accuracy": 0.7970432887895963,
+      "precision": 0.9318550140321752,
+      "recall": 0.6446893458761759,
+      "f1": 0.7621187385843826,
+      "fpr": 0.04796216441786062,
+      "tn": 34221,
+      "fp": 1724,
+      "fn": 12993,
+      "tp": 23575
+    },
+    "AE": {
+      "model": "AE_12x3",
+      "model_sha256": "d9114a33a332155e4e5ce46b86a4a4ecd02a106a598752136f23305e376ce626",
+      "validation_ap": 0.7701492717032702,
+      "frozen_threshold": 0.0045024396239292394,
+      "calibration_normal_fpr": 0.009897070467141725,
+      "ap": 0.5381617715063685,
+      "roc_auc": 0.588878269807366,
+      "accuracy": 0.49763490684429,
+      "precision": 0.5797266514806378,
+      "recall": 0.013919273681907679,
+      "f1": 0.027185814239171074,
+      "fpr": 0.010265683683405202,
+      "tn": 35576,
+      "fp": 369,
+      "fn": 36059,
+      "tp": 509
+    }
+  },
+  "rf_recall_by_attack_category": {
+    "Analysis": {
+      "attack_rows": 58,
+      "rf_detected": 1,
+      "rf_recall": 0.017241379310344827
+    },
+    "Backdoor": {
+      "attack_rows": 57,
+      "rf_detected": 19,
+      "rf_recall": 0.3333333333333333
+    },
+    "DoS": {
+      "attack_rows": 1224,
+      "rf_detected": 780,
+      "rf_recall": 0.6372549019607843
+    },
+    "Exploits": {
+      "attack_rows": 8004,
+      "rf_detected": 5937,
+      "rf_recall": 0.7417541229385307
+    },
+    "Fuzzers": {
+      "attack_rows": 4811,
+      "rf_detected": 737,
+      "rf_recall": 0.15319060486385366
+    },
+    "Generic": {
+      "attack_rows": 18823,
+      "rf_detected": 18562,
+      "rf_recall": 0.9861339850183286
+    },
+    "Reconnaissance": {
+      "attack_rows": 3169,
+      "rf_detected": 2654,
+      "rf_recall": 0.8374881666140739
+    },
+    "Shellcode": {
+      "attack_rows": 378,
+      "rf_detected": 135,
+      "rf_recall": 0.35714285714285715
+    },
+    "Worms": {
+      "attack_rows": 44,
+      "rf_detected": 24,
+      "rf_recall": 0.5454545454545454
+    }
+  },
+  "figure_sha256": {
+    "01_pr_official_test.png": "fea5b000d7ffba5ff5308780f0b3e242761f824999393cfbfd96bfd381432b03",
+    "02_rf_confusion_official_test.png": "8f234c80f602f9c0a96197e45df1d794146258b5cb153cf98a4c48d2a9ddb1e1",
+    "03_recall_fpr_official_test.png": "2283636dd82a1eeabb3ccf8a2d5b2ac1ffb6784a9b55de13ef6a44b599ad1871"
+  },
+  "limitations": [
+    "Official test is now consumed; no test-driven tuning.",
+    "TCP/UDP subset with four engineered features only.",
+    "No evidence of zero-day detection from these labels alone.",
+    "Exact feature overlap does not prove shared traffic sessions.",
+    "Test FPR is not a live deployment guarantee.",
+    "Internal feature-disjoint validation is not host/time-disjoint."
+  ]
+}
