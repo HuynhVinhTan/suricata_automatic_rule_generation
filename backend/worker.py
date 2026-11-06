@@ -262,36 +262,71 @@ def preflight_artifacts(private_root: Path) -> Dict[str, str]:
 
 
 def _review_is_safe(review: Mapping[str, Any]) -> str:
-    if review.get("schema_version") not in {
+    """Validate the deny-by-default safety contract for each review schema.
+
+    v0_2 requires top-level ``approved``; historical v0_1 producers did not
+    emit it, but both versions require false deployment claims and nested
+    triage/candidate-gate safety fields.
+    """
+    schema_version = review.get("schema_version")
+    if schema_version not in {
         "lab_rule_review_v0_1",
         "lab_rule_review_v0_2",
     }:
         raise WorkerProcessingError("Unsupported review artifact schema")
     status = normalize_review_status(review.get("status"))
+
+    required_top_level = ("deployable", "deployed")
+    if schema_version == "lab_rule_review_v0_2":
+        required_top_level = ("approved", *required_top_level)
+    for key in required_top_level:
+        if key not in review:
+            raise WorkerProcessingError(
+                f"Review artifact is missing mandatory field: {key}"
+            )
+        if review[key] is not False:
+            raise WorkerProcessingError(
+                f"Review artifact field {key} must be boolean false"
+            )
+
     for key in (
         "approved",
         "auto_approve",
         "auto_deploy",
-        "deployable",
-        "deployed",
         "rule_approval_authorized",
     ):
         if key in review and review[key] is not False:
-            raise WorkerProcessingError(f"Review artifact claims {key}=true")
-    triage = review.get("triage", {})
-    if isinstance(triage, Mapping):
-        for key in ("auto_approve", "auto_deploy"):
-            if key in triage and triage[key] is not False:
-                raise WorkerProcessingError(
-                    "Review artifact claims automatic approval/deployment"
-                )
-    candidate_gate = review.get("candidate_gate", {})
-    if (
-        isinstance(candidate_gate, Mapping)
-        and "rule_approval_authorized" in candidate_gate
-        and candidate_gate["rule_approval_authorized"] is not False
-    ):
-        raise WorkerProcessingError("Review artifact authorizes rule approval")
+            raise WorkerProcessingError(
+                f"Review artifact field {key} must be boolean false"
+            )
+
+    triage = review.get("triage")
+    if not isinstance(triage, dict):
+        raise WorkerProcessingError("Review artifact triage must be an object")
+    for key in ("auto_approve", "auto_deploy"):
+        if key not in triage:
+            raise WorkerProcessingError(
+                f"Review artifact triage is missing mandatory field: {key}"
+            )
+        if triage[key] is not False:
+            raise WorkerProcessingError(
+                f"Review artifact triage field {key} must be boolean false"
+            )
+
+    candidate_gate = review.get("candidate_gate")
+    if not isinstance(candidate_gate, dict):
+        raise WorkerProcessingError(
+            "Review artifact candidate_gate must be an object"
+        )
+    key = "rule_approval_authorized"
+    if key not in candidate_gate:
+        raise WorkerProcessingError(
+            f"Review artifact candidate_gate is missing mandatory field: {key}"
+        )
+    if candidate_gate[key] is not False:
+        raise WorkerProcessingError(
+            f"Review artifact candidate_gate field {key} must be boolean false"
+        )
     return status
 
 
