@@ -3,21 +3,32 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
-import uuid
+import math
+import os
+import re
+import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from netids.lab_runtime import EXPECTED_MODEL_SHA256, FEATURES, sha256
 from netids.pipeline import run as run_pipeline
 
 WORKER_SCHEMA_VERSION = "pcap_ai_worker_v0_1"
 MAX_PCAP_SIZE_BYTES = 2 * 1024 * 1024 * 1024
+MIN_FREE_DISK_BYTES = 128 * 1024 * 1024
+DEFAULT_INPUT_ROOT = Path("data/private/incoming-pcaps")
 DEFAULT_ES_INDEX = "suricata-ai-summary"
-
-STATUS_COMPATIBILITY = {
+RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+REVIEW_STATUS_COMPATIBILITY = {
     "no_candidate": "no_candidate",
     "needs_review": "needs_review",
     "rejected_known_false_positive": "rejected_known_false_positive",
@@ -31,12 +42,24 @@ STATUS_COMPATIBILITY = {
 }
 
 
+class WorkerProcessingError(RuntimeError):
+    """A pipeline output was incomplete or violated the review contract."""
+
+
+class ElasticsearchWriteError(RuntimeError):
+    """Elasticsearch rejected or could not confirm an AI summary write."""
+
+
+class ElasticsearchConnectionError(ElasticsearchWriteError):
+    """The Elasticsearch endpoint could not be reached."""
+
+
+class ElasticsearchConflictError(ElasticsearchWriteError):
+    """The stable AI document ID already exists."""
+
+
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256(path)
 
 
 def normalize_ipv4(value: Any, field_name: str) -> str:
@@ -44,52 +67,30 @@ def normalize_ipv4(value: Any, field_name: str) -> str:
         raise ValueError(f"{field_name} must be an IPv4 string")
     try:
         return str(IPv4Address(value))
-    except ValueError as exc:  # pragma: no cover - defensive
-        raise ValueError(f"Invalid IPv4 for {field_name}: {value}") from exc
+    except ValueError as exc:
+        raise ValueError(f"Invalid IPv4 for {field_name}") from exc
+
+
+def validate_run_id(value: Any) -> str:
+    if not isinstance(value, str) or not RUN_ID_PATTERN.fullmatch(value):
+        raise ValueError("Invalid run ID; use 1-64 letters, digits, '_' or '-'")
+    return value
 
 
 def normalize_review_status(value: Any) -> str:
-    if value is None:
-        return "no_candidate"
-    normalized = str(value).strip()
-    if normalized == "":
-        return "no_candidate"
-    mapped = STATUS_COMPATIBILITY.get(normalized)
-    if mapped is not None:
-        return mapped
-    lowered = normalized.lower().replace(" ", "_")
-    return STATUS_COMPATIBILITY.get(lowered, lowered)
-
-
-def build_manifest(
-    *,
-    pcap: Path,
-    src: str,
-    dst: str,
-    run_id: Optional[str] = None,
-    capture_metadata: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    source_ip = normalize_ipv4(src, "source_ipv4")
-    destination_ip = normalize_ipv4(dst, "destination_ipv4")
-    manifest = {
-        "schema_version": WORKER_SCHEMA_VERSION,
-        "pcap_sha256": sha256_file(pcap),
-        "source_ipv4": source_ip,
-        "destination_ipv4": destination_ip,
-        "run_id": run_id or uuid.uuid4().hex,
-        "capture_metadata": dict(capture_metadata or {}),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return manifest
+    if not isinstance(value, str):
+        raise ValueError("Review status must be a string")
+    status = REVIEW_STATUS_COMPATIBILITY.get(value)
+    if status is None:
+        raise ValueError(f"Unsupported review status: {value}")
+    return status
 
 
 def load_manifest(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"Manifest not found: {path}")
-    with path.open("r", encoding="utf-8") as stream:
+    with Path(path).open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
     if not isinstance(manifest, dict):
-        raise ValueError("Manifest must decode to a JSON object")
+        raise ValueError("Manifest must be a JSON object")
     return manifest
 
 
@@ -99,16 +100,12 @@ def validate_manifest(
     pcap_path: Path,
     src: str,
     dst: str,
+    run_id: str,
 ) -> Dict[str, Any]:
     if not isinstance(manifest, Mapping):
         raise ValueError("Manifest must be a JSON object")
-
-    schema_version = manifest.get("schema_version")
-    if schema_version != WORKER_SCHEMA_VERSION:
-        raise ValueError(
-            "Unsupported manifest schema_version; expected "
-            f"{WORKER_SCHEMA_VERSION}"
-        )
+    if manifest.get("schema_version") != WORKER_SCHEMA_VERSION:
+        raise ValueError("Unsupported manifest schema_version")
 
     required = {
         "pcap_sha256",
@@ -116,226 +113,667 @@ def validate_manifest(
         "destination_ipv4",
         "run_id",
     }
-    missing = sorted(required - set(manifest))
+    missing = required - set(manifest)
     if missing:
-        raise ValueError(f"Manifest missing required fields: {missing}")
+        raise ValueError(f"Manifest missing required fields: {sorted(missing)}")
 
-    expected_sha = sha256_file(pcap_path).lower()
-    if str(manifest["pcap_sha256"]).lower() != expected_sha:
+    manifest_run_id = validate_run_id(manifest["run_id"])
+    if manifest_run_id != run_id:
+        raise ValueError("Manifest run_id does not match the requested run")
+    if not isinstance(manifest["pcap_sha256"], str) or not SHA256_PATTERN.fullmatch(
+        manifest["pcap_sha256"]
+    ):
+        raise ValueError("Manifest must contain a valid PCAP SHA256")
+    if sha256_file(pcap_path).lower() != manifest["pcap_sha256"].lower():
         raise ValueError("Manifest PCAP SHA256 does not match the input file")
-
-    expected_src = normalize_ipv4(src, "source_ipv4")
-    expected_dst = normalize_ipv4(dst, "destination_ipv4")
-    if normalize_ipv4(manifest["source_ipv4"], "source_ipv4") != expected_src:
+    if normalize_ipv4(manifest["source_ipv4"], "source_ipv4") != normalize_ipv4(
+        src, "source_ipv4"
+    ):
         raise ValueError("Manifest source IPv4 does not match the worker input")
-    if normalize_ipv4(manifest["destination_ipv4"], "destination_ipv4") != expected_dst:
+    if normalize_ipv4(
+        manifest["destination_ipv4"], "destination_ipv4"
+    ) != normalize_ipv4(dst, "destination_ipv4"):
         raise ValueError("Manifest destination IPv4 does not match the worker input")
 
-    if not manifest.get("run_id"):
-        raise ValueError("Manifest run_id is required")
-
+    metadata = manifest.get("capture_metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("Manifest capture_metadata must be an object")
     return dict(manifest)
 
 
-def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
-    safe = {
-        "schema_version": summary.get("schema_version"),
-        "run_id": summary.get("run_id"),
-        "status": summary.get("status"),
-        "review_status": summary.get("review_status"),
-        "pcap_sha256": summary.get("pcap_sha256"),
-        "source_ipv4": summary.get("source_ipv4"),
-        "destination_ipv4": summary.get("destination_ipv4"),
-        "deployable": summary.get("deployable"),
-        "deployed": summary.get("deployed"),
-        "generated_at": summary.get("generated_at"),
-        "error": summary.get("error"),
+def _require_under(path: Path, root: Path, description: str) -> Path:
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+        resolved_path.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{description} must be inside the allowlisted root") from exc
+    return resolved_path
+
+
+def _safe_artifact(root: Path, relative: Path) -> Path:
+    path = root / relative
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise FileNotFoundError(f"Required private artifact missing or unsafe: {relative}") from exc
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Required private artifact is not a file: {relative}")
+    return resolved
+
+
+def preflight_artifacts(private_root: Path) -> Dict[str, str]:
+    root = Path(private_root).resolve(strict=True)
+    model_path = _safe_artifact(
+        root, Path("lab-models/lab_syn_anomaly_v0_1/models.joblib")
+    )
+    report_path = _safe_artifact(
+        root, Path("lab-models/lab_syn_anomaly_v0_1/report.json")
+    )
+    proposal_path = _safe_artifact(
+        root, Path("lab-rule-candidates/syn_scan_v0_1/proposal.json")
+    )
+    candidate_path = _safe_artifact(
+        root, Path("lab-rule-candidates/syn_scan_v0_1/candidate.rules")
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if (
+        report.get("experiment") != "lab_syn_anomaly_v0_1"
+        or report.get("training_policy") != "NORMAL_ONLY"
+        or report.get("feature_names") != FEATURES
+        or report.get("window_seconds") != 10
+    ):
+        raise ValueError("Frozen model report contract mismatch")
+    thresholds = report.get("thresholds")
+    if not isinstance(thresholds, dict) or any(
+        name not in thresholds
+        or isinstance(thresholds[name], bool)
+        or not isinstance(thresholds[name], (int, float))
+        or not math.isfinite(float(thresholds[name]))
+        for name in ("IsolationForest", "NumpyAutoencoder")
+    ):
+        raise ValueError("Frozen model report thresholds are invalid")
+    if sha256_file(model_path) != EXPECTED_MODEL_SHA256:
+        raise ValueError("Frozen model SHA256 mismatch")
+
+    reference_hashes = report.get("feature_csv_sha256")
+    if not isinstance(reference_hashes, dict):
+        raise ValueError("Frozen model report has no reference checksums")
+    reference_hashes_checked = {}
+    for partition in ("normal-train", "normal-cal"):
+        relative = Path(
+            "lab-sessions/normal-batch-v01"
+            f"/syn_windows_10s_{partition}.csv"
+        )
+        reference_path = _safe_artifact(root, relative)
+        expected_hash = reference_hashes.get(partition)
+        if not isinstance(expected_hash, str) or not SHA256_PATTERN.fullmatch(
+            expected_hash
+        ):
+            raise ValueError(f"Frozen report lacks {partition} checksum")
+        actual_hash = sha256_file(reference_path)
+        if actual_hash != expected_hash.lower():
+            raise ValueError(f"Normal reference checksum mismatch: {partition}")
+        if reference_path.stat().st_size == 0:
+            raise ValueError(f"Normal reference is empty: {partition}")
+        with reference_path.open(
+            "r", encoding="utf-8", newline=""
+        ) as stream:
+            reader = csv.DictReader(stream)
+            required_columns = {"label", "window_seconds", "syn_count"}
+            if not required_columns.issubset(reader.fieldnames or []):
+                raise ValueError(f"Normal reference schema mismatch: {partition}")
+            rows = list(reader)
+        if not rows:
+            raise ValueError(f"Normal reference has no rows: {partition}")
+        for row in rows:
+            try:
+                valid_row = (
+                    row["label"] == "NORMAL"
+                    and int(row["window_seconds"]) == 10
+                    and int(row["syn_count"]) >= 1
+                )
+            except (TypeError, ValueError):
+                valid_row = False
+            if not valid_row:
+                raise ValueError(f"Invalid Normal reference row: {partition}")
+        reference_hashes_checked[partition] = actual_hash
+
+    proposal = json.loads(proposal_path.read_text(encoding="utf-8-sig"))
+    if (
+        proposal.get("status") != "needs_review"
+        or proposal.get("deployed") is not False
+        or proposal.get("model_report_sha256") != sha256_file(report_path)
+    ):
+        raise ValueError("Historical rule proposal provenance mismatch")
+    candidate_rule = candidate_path.read_text(encoding="utf-8")
+    if "sid:9102001;" not in candidate_rule or "192.168.10.10" not in candidate_rule:
+        raise ValueError("Historical rule candidate SID mismatch")
+
+    return {
+        "model_sha256": sha256_file(model_path),
+        "model_report_sha256": sha256_file(report_path),
+        "normal_train_sha256": reference_hashes_checked["normal-train"],
+        "normal_cal_sha256": reference_hashes_checked["normal-cal"],
+        "historical_proposal_sha256": sha256_file(proposal_path),
     }
-    return {key: value for key, value in safe.items() if value is not None}
+
+
+def _review_is_safe(review: Mapping[str, Any]) -> str:
+    if review.get("schema_version") not in {
+        "lab_rule_review_v0_1",
+        "lab_rule_review_v0_2",
+    }:
+        raise WorkerProcessingError("Unsupported review artifact schema")
+    status = normalize_review_status(review.get("status"))
+    for key in (
+        "approved",
+        "auto_approve",
+        "auto_deploy",
+        "deployable",
+        "deployed",
+        "rule_approval_authorized",
+    ):
+        if key in review and review[key] is not False:
+            raise WorkerProcessingError(f"Review artifact claims {key}=true")
+    triage = review.get("triage", {})
+    if isinstance(triage, Mapping):
+        for key in ("auto_approve", "auto_deploy"):
+            if key in triage and triage[key] is not False:
+                raise WorkerProcessingError(
+                    "Review artifact claims automatic approval/deployment"
+                )
+    candidate_gate = review.get("candidate_gate", {})
+    if (
+        isinstance(candidate_gate, Mapping)
+        and "rule_approval_authorized" in candidate_gate
+        and candidate_gate["rule_approval_authorized"] is not False
+    ):
+        raise WorkerProcessingError("Review artifact authorizes rule approval")
+    return status
+
+
+def _write_json_exclusive(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(payload, stream, indent=2, ensure_ascii=False)
+        stream.write("\n")
+
+
+def _private_directory(root: Path, name: str) -> Path:
+    requested = root / name
+    requested.mkdir(parents=True, exist_ok=True)
+    resolved = requested.resolve(strict=True)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Private output directory escapes private_root: {name}") from exc
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"Private output path is not a directory: {name}")
+    return resolved
+
+
+def _failure_payload(
+    *, run_id: str, pcap_sha256: str, exc: BaseException
+) -> Dict[str, Any]:
+    return {
+        "schema_version": WORKER_SCHEMA_VERSION,
+        "run_id": run_id,
+        "pcap_sha256": pcap_sha256,
+        "status": "failed",
+        "error_type": type(exc).__name__,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "deployable": False,
+        "deployed": False,
+    }
+
+
+def _record_output_failure(
+    output_dir: Path, run_id: str, expected_sha: str, error: BaseException
+) -> None:
+    _write_failure_without_masking(
+        output_dir / "worker_summary.json",
+        _failure_payload(
+            run_id=run_id, pcap_sha256=expected_sha, exc=error
+        ),
+        error,
+    )
+
+
+def _write_failure_without_masking(
+    path: Path, payload: Mapping[str, Any], original: BaseException
+) -> None:
+    try:
+        _write_json_exclusive(path, payload)
+    except OSError as artifact_error:
+        note = f"Could not write failure artifact: {type(artifact_error).__name__}"
+        if hasattr(original, "add_note"):
+            original.add_note(note)
+        else:
+            setattr(original, "failure_artifact_error", note)
+
+
+def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
+    if summary.get("schema_version") != WORKER_SCHEMA_VERSION:
+        raise ValueError("Unsupported Elasticsearch summary schema")
+    if summary.get("status") not in {"succeeded", "failed"}:
+        raise ValueError("Invalid worker status for Elasticsearch summary")
+    validate_run_id(summary.get("run_id"))
+    if "review_status" in summary:
+        normalize_review_status(summary["review_status"])
+    for key in ("pcap_sha256", "model_sha256"):
+        if key in summary:
+            if not isinstance(summary[key], str) or not SHA256_PATTERN.fullmatch(
+                summary[key]
+            ):
+                raise ValueError(f"Invalid {key} in Elasticsearch summary")
+    for key in (
+        "windows",
+        "isolation_forest_flagged",
+        "autoencoder_flagged",
+        "both_flagged",
+    ):
+        if key in summary and (
+            type(summary[key]) is not int or summary[key] < 0
+        ):
+            raise ValueError(f"Invalid {key} in Elasticsearch summary")
+    generated_at = summary.get("generated_at")
+    if generated_at is not None:
+        if not isinstance(generated_at, str) or len(generated_at) > 64:
+            raise ValueError("Invalid generated_at in Elasticsearch summary")
+        try:
+            datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                "Invalid generated_at in Elasticsearch summary"
+            ) from exc
+    for key in ("deployable", "deployed"):
+        if key in summary and summary[key] is not False:
+            raise ValueError("Refusing to publish an approved or deployed rule claim")
+    if "rule_generated_in_this_run" in summary and type(
+        summary["rule_generated_in_this_run"]
+    ) is not bool:
+        raise ValueError("Invalid rule_generated_in_this_run in Elasticsearch summary")
+    allowed = (
+        "schema_version",
+        "run_id",
+        "status",
+        "review_status",
+        "pcap_sha256",
+        "model_sha256",
+        "generated_at",
+        "windows",
+        "isolation_forest_flagged",
+        "autoencoder_flagged",
+        "both_flagged",
+        "rule_generated_in_this_run",
+        "deployable",
+        "deployed",
+    )
+    safe = {key: summary[key] for key in allowed if key in summary}
+    if "review_status" in safe:
+        safe["review_status"] = normalize_review_status(safe["review_status"])
+    return safe
 
 
 def write_elasticsearch_summary(
     summary: Mapping[str, Any],
-    destination: Path,
+    base_url: str,
     *,
     index: str = DEFAULT_ES_INDEX,
-) -> Path:
-    payload = dict(_safe_summary_fields(summary))
-    payload.setdefault("_index", index)
-    payload.setdefault("ai_summary_version", "v1")
-    destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
-        encoding="utf-8",
+    timeout: float = 5.0,
+) -> Dict[str, Any]:
+    if timeout <= 0:
+        raise ValueError("Elasticsearch timeout must be positive")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,254}", index):
+        raise ValueError("Invalid Elasticsearch index name")
+    parsed = urllib.parse.urlsplit(base_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Elasticsearch URL must be an HTTP(S) base URL without credentials")
+
+    safe_document = _safe_summary_fields(summary)
+    document_id = hashlib.sha256(
+        summary["run_id"].encode("utf-8")
+    ).hexdigest()
+    endpoint = (
+        base_url.rstrip("/")
+        + "/"
+        + urllib.parse.quote(index, safe="")
+        + "/_doc/"
+        + document_id
+        + "?op_type=create"
     )
-    return destination
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(safe_document, sort_keys=True).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
 
-
-def _read_json_if_present(path: Path) -> Optional[Dict[str, Any]]:
-    if not path.exists():
-        return None
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            payload = json.load(stream)
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if not 200 <= response.status < 300:
+                raise ElasticsearchWriteError(
+                    f"Elasticsearch returned HTTP {response.status}"
+                )
+            response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            raise ElasticsearchConflictError(
+                "Elasticsearch document already exists"
+            ) from exc
+        raise ElasticsearchWriteError(
+            f"Elasticsearch returned HTTP {exc.code}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ElasticsearchConnectionError(
+            "Elasticsearch connection failed"
+        ) from exc
+
+    return {"document_id": document_id, "index": index, "status": "created"}
 
 
 def run_worker(
     *,
     pcap: Path,
+    input_root: Path,
     src: str,
     dst: str,
     private_root: Path,
-    output_dir: Path,
+    run_id: str,
     expected_sha: Optional[str] = None,
     manifest_path: Optional[Path] = None,
-    run_id: Optional[str] = None,
+    output_dir: Optional[Path] = None,
     processor: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    pcap = Path(pcap)
-    private_root = Path(private_root)
-    output_dir = Path(output_dir)
-
-    if not pcap.exists():
-        raise FileNotFoundError(f"PCAP not found: {pcap}")
-
-    if pcap.stat().st_size > MAX_PCAP_SIZE_BYTES:
-        raise ValueError("PCAP exceeds the safe local prototype size limit")
-
-    source_ip = normalize_ipv4(src, "source_ipv4")
-    destination_ip = normalize_ipv4(dst, "destination_ipv4")
-    if source_ip == destination_ip:
+    run_id = validate_run_id(run_id)
+    src = normalize_ipv4(src, "source_ipv4")
+    dst = normalize_ipv4(dst, "destination_ipv4")
+    if src == dst:
         raise ValueError("Source and destination IPv4 addresses must differ")
 
-    private_root = private_root.resolve()
-    output_dir = output_dir.resolve()
-    if not output_dir.is_relative_to(private_root):
-        raise ValueError("Output directory must remain inside the private_root")
+    input_root = Path(input_root)
+    try:
+        resolved_input_root = input_root.resolve(strict=True)
+    except OSError as exc:
+        raise FileNotFoundError("Allowlisted PCAP input root does not exist") from exc
+    if resolved_input_root.parent == resolved_input_root:
+        raise ValueError("Allowlisted PCAP input root cannot be a filesystem root")
+    if not resolved_input_root.is_dir():
+        raise ValueError("Allowlisted PCAP input root must be a directory")
+    pcap = _require_under(Path(pcap), resolved_input_root, "PCAP input")
+    if not pcap.is_file():
+        raise ValueError("PCAP input must be a regular file")
+    size = pcap.stat().st_size
+    if size > MAX_PCAP_SIZE_BYTES:
+        raise ValueError("PCAP exceeds the safe local prototype size limit")
 
-    if output_dir.exists():
-        raise FileExistsError(
-            "Output directory already exists; refusing overwrite"
-        )
+    private_root = Path(private_root).resolve(strict=True)
+    if private_root.parent == private_root:
+        raise ValueError("private_root cannot be a filesystem root")
+    if not private_root.is_dir():
+        raise NotADirectoryError("private_root must be a directory")
+    required_free = max(MIN_FREE_DISK_BYTES, size * 2 + 64 * 1024 * 1024)
+    if shutil.disk_usage(private_root).free < required_free:
+        raise OSError("Insufficient disk space for bounded PCAP processing")
 
-    manifest = build_manifest(
-        pcap=pcap,
-        src=source_ip,
-        dst=destination_ip,
-        run_id=run_id,
-    )
+    run_root = private_root / "lab-runs"
+    canonical_run_root = run_root.resolve()
+    try:
+        canonical_run_root.relative_to(private_root)
+    except ValueError as exc:
+        raise ValueError("Run output root escapes private_root") from exc
+    canonical_output = canonical_run_root / run_id
+    if output_dir is not None:
+        requested_output = Path(output_dir)
+        if requested_output.resolve() != canonical_output.resolve():
+            raise ValueError("Output directory must be the deterministic run path")
+    output_dir = canonical_output
+    failure_root = _private_directory(private_root, "lab-failures")
+    failure_path = failure_root / f"{run_id}.json"
+    if output_dir.exists() or failure_path.exists():
+        raise FileExistsError("Run ID already has output; refusing overwrite")
+
+    if expected_sha is not None:
+        if not isinstance(expected_sha, str) or not SHA256_PATTERN.fullmatch(
+            expected_sha
+        ):
+            raise ValueError("Expected PCAP SHA256 must be 64 hexadecimal characters")
+        expected_sha = expected_sha.lower()
+
+    manifest = None
     if manifest_path is not None:
-        validated = validate_manifest(
-            load_manifest(manifest_path),
-            pcap_path=pcap,
-            src=source_ip,
-            dst=destination_ip,
+        manifest_file = Path(manifest_path)
+        if not manifest_file.exists():
+            raise FileNotFoundError("Manifest file does not exist")
+        manifest_file = _require_under(
+            manifest_file, resolved_input_root, "Manifest"
         )
-        manifest.update(validated)
+        manifest = validate_manifest(
+            load_manifest(manifest_file),
+            pcap_path=pcap,
+            src=src,
+            dst=dst,
+            run_id=run_id,
+        )
+    if expected_sha is None and manifest is None:
+        raise ValueError("Provide a trusted PCAP checksum or a validated manifest")
 
-    final_expected_sha = (expected_sha or sha256_file(pcap)).lower()
-    if manifest.get("pcap_sha256", final_expected_sha).lower() != final_expected_sha:
-        raise ValueError("Manifest checksum does not match the PCAP input")
+    actual_sha = sha256_file(pcap)
+    if expected_sha is not None and actual_sha != expected_sha:
+        raise ValueError("Input PCAP SHA256 mismatch")
+    if manifest is not None and actual_sha != manifest["pcap_sha256"].lower():
+        raise ValueError("Manifest PCAP SHA256 mismatch")
+    expected_sha = expected_sha or manifest["pcap_sha256"].lower()
 
-    final_run_id = str(manifest.get("run_id") or run_id or uuid.uuid4().hex)
-    output_dir = output_dir if output_dir.name else private_root / "lab-runs" / final_run_id
-    if output_dir.exists():
-        raise FileExistsError("Output directory already exists; refusing overwrite")
+    lock_root = _private_directory(private_root, ".worker-locks")
+    lock_path = lock_root / f"{run_id}.lock"
+    try:
+        descriptor = os.open(
+            str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        )
+    except FileExistsError as exc:
+        raise FileExistsError("Run ID is already being processed") from exc
 
     processor_fn = processor or run_pipeline
-    summary = {
-        "schema_version": WORKER_SCHEMA_VERSION,
-        "run_id": final_run_id,
-        "pcap_sha256": final_expected_sha,
-        "source_ipv4": source_ip,
-        "destination_ipv4": destination_ip,
-        "status": "running",
-        "review_status": "no_candidate",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
     try:
-        processor_fn(
-            str(pcap),
-            final_expected_sha,
-            source_ip,
-            destination_ip,
-            private_root,
-            output_dir,
-        )
-        summary["status"] = "succeeded"
-    except Exception as exc:  # pragma: no cover - exercised via tests
-        summary["status"] = "failed"
-        summary["error"] = str(exc)
+        try:
+            artifacts = preflight_artifacts(private_root)
+            processor_fn(
+                pcap,
+                expected_sha,
+                src,
+                dst,
+                private_root,
+                output_dir,
+            )
+        except Exception as exc:
+            failure = _failure_payload(
+                run_id=run_id, pcap_sha256=expected_sha, exc=exc
+            )
+            try:
+                safe_output = output_dir.resolve(strict=True)
+                safe_output.relative_to(private_root)
+            except (OSError, ValueError):
+                safe_output = None
+            if safe_output is not None and safe_output.is_dir():
+                _write_failure_without_masking(
+                    safe_output / "worker_summary.json", failure, exc
+                )
+            else:
+                _write_failure_without_masking(failure_path, failure, exc)
+            raise
 
-    review = _read_json_if_present(output_dir / "review.json")
-    if review is not None:
-        summary["review_status"] = normalize_review_status(review.get("status"))
-        summary["deployable"] = bool(review.get("deployable") is True)
-        summary["deployed"] = bool(review.get("deployed") is True)
-        summary["rule_generated_in_this_run"] = bool(
-            review.get("rule_generated_in_this_run") is True
-        )
-        summary["model_sha256"] = review.get("model_sha256")
-        summary["generated_rule"] = review.get("generated_rule")
-    elif summary["status"] == "succeeded":
-        summary["review_status"] = "no_candidate"
+        try:
+            output_dir.resolve(strict=True).relative_to(private_root)
+        except (OSError, ValueError) as exc:
+            failure = WorkerProcessingError(
+                "Pipeline output directory escaped private_root"
+            )
+            _write_failure_without_masking(
+                failure_path,
+                _failure_payload(
+                    run_id=run_id,
+                    pcap_sha256=expected_sha,
+                    exc=failure,
+                ),
+                failure,
+            )
+            raise failure from exc
 
-    summary["output_dir"] = str(output_dir)
-    summary["private_root"] = str(private_root)
-    summary["schema_version"] = WORKER_SCHEMA_VERSION
-    with (output_dir / "worker_summary.json").open("w", encoding="utf-8") as stream:
-        json.dump(summary, stream, indent=2, ensure_ascii=False)
-        stream.write("\n")
-    return summary
+        review_path = output_dir / "review.json"
+        try:
+            with review_path.open("r", encoding="utf-8") as stream:
+                review = json.load(stream)
+        except (OSError, json.JSONDecodeError) as exc:
+            failure = WorkerProcessingError(
+                "Pipeline did not produce a valid review artifact"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure from exc
+        if not isinstance(review, dict):
+            failure = WorkerProcessingError(
+                "Pipeline review artifact must be a JSON object"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure
+
+        try:
+            review_status = _review_is_safe(review)
+        except WorkerProcessingError as exc:
+            _record_output_failure(output_dir, run_id, expected_sha, exc)
+            raise
+
+        if review.get("model_sha256") != artifacts["model_sha256"]:
+            failure = WorkerProcessingError(
+                "Review model checksum does not match frozen preflight model"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure
+
+        predictions_path = output_dir / "predictions.json"
+        try:
+            inference = json.loads(
+                predictions_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            failure = WorkerProcessingError(
+                "Pipeline did not produce valid predictions"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure from exc
+        if not isinstance(inference, dict):
+            failure = WorkerProcessingError(
+                "Pipeline predictions must be a JSON object"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure
+        if inference.get("model_sha256") != artifacts["model_sha256"]:
+            failure = WorkerProcessingError(
+                "Prediction model checksum does not match frozen preflight model"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure
+        metric_names = (
+            "windows",
+            "isolation_forest_flagged",
+            "autoencoder_flagged",
+            "both_flagged",
+        )
+        metrics = {name: inference.get(name) for name in metric_names}
+        if any(
+            type(value) is not int or value < 0
+            for value in metrics.values()
+        ) or metrics["windows"] < 1 or any(
+            metrics[name] > metrics["windows"]
+            for name in metric_names[1:]
+        ):
+            failure = WorkerProcessingError(
+                "Pipeline prediction counts are invalid"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure
+        if metrics["both_flagged"] > min(
+            metrics["isolation_forest_flagged"],
+            metrics["autoencoder_flagged"],
+        ):
+            failure = WorkerProcessingError(
+                "Pipeline consensus count exceeds model anomaly counts"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure
+        result = {
+            "schema_version": WORKER_SCHEMA_VERSION,
+            "run_id": run_id,
+            "pcap_sha256": expected_sha,
+            "model_sha256": artifacts["model_sha256"],
+            "status": "succeeded",
+            "review_status": review_status,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            **metrics,
+            "rule_generated_in_this_run": review.get(
+                "rule_generated_in_this_run"
+            )
+            is True,
+            "deployable": False,
+            "deployed": False,
+        }
+        _write_json_exclusive(output_dir / "worker_summary.json", result)
+        return result
+    finally:
+        os.close(descriptor)
+        lock_path.unlink(missing_ok=True)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pcap", type=Path, required=True)
+    parser.add_argument("--input-root", type=Path, default=DEFAULT_INPUT_ROOT)
     parser.add_argument("--src", required=True)
     parser.add_argument("--dst", required=True)
-    parser.add_argument(
-        "--private-root",
-        type=Path,
-        default=Path("data/private"),
-    )
-    parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--expected-sha256")
-    parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--run-id")
-    parser.add_argument("--es-output", type=Path)
+    parser.add_argument("--private-root", type=Path, default=Path("data/private"))
+    parser.add_argument("--run-id", required=True)
+    checksum = parser.add_mutually_exclusive_group()
+    checksum.add_argument("--expected-sha256")
+    checksum.add_argument("--manifest", type=Path)
+    parser.add_argument("--elasticsearch-url")
     args = parser.parse_args(argv)
 
     try:
         summary = run_worker(
             pcap=args.pcap,
+            input_root=args.input_root,
             src=args.src,
             dst=args.dst,
             private_root=args.private_root,
-            output_dir=args.out_dir,
+            run_id=args.run_id,
             expected_sha=args.expected_sha256,
             manifest_path=args.manifest,
-            run_id=args.run_id,
         )
-    except Exception as exc:  # pragma: no cover - CLI failure path
-        payload = {
-            "schema_version": WORKER_SCHEMA_VERSION,
-            "status": "failed",
-            "error": str(exc),
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        if args.es_output is not None:
-            write_elasticsearch_summary(payload, args.es_output)
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.elasticsearch_url:
+            write_elasticsearch_summary(summary, args.elasticsearch_url)
+    except Exception as exc:
+        print(
+            json.dumps({
+                "schema_version": WORKER_SCHEMA_VERSION,
+                "status": "failed",
+                "error_type": type(exc).__name__,
+                "run_id": args.run_id,
+            }),
+            flush=True,
+        )
         return 1
 
-    if args.es_output is not None:
-        write_elasticsearch_summary(summary, args.es_output)
-
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
     return 0
 
 
