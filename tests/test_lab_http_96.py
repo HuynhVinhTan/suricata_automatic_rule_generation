@@ -25,7 +25,6 @@ class FakeResponse:
             "SYNTHETIC LAB SERVICE\n"
             f"SERVICE_PORT={self.port}\n"
             f"REQUESTED_PATH={self.path}\n"
-            "ENVIRONMENT=AUTHORIZED_LAB_ONLY\n"
         ).encode()
 
 
