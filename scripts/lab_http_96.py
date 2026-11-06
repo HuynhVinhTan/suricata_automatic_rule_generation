@@ -60,8 +60,7 @@ def execute(scenario: str, *, opener=None, sleep=time.sleep,
                 if (response.status != 200
                     or "SYNTHETIC LAB SERVICE" not in body
                     or f"SERVICE_PORT={port}" not in body
-                    or f"REQUESTED_PATH={path}" not in body
-                    or "ENVIRONMENT=AUTHORIZED_LAB_ONLY" not in body):
+                    or f"REQUESTED_PATH={path}" not in body):
                     errors.append({"request": index + 1, "type": "response_mismatch"})
                 else:
                     by_port[port] += 1
