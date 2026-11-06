@@ -204,7 +204,7 @@ def test_receiver_execute_and_idempotent_receipt(tmp_path, monkeypatch):
         assert kwargs["run_id"] == "lab-001"
         folder = kwargs["private_root"] / "lab-runs" / "lab-001"
         folder.mkdir(parents=True)
-        (folder / "worker_summary.json").write_text('{"status":"succeeded"}')
+        (folder / "worker_summary.json").write_text(json.dumps({"status": "succeeded", "pcap_sha256": hashlib.sha256(kwargs["pcap"].read_bytes()).hexdigest()}))
         return {"review_status": "needs_review"}
     monkeypatch.setitem(
         sys.modules, "backend.worker",
@@ -221,6 +221,13 @@ def test_receiver_execute_and_idempotent_receipt(tmp_path, monkeypatch):
         input_root=inbox, private_root=private, run_id="lab-001", execute=True
     )["status"] == "already_processed"
     assert len(calls) == 1
+    # A receipt cannot hide tampered worker provenance.
+    report = private / "lab-runs" / "lab-001" / "worker_summary.json"
+    report.write_text('{"status":"succeeded","pcap_sha256":"tampered"}')
+    with pytest.raises(bridge.HandoffError, match="summary"):
+        bridge.consume(
+            input_root=inbox, private_root=private, run_id="lab-001", execute=True
+        )
 
 
 def test_failed_index_does_not_claim_completion(tmp_path, monkeypatch):
