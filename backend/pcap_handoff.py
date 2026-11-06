@@ -190,8 +190,6 @@ def bundle(
         raise HandoffError("Expected GET count must be nonnegative")
     if capture_kind not in {"raw", "checksum-normalized"}:
         raise HandoffError("Unrecognized capture kind")
-    if not outroot.is_relative_to(inroot) and not inroot.is_relative_to(outroot):
-        pass  # Separate roots are preferred but not required.
     audit = audit_pcap(source, src, dst)
     if audit["initial_syn"] != expected_syn or (
         expected_get is not None and audit["http_get_starts"] != expected_get
@@ -424,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
             ]
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    except Exception as exc:  # Fail closed without printing private paths or exception text.
         print(json.dumps({
             "status": "failed", "error_type": type(exc).__name__,
         }))
