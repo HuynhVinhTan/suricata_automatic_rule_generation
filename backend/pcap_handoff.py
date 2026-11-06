@@ -278,6 +278,8 @@ def send(
         raise HandoffError("Invalid SSH user")
     # Hosts are pinned lab IPv4 addresses, never arbitrary SSH aliases.
     host = str(IPv4Address(remote_host))
+    if host != "192.168.10.30":
+        raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed")
     if not REMOTE_PATH.fullmatch(remote_inbox) or ".." in remote_inbox.split("/"):
         raise HandoffError("Remote inbox must be a safe absolute path")
     target = f"{remote_user}@{host}"
