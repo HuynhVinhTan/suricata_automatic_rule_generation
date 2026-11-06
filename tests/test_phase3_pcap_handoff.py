@@ -171,6 +171,12 @@ def test_transfer_dry_run_never_invokes_ssh(tmp_path, monkeypatch):
             remote_user="tanhv", remote_host="192.168.10.30",
             remote_inbox="/home/tanhv/../../etc", execute=True,
         )
+    with pytest.raises(bridge.HandoffError, match="designated lab VM3"):
+        bridge.send(
+            outbox=opts["outbox"], run_id="lab-001",
+            remote_user="tanhv", remote_host="192.168.10.99",
+            remote_inbox="/home/tanhv/ai-inbox", execute=True,
+        )
 
 
 def test_transfer_publishes_ready_last_with_strict_ssh(tmp_path, monkeypatch):
