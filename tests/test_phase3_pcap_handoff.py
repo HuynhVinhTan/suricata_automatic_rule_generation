@@ -189,7 +189,8 @@ def test_transfer_publishes_ready_last_with_strict_ssh(tmp_path, monkeypatch):
         remote_inbox="/home/tanhv/ai-inbox", execute=True,
     )["status"] == "transferred"
     assert len(commands) == 5  # SSH preflight, three staged scp files, SSH finalize
-    assert commands[-1][-1].index("lab-001.pcap ") < commands[-1][-1].index("lab-001.ready.json ")
+    assert commands[-1][-1].count("ln -T -- ") == 3
+    assert commands[-1][-1].index("ln -T -- /home/tanhv/ai-inbox/lab-001.pcap.partial") < commands[-1][-1].index("ln -T -- /home/tanhv/ai-inbox/lab-001.ready.json.partial")
     assert all(".partial" in commands[i][-1] for i in (1, 2, 3))
 
 
