@@ -330,6 +330,20 @@ def _review_is_safe(review: Mapping[str, Any]) -> str:
     return status
 
 
+def _require_provenance_sha256(
+    artifact: Mapping[str, Any], field: str, expected: str, name: str
+) -> None:
+    value = artifact.get(field)
+    if (
+        not isinstance(value, str)
+        or not SHA256_PATTERN.fullmatch(value)
+        or value.lower() != expected.lower()
+    ):
+        raise WorkerProcessingError(
+            f"{name} {field} provenance is missing, invalid, or mismatched"
+        )
+
+
 def _write_json_exclusive(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as stream:
@@ -688,6 +702,33 @@ def run_worker(
             _record_output_failure(output_dir, run_id, expected_sha, exc)
             raise
 
+        try:
+            feature_path = _safe_artifact(
+                output_dir, Path("syn_windows.csv")
+            )
+            feature_sha256 = sha256_file(feature_path)
+            _require_provenance_sha256(
+                review,
+                "source_pcap_sha256",
+                expected_sha,
+                "Review",
+            )
+            _require_provenance_sha256(
+                review,
+                "feature_csv_sha256",
+                feature_sha256,
+                "Review",
+            )
+        except WorkerProcessingError as exc:
+            _record_output_failure(output_dir, run_id, expected_sha, exc)
+            raise
+        except (OSError, ValueError) as exc:
+            failure = WorkerProcessingError(
+                "Pipeline did not produce a valid feature CSV for provenance"
+            )
+            _record_output_failure(output_dir, run_id, expected_sha, failure)
+            raise failure from exc
+
         if review.get("model_sha256") != artifacts["model_sha256"]:
             failure = WorkerProcessingError(
                 "Review model checksum does not match frozen preflight model"
@@ -712,6 +753,25 @@ def run_worker(
             )
             _record_output_failure(output_dir, run_id, expected_sha, failure)
             raise failure
+        try:
+            _require_provenance_sha256(
+                inference,
+                "input_sha256",
+                feature_sha256,
+                "Prediction",
+            )
+            for field in (
+                "training_performed",
+                "suricata_rule_generated",
+                "rule_deployed",
+            ):
+                if inference.get(field) is not False:
+                    raise WorkerProcessingError(
+                        f"Prediction {field} metadata must be boolean false"
+                    )
+        except WorkerProcessingError as exc:
+            _record_output_failure(output_dir, run_id, expected_sha, exc)
+            raise
         if inference.get("model_sha256") != artifacts["model_sha256"]:
             failure = WorkerProcessingError(
                 "Prediction model checksum does not match frozen preflight model"
