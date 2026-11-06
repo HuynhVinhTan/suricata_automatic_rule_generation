@@ -342,10 +342,15 @@ def consume(
     receipt = root / f"{run_id}.done.json"
     if receipt.exists() or receipt.is_symlink():
         done = _read_json(_file(receipt, root))
+        summary_path = private / "lab-runs" / run_id / "worker_summary.json"
+        summary = _read_json(_file(summary_path, private))
         if (done.get("run_id") != run_id
                 or done.get("pcap_sha256") != document["pcap_sha256"]
-                or done.get("status") != "succeeded"):
-            raise HandoffError("Existing receipt does not match input")
+                or done.get("status") != "succeeded"
+                or done.get("summary_sha256") != _hash(summary_path)
+                or summary.get("status") != "succeeded"
+                or summary.get("pcap_sha256") != document["pcap_sha256"]):
+            raise HandoffError("Existing receipt or worker summary does not match input")
         return {"status": "already_processed", "run_id": run_id}
     if not execute:
         return {"status": "validated_dry_run", "run_id": run_id,
@@ -366,7 +371,7 @@ def consume(
     _json_exclusive(receipt, {
         "run_id": run_id,
         "pcap_sha256": document["pcap_sha256"],
-        "summary_sha256": _hash(private / "lab-runs" / run_id / "worker_summary.json"),
+        "summary_sha256": _hash(_file(private / "lab-runs" / run_id / "worker_summary.json", private)),
         "status": "succeeded",
         "completed_at": _utc(),
     })
