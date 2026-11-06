@@ -113,6 +113,7 @@ def _valid_review(status="needs_review", **overrides):
         "deployable": False,
         "deployed": False,
         "triage": {"auto_approve": False, "auto_deploy": False},
+        "candidate_gate": {"rule_approval_authorized": False},
         "model_sha256": worker.EXPECTED_MODEL_SHA256,
     }
     review.update(overrides)
@@ -271,6 +272,89 @@ def test_review_approval_or_deployment_claim_is_rejected(
     )
     with pytest.raises(worker.WorkerProcessingError):
         worker.run_worker(**values)
+
+
+@pytest.mark.parametrize("field", ["approved", "deployable", "deployed"])
+def test_v0_2_review_requires_top_level_safety_fields(field):
+    review = _valid_review()
+    review.pop(field)
+
+    with pytest.raises(worker.WorkerProcessingError, match=field):
+        worker._review_is_safe(review)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("triage", None),
+        ("triage", "not-an-object"),
+        ("candidate_gate", None),
+        ("candidate_gate", "not-an-object"),
+    ],
+)
+def test_review_rejects_missing_or_malformed_safety_objects(field, value):
+    review = _valid_review()
+    if value is None:
+        review.pop(field)
+    else:
+        review[field] = value
+
+    with pytest.raises(worker.WorkerProcessingError, match=field):
+        worker._review_is_safe(review)
+
+
+@pytest.mark.parametrize(
+    ("object_name", "field"),
+    [
+        ("triage", "auto_approve"),
+        ("triage", "auto_deploy"),
+        ("candidate_gate", "rule_approval_authorized"),
+    ],
+)
+def test_review_requires_nested_safety_fields(object_name, field):
+    review = _valid_review()
+    review[object_name].pop(field)
+
+    with pytest.raises(worker.WorkerProcessingError, match=field):
+        worker._review_is_safe(review)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["false", 0, 1, None, [], {}],
+)
+@pytest.mark.parametrize(
+    ("object_name", "field"),
+    [
+        ("review", "approved"),
+        ("review", "deployable"),
+        ("review", "deployed"),
+        ("triage", "auto_approve"),
+        ("triage", "auto_deploy"),
+        ("candidate_gate", "rule_approval_authorized"),
+    ],
+)
+def test_review_requires_exact_false_for_safety_fields(
+    object_name, field, value
+):
+    review = _valid_review()
+    target = review if object_name == "review" else review[object_name]
+    target[field] = value
+
+    with pytest.raises(worker.WorkerProcessingError):
+        worker._review_is_safe(review)
+
+
+def test_valid_v0_2_review_is_accepted():
+    assert worker._review_is_safe(_valid_review()) == "needs_review"
+
+
+def test_supported_v0_1_review_uses_legacy_schema_contract():
+    review = _valid_review()
+    review["schema_version"] = "lab_rule_review_v0_1"
+    review.pop("approved")
+
+    assert worker._review_is_safe(review) == "needs_review"
 
 
 def test_missing_trusted_checksum_is_rejected(tmp_path, monkeypatch):
