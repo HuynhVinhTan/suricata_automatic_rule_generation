@@ -281,6 +281,16 @@ def send(
     if not REMOTE_PATH.fullmatch(remote_inbox) or ".." in remote_inbox.split("/"):
         raise HandoffError("Remote inbox must be a safe absolute path")
     target = f"{remote_user}@{host}"
+    receipt = root / run_id / f"{run_id}.sent.json"
+    if receipt.exists() or receipt.is_symlink():
+        old = _read_json(_file(receipt, root / run_id))
+        if (old.get("status") != "sent"
+            or old.get("run_id") != run_id
+            or old.get("ready_sha256") != _hash(ready)
+            or old.get("remote") != target
+            or old.get("remote_inbox") != remote_inbox):
+            raise HandoffError("Existing transfer receipt does not match")
+        return {"status": "already_sent", "run_id": run_id, "remote": target}
     remote = [f"{remote_inbox}/{run_id}{suffix}" for suffix in (
         ".pcap", ".manifest.json", ".ready.json",
     )]
@@ -312,6 +322,12 @@ def send(
     final.extend(f"rm -- {shlex.quote(partial)}" for partial in staged)
     subprocess.run(["ssh", *_ssh_options(), target, "; ".join(final)],
                    check=True, timeout=90)
+    # A local acknowledgment; no existing artifact is overwritten.
+    _json_exclusive(receipt, {
+        "status": "sent", "run_id": run_id,
+        "ready_sha256": _hash(ready),
+        "remote": target, "remote_inbox": remote_inbox, "sent_at": _utc(),
+    })
     return {"status": "transferred", "run_id": run_id, "remote": target}
 
 
@@ -374,7 +390,8 @@ def main(argv: list[str] | None = None) -> int:
     seal.add_argument("--capture-kind", choices=("raw", "checksum-normalized"), default="raw")
     transfer = sub.add_parser("send")
     transfer.add_argument("--outbox", type=Path, required=True)
-    transfer.add_argument("--run-id", required=True)
+    transfer.add_argument("--run-id")
+    transfer.add_argument("--all-ready", action="store_true")
     transfer.add_argument("--remote-user", required=True)
     transfer.add_argument("--remote-host", required=True)
     transfer.add_argument("--remote-inbox", required=True)
@@ -397,11 +414,24 @@ def main(argv: list[str] | None = None) -> int:
                 capture_kind=args.capture_kind,
             )
         elif args.command == "send":
-            result = send(
-                outbox=args.outbox, run_id=args.run_id,
-                remote_user=args.remote_user, remote_host=args.remote_host,
-                remote_inbox=args.remote_inbox, execute=args.execute,
+            if args.all_ready == bool(args.run_id):
+                raise HandoffError("Select exactly one of --run-id or --all-ready")
+            outbox = _root(args.outbox)
+            run_ids = (
+                [args.run_id] if args.run_id else
+                sorted(path.name for path in outbox.iterdir()
+                       if path.is_dir() and
+                       (path / f"{path.name}.ready.json").exists())
             )
+            if len(run_ids) > 10:
+                raise HandoffError("Limit each send batch to 10 sealed bundles")
+            result = [
+                send(
+                    outbox=outbox, run_id=rid,
+                    remote_user=args.remote_user, remote_host=args.remote_host,
+                    remote_inbox=args.remote_inbox, execute=args.execute,
+                ) for rid in run_ids
+            ]
         else:
             if args.all_ready == bool(args.run_id):
                 raise HandoffError("Select exactly one of --run-id or --all-ready")
