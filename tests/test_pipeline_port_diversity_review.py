@@ -125,6 +125,10 @@ def test_pipeline_keeps_review_gate_closed(
             json.dumps({
                 "both_flagged": consensus,
                 "model_sha256": "f" * 64,
+                "input_sha256": feature_sha,
+                "training_performed": False,
+                "suricata_rule_generated": False,
+                "rule_deployed": False,
             }),
             encoding="utf-8",
         )

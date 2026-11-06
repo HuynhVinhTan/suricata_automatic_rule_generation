@@ -16,6 +16,12 @@ from backend import worker
 
 SRC = "192.168.10.20"
 DST = "192.168.10.10"
+FEATURE_CSV = (
+    "label,window_index,window_seconds,syn_count,unique_dst_ports\n"
+    "UNLABELED,0,10,1,1\n"
+)
+SOURCE_PCAP_SHA256 = hashlib.sha256(b"synthetic-pcap").hexdigest()
+FEATURE_CSV_SHA256 = hashlib.sha256(FEATURE_CSV.encode("utf-8")).hexdigest()
 
 
 def _sha256(path: Path) -> str:
@@ -108,6 +114,8 @@ def _input(tmp_path: Path):
 def _valid_review(status="needs_review", **overrides):
     review = {
         "schema_version": "lab_rule_review_v0_2",
+        "source_pcap_sha256": SOURCE_PCAP_SHA256,
+        "feature_csv_sha256": FEATURE_CSV_SHA256,
         "status": status,
         "approved": False,
         "deployable": False,
@@ -120,22 +128,34 @@ def _valid_review(status="needs_review", **overrides):
     return review
 
 
-def _successful_processor(review=None):
+def _successful_processor(
+    review=None, *, prediction_overrides=None, omit_prediction_fields=()
+):
     def process(pcap, expected_sha, src, dst, private_root, output_dir):
         assert isinstance(pcap, Path)
         output_dir.mkdir(parents=True, exist_ok=False)
+        feature_path = output_dir / "syn_windows.csv"
+        feature_path.write_bytes(FEATURE_CSV.encode("utf-8"))
         if review is not None:
             (output_dir / "review.json").write_text(
                 json.dumps(review), encoding="utf-8"
             )
+        predictions = {
+            "input_sha256": _sha256(feature_path),
+            "training_performed": False,
+            "suricata_rule_generated": False,
+            "rule_deployed": False,
+            "model_sha256": worker.EXPECTED_MODEL_SHA256,
+            "windows": 1,
+            "isolation_forest_flagged": 0,
+            "autoencoder_flagged": 0,
+            "both_flagged": 0,
+        }
+        predictions.update(prediction_overrides or {})
+        for field in omit_prediction_fields:
+            predictions.pop(field, None)
         (output_dir / "predictions.json").write_text(
-            json.dumps({
-                "model_sha256": worker.EXPECTED_MODEL_SHA256,
-                "windows": 1,
-                "isolation_forest_flagged": 0,
-                "autoencoder_flagged": 0,
-                "both_flagged": 0,
-            }),
+            json.dumps(predictions),
             encoding="utf-8",
         )
     return process
@@ -161,6 +181,10 @@ def test_worker_calls_real_pipeline_with_path(tmp_path, monkeypatch):
             json.dumps({
                 "both_flagged": 0,
                 "model_sha256": worker.EXPECTED_MODEL_SHA256,
+                "input_sha256": feature_sha,
+                "training_performed": False,
+                "suricata_rule_generated": False,
+                "rule_deployed": False,
                 "windows": 1,
                 "isolation_forest_flagged": 0,
                 "autoencoder_flagged": 0,
@@ -507,6 +531,120 @@ def test_review_model_checksum_must_match_preflight(tmp_path, monkeypatch):
         worker.run_worker(**values)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_pcap_sha256", "0" * 64),
+        ("source_pcap_sha256", None),
+        ("source_pcap_sha256", "malformed"),
+        ("feature_csv_sha256", "0" * 64),
+        ("feature_csv_sha256", None),
+        ("feature_csv_sha256", "malformed"),
+    ],
+)
+def test_review_provenance_must_match_input_and_feature_file(
+    tmp_path, monkeypatch, field, value
+):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    values["processor"] = _successful_processor(
+        _valid_review(**{field: value})
+    )
+
+    with pytest.raises(worker.WorkerProcessingError, match="provenance"):
+        worker.run_worker(**values)
+
+
+@pytest.mark.parametrize(
+    "field", ["source_pcap_sha256", "feature_csv_sha256"]
+)
+def test_review_provenance_fields_are_required(tmp_path, monkeypatch, field):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    review = _valid_review()
+    review.pop(field)
+    values["processor"] = _successful_processor(review)
+
+    with pytest.raises(worker.WorkerProcessingError, match="provenance"):
+        worker.run_worker(**values)
+
+
+@pytest.mark.parametrize(
+    ("override", "omitted"),
+    [
+        ({"input_sha256": "0" * 64}, ()),
+        ({}, ("input_sha256",)),
+        ({"input_sha256": "malformed"}, ()),
+    ],
+)
+def test_prediction_feature_provenance_must_match(
+    tmp_path, monkeypatch, override, omitted
+):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    values["processor"] = _successful_processor(
+        _valid_review(),
+        prediction_overrides=override,
+        omit_prediction_fields=omitted,
+    )
+
+    with pytest.raises(worker.WorkerProcessingError, match="provenance"):
+        worker.run_worker(**values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("training_performed", True),
+        ("training_performed", "false"),
+        ("suricata_rule_generated", True),
+        ("suricata_rule_generated", 0),
+        ("rule_deployed", True),
+        ("rule_deployed", None),
+    ],
+)
+def test_prediction_training_and_deployment_flags_must_be_false_booleans(
+    tmp_path, monkeypatch, field, value
+):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    values["processor"] = _successful_processor(
+        _valid_review(),
+        prediction_overrides={field: value},
+    )
+
+    with pytest.raises(worker.WorkerProcessingError, match="metadata"):
+        worker.run_worker(**values)
+
+
+@pytest.mark.parametrize(
+    "field", ["training_performed", "suricata_rule_generated", "rule_deployed"]
+)
+def test_prediction_training_and_deployment_flags_are_required(
+    tmp_path, monkeypatch, field
+):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    values["processor"] = _successful_processor(
+        _valid_review(),
+        omit_prediction_fields=(field,),
+    )
+
+    with pytest.raises(worker.WorkerProcessingError, match="metadata"):
+        worker.run_worker(**values)
+
+
+def test_worker_accepts_complete_provenance_chain(tmp_path, monkeypatch):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    values["processor"] = _successful_processor(_valid_review())
+
+    summary = worker.run_worker(**values)
+
+    assert summary["status"] == "succeeded"
+    assert _sha256(values["output_dir"] / "syn_windows.csv") == FEATURE_CSV_SHA256
+
+
 @pytest.mark.parametrize("predictions", [None, "{invalid json"])
 def test_missing_or_malformed_predictions_fail_closed(
     tmp_path, monkeypatch, predictions
@@ -517,6 +655,7 @@ def test_missing_or_malformed_predictions_fail_closed(
     def process(*args):
         output = values["output_dir"]
         output.mkdir(parents=True, exist_ok=False)
+        (output / "syn_windows.csv").write_bytes(FEATURE_CSV.encode("utf-8"))
         (output / "review.json").write_text(
             json.dumps(_valid_review()), encoding="utf-8"
         )
