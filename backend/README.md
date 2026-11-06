@@ -104,3 +104,33 @@ Compare bounded Attack and Normal replay alerts and record false-alert
 evidence. Syntax success does not approve or deploy a candidate. No Suricata,
 VM, SSH, Elasticsearch, or Kibana service operation has been run by the local
 worker tests.
+
+
+## Phase 3 sealed PCAP transport and Phase 2 capture helpers
+
+New stdlib-only commands are available without enabling any production service
+or installing a scheduled task:
+
+- `python -m backend.pcap_handoff bundle` validates a finalized, SHA256-pinned
+  full-snaplen PCAP and seals a new unique outbox bundle with a worker-compatible
+  manifest and a ready marker.
+- `python -m backend.pcap_handoff send` validates without network access unless
+  `--execute` is supplied; executing uses pinned-host SSH and staged, hash-verified
+  publication of the ready marker last. `--all-ready` supports bounded,
+  idempotent operator-authorized scheduled batches.
+- `python -m backend.pcap_handoff consume` validates the incoming bundle
+  without invoking models unless `--execute` is supplied, then reuses the
+  existing frozen worker and optional dedicated Elasticsearch summary writer.
+- `python -m scripts.lab_http_96 recon-v03 --result-file ...` and
+  `matched12-v02` produce deterministic benign 96-GET lab sessions. Stop
+  capture only when the client prints `SAFE_TO_STOP_CAPTURE: YES`.
+- `python -m scripts.pcap_checksum_normalize` audits TX checksum offload
+  artifacts in dry-run mode, then writes a separately hashed derived copy
+  only with explicit `--execute` and observed checksum-count gate.
+
+The handoff has offline synthetic CI tests, **not a verified deployed VM1/VM3
+connection**. Do not enable automated SSH or processing until the owner
+confirms directories, host key, frozen artifacts, real PCAP checksum integrity
+and one controlled end-to-end acceptance. See:
+[Phase 3 handoff runbook](../docs/PHASE3_PCAP_HANDOFF.md) and
+[Phase 2/3 acceptance status](../docs/PHASE2_PHASE3_ACCEPTANCE_20261107.md).
