@@ -407,43 +407,73 @@ def _write_failure_without_masking(
 def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
     if summary.get("schema_version") != WORKER_SCHEMA_VERSION:
         raise ValueError("Unsupported Elasticsearch summary schema")
-    if summary.get("status") not in {"succeeded", "failed"}:
-        raise ValueError("Invalid worker status for Elasticsearch summary")
+    if summary.get("status") != "succeeded":
+        raise ValueError("Only succeeded worker summaries may be published")
     validate_run_id(summary.get("run_id"))
-    if "review_status" in summary:
-        normalize_review_status(summary["review_status"])
+    required = {
+        "review_status",
+        "pcap_sha256",
+        "model_sha256",
+        "generated_at",
+        "rule_generated_in_this_run",
+        "deployable",
+        "deployed",
+        "windows",
+        "isolation_forest_flagged",
+        "autoencoder_flagged",
+        "both_flagged",
+    }
+    missing = required - set(summary)
+    if missing:
+        raise ValueError(
+            f"Elasticsearch summary is missing required fields: {sorted(missing)}"
+        )
+    normalize_review_status(summary["review_status"])
     for key in ("pcap_sha256", "model_sha256"):
-        if key in summary:
-            if not isinstance(summary[key], str) or not SHA256_PATTERN.fullmatch(
-                summary[key]
-            ):
-                raise ValueError(f"Invalid {key} in Elasticsearch summary")
+        if not isinstance(summary[key], str) or not SHA256_PATTERN.fullmatch(
+            summary[key]
+        ):
+            raise ValueError(f"Invalid {key} in Elasticsearch summary")
     for key in (
         "windows",
         "isolation_forest_flagged",
         "autoencoder_flagged",
         "both_flagged",
     ):
-        if key in summary and (
-            type(summary[key]) is not int or summary[key] < 0
-        ):
+        if type(summary[key]) is not int or summary[key] < 0:
             raise ValueError(f"Invalid {key} in Elasticsearch summary")
+    if (
+        summary["windows"] < 1
+        or any(
+            summary[name] > summary["windows"]
+            for name in (
+                "isolation_forest_flagged",
+                "autoencoder_flagged",
+                "both_flagged",
+            )
+        )
+        or summary["both_flagged"]
+        > min(
+            summary["isolation_forest_flagged"],
+            summary["autoencoder_flagged"],
+        )
+    ):
+        raise ValueError("Invalid prediction counts in Elasticsearch summary")
     generated_at = summary.get("generated_at")
-    if generated_at is not None:
-        if not isinstance(generated_at, str) or len(generated_at) > 64:
-            raise ValueError("Invalid generated_at in Elasticsearch summary")
-        try:
-            datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError(
-                "Invalid generated_at in Elasticsearch summary"
-            ) from exc
+    if not isinstance(generated_at, str) or len(generated_at) > 64:
+        raise ValueError("Invalid generated_at in Elasticsearch summary")
+    try:
+        generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        if generated.utcoffset() is None:
+            raise ValueError("generated_at must include a timezone")
+    except ValueError as exc:
+        raise ValueError(
+            "Invalid generated_at in Elasticsearch summary"
+        ) from exc
     for key in ("deployable", "deployed"):
-        if key in summary and summary[key] is not False:
+        if summary[key] is not False:
             raise ValueError("Refusing to publish an approved or deployed rule claim")
-    if "rule_generated_in_this_run" in summary and type(
-        summary["rule_generated_in_this_run"]
-    ) is not bool:
+    if type(summary["rule_generated_in_this_run"]) is not bool:
         raise ValueError("Invalid rule_generated_in_this_run in Elasticsearch summary")
     allowed = (
         "schema_version",
@@ -465,6 +495,147 @@ def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
     if "review_status" in safe:
         safe["review_status"] = normalize_review_status(safe["review_status"])
     return safe
+
+
+def verify_completed_run(
+    private_root: Path, run_id: str, pcap_sha256: str
+) -> Dict[str, Any]:
+    """Validate persisted worker output before recovery or receipt creation."""
+    run_id = validate_run_id(run_id)
+    if not isinstance(pcap_sha256, str) or not SHA256_PATTERN.fullmatch(
+        pcap_sha256
+    ):
+        raise WorkerProcessingError("Invalid expected PCAP checksum")
+    root = Path(private_root).resolve(strict=True)
+    run_root = root / "lab-runs"
+    output_dir = run_root / run_id
+    if run_root.is_symlink() or output_dir.is_symlink():
+        raise WorkerProcessingError("Completed run output must not use symlinks")
+    try:
+        output_dir.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise WorkerProcessingError(
+            "Completed run output is missing or outside private_root"
+        ) from exc
+    if not output_dir.is_dir():
+        raise WorkerProcessingError("Completed run output is not a directory")
+
+    def read_artifact(relative: str) -> Dict[str, Any]:
+        path = output_dir / relative
+        if path.is_symlink():
+            raise WorkerProcessingError(
+                f"Completed run artifact must not be a symlink: {relative}"
+            )
+        try:
+            _safe_artifact(output_dir, Path(relative))
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise WorkerProcessingError(
+                f"Completed run artifact is missing or invalid: {relative}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise WorkerProcessingError(
+                f"Completed run artifact must be an object: {relative}"
+            )
+        return value
+
+    summary = read_artifact("worker_summary.json")
+    review = read_artifact("review.json")
+    predictions = read_artifact("predictions.json")
+    feature_path = output_dir / "syn_windows.csv"
+    if feature_path.is_symlink():
+        raise WorkerProcessingError(
+            "Completed run feature artifact must not be a symlink"
+        )
+    try:
+        _safe_artifact(output_dir, Path("syn_windows.csv"))
+        feature_sha256 = sha256_file(feature_path)
+        artifacts = preflight_artifacts(root)
+        safe_summary = _safe_summary_fields(summary)
+    except (OSError, ValueError) as exc:
+        raise WorkerProcessingError(
+            "Completed run provenance or frozen artifact validation failed"
+        ) from exc
+
+    generated_at = summary.get("generated_at")
+    if (
+        summary.get("schema_version") != WORKER_SCHEMA_VERSION
+        or summary.get("run_id") != run_id
+        or summary.get("status") != "succeeded"
+        or summary.get("pcap_sha256", "").lower() != pcap_sha256.lower()
+        or summary.get("model_sha256") != artifacts["model_sha256"]
+        or not isinstance(generated_at, str)
+        or summary.get("deployable") is not False
+        or summary.get("deployed") is not False
+        or type(summary.get("rule_generated_in_this_run")) is not bool
+    ):
+        raise WorkerProcessingError(
+            "Completed worker summary identity or review-only safety fields mismatch"
+        )
+    try:
+        review_status = _review_is_safe(review)
+    except WorkerProcessingError:
+        raise
+    if (
+        review_status != summary.get("review_status")
+        or summary.get("rule_generated_in_this_run")
+        is not (review.get("rule_generated_in_this_run") is True)
+    ):
+        raise WorkerProcessingError(
+            "Completed worker summary does not match the review artifact"
+        )
+    try:
+        generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        if generated.utcoffset() is None:
+            raise ValueError
+    except ValueError as exc:
+        raise WorkerProcessingError(
+            "Completed worker summary timestamp is invalid"
+        ) from exc
+    _require_provenance_sha256(
+        review, "source_pcap_sha256", pcap_sha256, "Review"
+    )
+    _require_provenance_sha256(
+        review, "feature_csv_sha256", feature_sha256, "Review"
+    )
+    _require_provenance_sha256(
+        predictions, "input_sha256", feature_sha256, "Prediction"
+    )
+    if (
+        review.get("model_sha256") != artifacts["model_sha256"]
+        or predictions.get("model_sha256") != artifacts["model_sha256"]
+    ):
+        raise WorkerProcessingError(
+            "Completed run model provenance does not match the frozen model"
+        )
+    for field in (
+        "training_performed",
+        "suricata_rule_generated",
+        "rule_deployed",
+    ):
+        if predictions.get(field) is not False:
+            raise WorkerProcessingError(
+                f"Completed run prediction {field} must be boolean false"
+            )
+    metric_names = (
+        "windows",
+        "isolation_forest_flagged",
+        "autoencoder_flagged",
+        "both_flagged",
+    )
+    metrics = {name: predictions.get(name) for name in metric_names}
+    if (
+        any(type(value) is not int or value < 0 for value in metrics.values())
+        or metrics["windows"] < 1
+        or any(metrics[name] > metrics["windows"] for name in metric_names[1:])
+        or metrics["both_flagged"]
+        > min(metrics["isolation_forest_flagged"], metrics["autoencoder_flagged"])
+        or any(summary.get(name) != value for name, value in metrics.items())
+    ):
+        raise WorkerProcessingError(
+            "Completed run prediction counts do not match the summary"
+        )
+    return safe_summary
 
 
 def write_elasticsearch_summary(
@@ -493,14 +664,14 @@ def write_elasticsearch_summary(
     document_id = hashlib.sha256(
         summary["run_id"].encode("utf-8")
     ).hexdigest()
-    endpoint = (
+    document_endpoint = (
         base_url.rstrip("/")
         + "/"
         + urllib.parse.quote(index, safe="")
         + "/_doc/"
         + document_id
-        + "?op_type=create"
     )
+    endpoint = document_endpoint + "?op_type=create"
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(safe_document, sort_keys=True).encode("utf-8"),
@@ -517,9 +688,67 @@ def write_elasticsearch_summary(
             response.read()
     except urllib.error.HTTPError as exc:
         if exc.code == 409:
-            raise ElasticsearchConflictError(
-                "Elasticsearch document already exists"
-            ) from exc
+            get_request = urllib.request.Request(
+                document_endpoint, headers={"Accept": "application/json"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(get_request, timeout=timeout) as response:
+                    if not 200 <= response.status < 300:
+                        raise ElasticsearchConflictError(
+                            "Elasticsearch conflict could not be verified"
+                        )
+                    existing = json.loads(response.read())
+            except ElasticsearchConflictError:
+                raise
+            except urllib.error.HTTPError as get_error:
+                raise ElasticsearchConflictError(
+                    f"Elasticsearch conflict verification returned HTTP {get_error.code}"
+                ) from get_error
+            except (urllib.error.URLError, TimeoutError, OSError) as get_error:
+                raise ElasticsearchConnectionError(
+                    "Elasticsearch conflict verification request failed"
+                ) from get_error
+            except (ValueError, TypeError) as get_error:
+                raise ElasticsearchConflictError(
+                    "Elasticsearch conflict response was invalid"
+                ) from get_error
+            existing_source = existing.get("_source") if isinstance(
+                existing, dict
+            ) else None
+            try:
+                source_matches = (
+                    isinstance(existing_source, dict)
+                    and json.dumps(
+                        existing_source,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                    == json.dumps(
+                        safe_document,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                )
+            except (TypeError, ValueError):
+                source_matches = False
+            if (
+                not isinstance(existing, dict)
+                or existing.get("found") is not True
+                or existing.get("_id") != document_id
+                or existing.get("_index") != index
+                or not source_matches
+            ):
+                raise ElasticsearchConflictError(
+                    "Elasticsearch document exists but does not exactly match"
+                )
+            return {
+                "document_id": document_id,
+                "index": index,
+                "status": "already_exists",
+            }
         raise ElasticsearchWriteError(
             f"Elasticsearch returned HTTP {exc.code}"
         ) from exc

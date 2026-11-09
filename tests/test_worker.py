@@ -645,6 +645,38 @@ def test_worker_accepts_complete_provenance_chain(tmp_path, monkeypatch):
     assert _sha256(values["output_dir"] / "syn_windows.csv") == FEATURE_CSV_SHA256
 
 
+def test_completed_run_verifier_checks_provenance_and_review_safety(tmp_path, monkeypatch):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    values["processor"] = _successful_processor(_valid_review())
+    summary = worker.run_worker(**values)
+
+    verified = worker.verify_completed_run(
+        values["private_root"], values["run_id"], values["expected_sha"]
+    )
+    assert verified == summary
+
+    review_path = values["output_dir"] / "review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["candidate_gate"]["rule_approval_authorized"] = True
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    with pytest.raises(worker.WorkerProcessingError, match="candidate_gate"):
+        worker.verify_completed_run(
+            values["private_root"], values["run_id"], values["expected_sha"]
+        )
+
+    review["candidate_gate"]["rule_approval_authorized"] = False
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    predictions_path = values["output_dir"] / "predictions.json"
+    predictions = json.loads(predictions_path.read_text(encoding="utf-8"))
+    predictions["input_sha256"] = "0" * 64
+    predictions_path.write_text(json.dumps(predictions), encoding="utf-8")
+    with pytest.raises(worker.WorkerProcessingError, match="provenance"):
+        worker.verify_completed_run(
+            values["private_root"], values["run_id"], values["expected_sha"]
+        )
+
+
 @pytest.mark.parametrize("predictions", [None, "{invalid json"])
 def test_missing_or_malformed_predictions_fail_closed(
     tmp_path, monkeypatch, predictions
@@ -719,13 +751,7 @@ def _http_response(status, body=b'{"result":"created"}'):
     return Response()
 
 
-def test_elasticsearch_http_success_uses_stable_id_and_safe_document(monkeypatch):
-    requests = []
-    monkeypatch.setattr(
-        worker.urllib.request,
-        "urlopen",
-        lambda request, timeout: (requests.append((request, timeout)) or _http_response(201)),
-    )
+def _elasticsearch_summary(**overrides):
     summary = {
         "run_id": "run-001",
         "schema_version": worker.WORKER_SCHEMA_VERSION,
@@ -733,12 +759,33 @@ def test_elasticsearch_http_success_uses_stable_id_and_safe_document(monkeypatch
         "review_status": "needs_review",
         "pcap_sha256": "a" * 64,
         "model_sha256": "b" * 64,
-        "source_ipv4": SRC,
-        "destination_ipv4": DST,
-        "output_dir": "C:\\private\\path",
-        "error": "secret exception",
-        "generated_rule": "private rule text",
+        "generated_at": "2026-11-10T00:00:00+00:00",
+        "windows": 1,
+        "isolation_forest_flagged": 0,
+        "autoencoder_flagged": 0,
+        "both_flagged": 0,
+        "rule_generated_in_this_run": False,
+        "deployable": False,
+        "deployed": False,
     }
+    summary.update(overrides)
+    return summary
+
+
+def test_elasticsearch_http_success_uses_stable_id_and_safe_document(monkeypatch):
+    requests = []
+    monkeypatch.setattr(
+        worker.urllib.request,
+        "urlopen",
+        lambda request, timeout: (requests.append((request, timeout)) or _http_response(201)),
+    )
+    summary = _elasticsearch_summary(
+        source_ipv4=SRC,
+        destination_ipv4=DST,
+        output_dir="C:\\private\\path",
+        error="secret exception",
+        generated_rule="private rule text",
+    )
     first = worker.write_elasticsearch_summary(summary, "http://localhost:9200")
     second = worker.write_elasticsearch_summary(summary, "http://localhost:9200")
     assert first == second
@@ -759,12 +806,7 @@ def test_elasticsearch_rejects_non_boolean_rule_generation_metadata(monkeypatch)
     )
     with pytest.raises(ValueError, match="rule_generated_in_this_run"):
         worker.write_elasticsearch_summary(
-            {
-                "schema_version": worker.WORKER_SCHEMA_VERSION,
-                "run_id": "run-001",
-                "status": "succeeded",
-                "rule_generated_in_this_run": "private rule text",
-            },
+            _elasticsearch_summary(rule_generated_in_this_run="private rule text"),
             "http://localhost:9200",
         )
 
@@ -775,33 +817,113 @@ def test_elasticsearch_connection_failure_is_explicit(monkeypatch):
     monkeypatch.setattr(worker.urllib.request, "urlopen", fail)
     with pytest.raises(worker.ElasticsearchConnectionError):
         worker.write_elasticsearch_summary(
-            {
-                "schema_version": worker.WORKER_SCHEMA_VERSION,
-                "run_id": "run-001",
-                "status": "succeeded",
-            },
+            _elasticsearch_summary(),
             "http://localhost:9200",
         )
 
 
-def test_elasticsearch_document_conflict_is_explicit(monkeypatch):
+def test_elasticsearch_conflict_is_accepted_only_after_exact_get(monkeypatch):
+    summary = _elasticsearch_summary()
+    safe_document = worker._safe_summary_fields(summary)
+    document_id = hashlib.sha256(b"run-001").hexdigest()
+    requests = []
+
+    def conflict_then_get(request, timeout):
+        requests.append(request)
+        if request.method == "PUT":
+            raise urllib.error.HTTPError(
+                request.full_url, 409, "conflict", {}, None
+            )
+        return _http_response(200, json.dumps({
+            "_id": document_id,
+            "_index": worker.DEFAULT_ES_INDEX,
+            "found": True,
+            "_source": safe_document,
+        }).encode("utf-8"))
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", conflict_then_get)
+    result = worker.write_elasticsearch_summary(summary, "http://localhost:9200")
+    assert result["status"] == "already_exists"
+    assert len(requests) == 2
+    assert requests[1].method == "GET"
+    assert document_id in requests[1].full_url
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"found": False},
+        {"found": True, "_id": "different", "_source": {}},
+        {
+            "found": True,
+            "_id": hashlib.sha256(b"run-001").hexdigest(),
+            "_index": worker.DEFAULT_ES_INDEX,
+            "_source": {"status": "failed"},
+        },
+    ],
+)
+def test_elasticsearch_conflict_rejects_missing_or_mismatched_get(
+    monkeypatch, document
+):
+    def conflict_then_get(request, timeout):
+        if request.method == "PUT":
+            raise urllib.error.HTTPError(
+                request.full_url, 409, "conflict", {}, None
+            )
+        return _http_response(200, json.dumps(document).encode("utf-8"))
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", conflict_then_get)
+    with pytest.raises(worker.ElasticsearchConflictError):
+        worker.write_elasticsearch_summary(
+            _elasticsearch_summary(),
+            "http://localhost:9200",
+        )
+
+
+def test_elasticsearch_conflict_get_failure_is_not_success(monkeypatch):
     error = urllib.error.HTTPError(
         "http://localhost", 409, "conflict", {}, None
     )
+    def conflict_then_failed_get(request, timeout):
+        if request.method == "PUT":
+            raise error
+        raise urllib.error.URLError("unavailable")
+
     monkeypatch.setattr(
         worker.urllib.request,
         "urlopen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+        conflict_then_failed_get,
     )
-    with pytest.raises(worker.ElasticsearchConflictError):
+    with pytest.raises(worker.ElasticsearchConnectionError):
         worker.write_elasticsearch_summary(
-            {
-                "schema_version": worker.WORKER_SCHEMA_VERSION,
-                "run_id": "run-001",
-                "status": "succeeded",
-            },
+            _elasticsearch_summary(),
             "http://localhost:9200",
         )
+
+
+def test_elasticsearch_conflict_rejects_boolean_for_numeric_summary_field(
+    monkeypatch,
+):
+    summary = _elasticsearch_summary()
+    existing_source = worker._safe_summary_fields(summary)
+    existing_source["windows"] = True
+    document_id = hashlib.sha256(b"run-001").hexdigest()
+
+    def conflict_then_get(request, timeout):
+        if request.method == "PUT":
+            raise urllib.error.HTTPError(
+                request.full_url, 409, "conflict", {}, None
+            )
+        return _http_response(200, json.dumps({
+            "_id": document_id,
+            "_index": worker.DEFAULT_ES_INDEX,
+            "found": True,
+            "_source": existing_source,
+        }).encode("utf-8"))
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", conflict_then_get)
+    with pytest.raises(worker.ElasticsearchConflictError):
+        worker.write_elasticsearch_summary(summary, "http://localhost:9200")
 
 
 def test_elasticsearch_server_error_is_explicit(monkeypatch):
@@ -815,11 +937,7 @@ def test_elasticsearch_server_error_is_explicit(monkeypatch):
     )
     with pytest.raises(worker.ElasticsearchWriteError, match="HTTP 500"):
         worker.write_elasticsearch_summary(
-            {
-                "schema_version": worker.WORKER_SCHEMA_VERSION,
-                "run_id": "run-001",
-                "status": "succeeded",
-            },
+            _elasticsearch_summary(),
             "http://localhost:9200",
         )
 
