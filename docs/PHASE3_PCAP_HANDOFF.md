@@ -14,9 +14,10 @@ The bundle contains `<run-id>.pcap`, `<run-id>.manifest.json` and `<run-id>.read
 
 - Explicit independently verified PCAP SHA256 and expected SYN count (plus optional GET count) gate sealing. This rejects the known incomplete Recon V02 (93 SYN / 93 GET instead of 96). Classic Ethernet PCAP with full snaplen, complete records and at least one initial SYN is required. Max 512 MiB. PCAP-NG and other link types are not accepted.
 - `bundle` refuses existing run IDs, copies source bytes without altering them, verifies source and copy hashes, publishes ready last. Failure leaves evidence without a ready marker. Input symlinks/path escapes are refused.
-- `send` is a dry-run without `--execute`. Execution requires an existing authorized VM3 incoming directory, pinned SSH host key and noninteractive SSH. It stages into `.partial`, verifies remote hashes and publishes files without overwrite, `.ready.json` last. Successful transfers have local `.sent.json` acknowledgments; repeated batches skip already sent bundles.
-- `consume` is a dry-run without `--execute`. It checks PCAP, manifest and ready hashes again, runs existing frozen worker, optionally indexes only its summary, then writes `.done.json`. Existing failed or partially processed run IDs remain blocked. Never retrain, automatically approve or deploy a rule.
-- Both scheduled batch modes accept at most 10 items per invocation. A commit does not activate any timer or transfer.
+- `send` is a dry-run without `--execute`. Execution requires an existing authorized VM3 incoming directory, pinned SSH host key and noninteractive SSH. It stages into `.partial`, verifies remote hashes and publishes files without overwrite, `.ready.json` last. Successful transfers have local `.sent.json` acknowledgments. Every existing acknowledgment is checked against its bundle and destination before being skipped; inconsistent receipts stop the batch. Failed/incomplete remote transfers are not auto-deleted.
+- `consume` is a dry-run without `--execute`. It checks PCAP, manifest and ready hashes again, runs the existing frozen worker, optionally indexes only its summary, then writes `.done.json`. If worker output exists without a receipt, the receiver validates summary identity/checksum, frozen-model and feature/prediction provenance, and review-only safety fields. Valid completed output can be published/reconciled without rerunning the worker; incomplete, failed or mismatched output remains blocked and is not overwritten.
+- Each `--all-ready` invocation considers at most 10 **pending** runs, after validating all existing receipts and bundles; completed historical runs do not consume the limit. Inconsistent/orphan receipts fail the batch rather than being silently skipped.
+- Elasticsearch `409` is accepted only after an explicit GET confirms the stable document ID, index and exact allowlisted summary content. Missing, unreachable or conflicting documents fail closed. No timer is enabled by these commands or tests.
 
 ## Before connecting VMs
 
@@ -60,7 +61,7 @@ python3 -m backend.pcap_handoff consume \
   --run-id normal-independent-v02-normalized
 ~~~
 
-Then repeat with `--execute`, once the existing frozen-artifact worker preflight passes. To also write the dedicated summary, append `--elasticsearch-url http://192.168.10.30:9200` only after confirming the actual VM3 Elasticsearch endpoint and access. 409/conflict or connection failure needs audit; never force a duplicate run.
+Then repeat with `--execute`, once the existing frozen-artifact worker preflight passes. To also write the dedicated summary, append `--elasticsearch-url http://192.168.10.30:9200` only after confirming the actual VM3 Elasticsearch endpoint and access. A matching 409 is verified by GET; all other conflict or connection outcomes fail closed and need investigation. Never force a duplicate run.
 
 ## Optional automation after single-run acceptance
 

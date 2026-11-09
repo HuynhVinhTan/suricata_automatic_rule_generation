@@ -37,6 +37,15 @@ def _utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _valid_timestamp(value: object) -> bool:
+    if not isinstance(value, str) or len(value) > 64:
+        return False
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).utcoffset() is not None
+    except ValueError:
+        return False
+
+
 def _run_id(value: str) -> str:
     if not RUN_ID.fullmatch(value):
         raise HandoffError("Unsafe run ID")
@@ -284,14 +293,9 @@ def send(
         raise HandoffError("Remote inbox must be a safe absolute path")
     target = f"{remote_user}@{host}"
     receipt = root / run_id / f"{run_id}.sent.json"
-    if receipt.exists() or receipt.is_symlink():
-        old = _read_json(_file(receipt, root / run_id))
-        if (old.get("status") != "sent"
-            or old.get("run_id") != run_id
-            or old.get("ready_sha256") != _hash(ready)
-            or old.get("remote") != target
-            or old.get("remote_inbox") != remote_inbox):
-            raise HandoffError("Existing transfer receipt does not match")
+    if _validate_sent_receipt(
+        root / run_id, run_id, ready, target, remote_inbox
+    ):
         return {"status": "already_sent", "run_id": run_id, "remote": target}
     remote = [f"{remote_inbox}/{run_id}{suffix}" for suffix in (
         ".pcap", ".manifest.json", ".ready.json",
@@ -333,6 +337,56 @@ def send(
     return {"status": "transferred", "run_id": run_id, "remote": target}
 
 
+def _validate_sent_receipt(
+    run_root: Path, run_id: str, ready: Path, target: str, remote_inbox: str
+) -> bool:
+    receipt = run_root / f"{run_id}.sent.json"
+    if not receipt.exists() and not receipt.is_symlink():
+        return False
+    old = _read_json(_file(receipt, run_root))
+    if (
+        set(old) != {
+            "status", "run_id", "ready_sha256", "remote", "remote_inbox",
+            "sent_at",
+        }
+        or old.get("status") != "sent"
+        or old.get("run_id") != run_id
+        or old.get("ready_sha256") != _hash(ready)
+        or old.get("remote") != target
+        or old.get("remote_inbox") != remote_inbox
+        or not _valid_timestamp(old.get("sent_at"))
+    ):
+        raise HandoffError("Existing transfer receipt is inconsistent with the bundle or destination")
+    return True
+
+
+def _validate_done_receipt(
+    root: Path, private: Path, run_id: str, pcap_sha256: str
+) -> dict:
+    receipt = root / f"{run_id}.done.json"
+    done = _read_json(_file(receipt, root))
+    summary_path = _file(
+        private / "lab-runs" / run_id / "worker_summary.json", private
+    )
+    from backend import worker
+
+    summary = worker.verify_completed_run(private, run_id, pcap_sha256)
+    if (
+        set(done) != {
+            "run_id", "pcap_sha256", "summary_sha256", "status",
+            "completed_at",
+        }
+        or done.get("run_id") != run_id
+        or done.get("pcap_sha256") != pcap_sha256
+        or not SHA256.fullmatch(str(done.get("summary_sha256", "")))
+        or done.get("status") != "succeeded"
+        or done.get("summary_sha256") != _hash(summary_path)
+        or not _valid_timestamp(done.get("completed_at"))
+    ):
+        raise HandoffError("Existing completion receipt or summary is inconsistent")
+    return summary
+
+
 def consume(
     *, input_root: Path, private_root: Path, run_id: str,
     execute: bool, elasticsearch_url: str | None = None,
@@ -343,42 +397,127 @@ def consume(
     pcap, manifest, _, document = verified_bundle(root, run_id)
     receipt = root / f"{run_id}.done.json"
     if receipt.exists() or receipt.is_symlink():
-        done = _read_json(_file(receipt, root))
-        summary_path = private / "lab-runs" / run_id / "worker_summary.json"
-        summary = _read_json(_file(summary_path, private))
-        if (done.get("run_id") != run_id
-                or done.get("pcap_sha256") != document["pcap_sha256"]
-                or done.get("status") != "succeeded"
-                or done.get("summary_sha256") != _hash(summary_path)
-                or summary.get("status") != "succeeded"
-                or summary.get("pcap_sha256") != document["pcap_sha256"]):
-            raise HandoffError("Existing receipt or worker summary does not match input")
+        _validate_done_receipt(
+            root, private, run_id, document["pcap_sha256"]
+        )
         return {"status": "already_processed", "run_id": run_id}
+    output_dir = private / "lab-runs" / run_id
+    has_output = output_dir.exists() or output_dir.is_symlink()
     if not execute:
+        if has_output:
+            from backend import worker
+
+            worker.verify_completed_run(private, run_id, document["pcap_sha256"])
+            return {"status": "recovery_ready", "run_id": run_id}
         return {"status": "validated_dry_run", "run_id": run_id,
                 "pcap_sha256": document["pcap_sha256"]}
     # Import the worker only on VM3; VM1 requires stdlib only.
     from backend import worker
-    summary = worker.run_worker(
-        pcap=pcap,
-        input_root=root,
-        src=document["source_ipv4"],
-        dst=document["destination_ipv4"],
-        private_root=private,
-        run_id=run_id,
-        manifest_path=manifest,
-    )
+    if has_output:
+        summary = worker.verify_completed_run(
+            private, run_id, document["pcap_sha256"]
+        )
+        recovered = True
+    else:
+        worker.run_worker(
+            pcap=pcap,
+            input_root=root,
+            src=document["source_ipv4"],
+            dst=document["destination_ipv4"],
+            private_root=private,
+            run_id=run_id,
+            manifest_path=manifest,
+        )
+        summary = worker.verify_completed_run(
+            private, run_id, document["pcap_sha256"]
+        )
+        recovered = False
     if elasticsearch_url:
         worker.write_elasticsearch_summary(summary, elasticsearch_url)
     _json_exclusive(receipt, {
         "run_id": run_id,
         "pcap_sha256": document["pcap_sha256"],
-        "summary_sha256": _hash(_file(private / "lab-runs" / run_id / "worker_summary.json", private)),
+        "summary_sha256": _hash(_file(
+            private / "lab-runs" / run_id / "worker_summary.json", private
+        )),
         "status": "succeeded",
         "completed_at": _utc(),
     })
-    return {"status": "processed", "run_id": run_id,
+    return {"status": "recovered" if recovered else "processed", "run_id": run_id,
             "review_status": summary["review_status"]}
+
+
+def _pending_send_ids(
+    outbox: Path, target: str, remote_inbox: str
+) -> list[str]:
+    pending = []
+    for folder in sorted(outbox.iterdir(), key=lambda path: path.name):
+        if not folder.is_dir():
+            continue
+        ready = folder / f"{folder.name}.ready.json"
+        receipt = folder / f"{folder.name}.sent.json"
+        has_ready = ready.exists() or ready.is_symlink()
+        has_receipt = receipt.exists() or receipt.is_symlink()
+        if has_receipt and not has_ready:
+            raise HandoffError("Transfer receipt exists without a ready bundle")
+        if not has_ready:
+            continue
+        _, _, verified_ready, _ = verified_bundle(folder, folder.name)
+        if not _validate_sent_receipt(
+            folder, folder.name, verified_ready, target, remote_inbox
+        ):
+            pending.append(folder.name)
+    return pending[:10]
+
+
+def _pending_consume_ids(root: Path, private: Path) -> list[str]:
+    pending = []
+    ready_paths = sorted(root.glob("*.ready.json"))
+    ready_ids = {path.name[:-len(".ready.json")] for path in ready_paths}
+    for done in root.glob("*.done.json"):
+        run_id = done.name[:-len(".done.json")]
+        if run_id not in ready_ids:
+            raise HandoffError("Completion receipt exists without a ready bundle")
+    for ready in ready_paths:
+        run_id = ready.name[:-len(".ready.json")]
+        _, _, _, document = verified_bundle(root, run_id)
+        receipt = root / f"{run_id}.done.json"
+        if receipt.exists() or receipt.is_symlink():
+            _validate_done_receipt(
+                root, private, run_id, document["pcap_sha256"]
+            )
+        else:
+            pending.append(run_id)
+    return pending[:10]
+
+
+def _safe_diagnostic(exc: Exception) -> str:
+    if isinstance(exc, HandoffError):
+        return str(exc)
+    if isinstance(exc, subprocess.CalledProcessError):
+        return (
+            "SSH/SCP failed; verify pinned host identity, connectivity, remote "
+            "directory permissions, and any retained .partial files."
+        )
+    if isinstance(exc, OSError):
+        return (
+            "Local artifact access failed; verify permissions and available "
+            "disk space. Preserve existing files and receipts."
+        )
+    if type(exc).__name__.startswith("Elasticsearch"):
+        return (
+            "Elasticsearch publish or verification failed; verify service "
+            "availability and inspect the stable document before retrying."
+        )
+    if type(exc).__name__ == "WorkerProcessingError":
+        return (
+            "Worker output failed provenance or review-safety validation; "
+            "preserve the run artifacts for inspection and do not rerun it."
+        )
+    return (
+        "Operation failed; inspect the reported artifact or service state "
+        "before retrying. Existing artifacts were not intentionally removed."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -424,14 +563,19 @@ def main(argv: list[str] | None = None) -> int:
             if args.all_ready == bool(args.run_id):
                 raise HandoffError("Select exactly one of --run-id or --all-ready")
             outbox = _root(args.outbox)
-            run_ids = (
-                [args.run_id] if args.run_id else
-                sorted(path.name for path in outbox.iterdir()
-                       if path.is_dir() and
-                       (path / f"{path.name}.ready.json").exists())
-            )
-            if len(run_ids) > 10:
-                raise HandoffError("Limit each send batch to 10 sealed bundles")
+            if args.run_id:
+                run_ids = [args.run_id]
+            else:
+                if not SSH_USER.fullmatch(args.remote_user):
+                    raise HandoffError("Invalid SSH user")
+                host = str(IPv4Address(args.remote_host))
+                if host != "192.168.10.30":
+                    raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed")
+                if not REMOTE_PATH.fullmatch(args.remote_inbox) or ".." in args.remote_inbox.split("/"):
+                    raise HandoffError("Remote inbox must be a safe absolute path")
+                run_ids = _pending_send_ids(
+                    outbox, f"{args.remote_user}@{host}", args.remote_inbox
+                )
             result = [
                 send(
                     outbox=outbox, run_id=rid,
@@ -443,13 +587,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.all_ready == bool(args.run_id):
                 raise HandoffError("Select exactly one of --run-id or --all-ready")
             root = _root(args.input_root)
-            run_ids = (
-                [args.run_id] if args.run_id else
-                sorted(path.name[:-len(".ready.json")]
-                       for path in root.glob("*.ready.json"))
-            )
-            if len(run_ids) > 10:
-                raise HandoffError("Limit each batch to 10 ready bundles")
+            if args.run_id:
+                run_ids = [args.run_id]
+            else:
+                run_ids = _pending_consume_ids(
+                    root, _root(args.private_root)
+                )
             result = [
                 consume(
                     input_root=root, private_root=args.private_root,
@@ -459,9 +602,10 @@ def main(argv: list[str] | None = None) -> int:
             ]
         print(json.dumps(result, sort_keys=True))
         return 0
-    except Exception as exc:  # Fail closed without printing private paths or exception text.
+    except Exception as exc:
         print(json.dumps({
             "status": "failed", "error_type": type(exc).__name__,
+            "diagnostic": _safe_diagnostic(exc),
         }))
         return 1
 
