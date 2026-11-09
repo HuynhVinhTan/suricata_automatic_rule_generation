@@ -105,12 +105,17 @@ evidence. Syntax success does not approve or deploy a candidate. No Suricata,
 VM, SSH, Elasticsearch, or Kibana service operation has been run by the local
 worker tests.
 
-
 ## Phase 3 sealed PCAP transport and Phase 2 capture helpers
 
 New stdlib-only commands are available without enabling any production service
 or installing a scheduled task:
 
+- `python -m backend.pcap_capture --duration-seconds 60` is a separate,
+  Linux-only, opt-in VM1 capture helper. Its fixed interface/BPF, 60-second
+  maximum, hard file-size and retention caps, 3 GiB disk preflight, private
+  capture root, and post-capture audit are documented in the runbook below.
+  It does not change Suricata EVE collection and its timer example is not
+  enabled by this repository.
 - `python -m backend.pcap_handoff bundle` validates a finalized, SHA256-pinned
   full-snaplen PCAP and seals a new unique outbox bundle with a worker-compatible
   manifest and a ready marker.
