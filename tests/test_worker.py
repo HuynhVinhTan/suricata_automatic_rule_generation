@@ -857,6 +857,34 @@ def test_safe_summary_rejects_unknown_hybrid_classification():
         )
 
 
+def test_safe_summary_accepts_explicit_false_approval():
+    safe = worker._safe_summary_fields(_elasticsearch_summary(approved=False))
+
+    assert safe["approved"] is False
+
+
+@pytest.mark.parametrize("value", [True, 0, "false", None])
+def test_safe_summary_rejects_non_false_approval(value):
+    with pytest.raises(ValueError, match="approved"):
+        worker._safe_summary_fields(_elasticsearch_summary(approved=value))
+
+
+def test_safe_summary_keeps_historical_document_without_approval():
+    safe = worker._safe_summary_fields(_elasticsearch_summary())
+
+    assert "approved" not in safe
+
+
+def test_hybrid_classification_mismatch_is_rejected():
+    with pytest.raises(ValueError, match="do not match"):
+        worker.validate_hybrid_classification_match(
+            _elasticsearch_summary(
+                hybrid_classification="reconnaissance_consistent"
+            ),
+            {"hybrid_review": {"classification": "anomalous_not_reconnaissance"}},
+        )
+
+
 def test_elasticsearch_rejects_non_boolean_rule_generation_metadata(monkeypatch):
     monkeypatch.setattr(
         worker.urllib.request,

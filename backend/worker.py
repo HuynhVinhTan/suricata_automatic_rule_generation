@@ -97,6 +97,23 @@ def normalize_hybrid_classification(value: Any) -> str:
     return value
 
 
+def validate_hybrid_classification_match(
+    summary: Mapping[str, Any], review: Mapping[str, Any]
+) -> str:
+    summary_classification = normalize_hybrid_classification(
+        summary.get("hybrid_classification")
+    )
+    hybrid_review = review.get("hybrid_review")
+    if not isinstance(hybrid_review, Mapping):
+        raise ValueError("Review is missing hybrid_review")
+    review_classification = normalize_hybrid_classification(
+        hybrid_review.get("classification")
+    )
+    if summary_classification != review_classification:
+        raise ValueError("Worker and review hybrid classifications do not match")
+    return summary_classification
+
+
 def load_manifest(path: Path) -> Dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
@@ -516,6 +533,8 @@ def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
     normalize_review_status(summary["review_status"])
     if "hybrid_classification" in summary:
         normalize_hybrid_classification(summary["hybrid_classification"])
+    if "approved" in summary and summary["approved"] is not False:
+        raise ValueError("Refusing to publish an approved rule claim")
     for key in ("pcap_sha256", "model_sha256"):
         if not isinstance(summary[key], str) or not SHA256_PATTERN.fullmatch(
             summary[key]
@@ -578,6 +597,7 @@ def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
         "deployable",
         "deployed",
         "hybrid_classification",
+        "approved",
     )
     safe = {key: summary[key] for key in allowed if key in summary}
     if "review_status" in safe:
