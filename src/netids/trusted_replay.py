@@ -7,6 +7,7 @@ A trusted replay key is held separately on the VM1 operator account.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -57,6 +58,10 @@ def _config_safe(config_path: Path, root: Path) -> str:
         raise ReplayGateError("Invalid isolated YAML configuration") from exc
     if not isinstance(data, dict):
         raise ReplayGateError("Isolated YAML is not an object")
+    for capture_section in ("af-packet", "pcap"):
+        for entry in data.get(capture_section, []):
+            if isinstance(entry, dict) and entry.get("interface") not in ("lo", None):
+                raise ReplayGateError("Isolated YAML references a non-loopback capture interface")
     outputs = data.get("outputs")
     if not isinstance(outputs, list):
         raise ReplayGateError("Isolated YAML must configure outputs")
@@ -76,6 +81,8 @@ def _config_safe(config_path: Path, root: Path) -> str:
                     or any(bad in filename for bad in _BAD_PATHS)
                 ):
                     raise ReplayGateError("Unsafe absolute or traversal output path")
+            if name in ("syslog", "alert-syslog") and opts.get("enabled", True) is not False:
+                raise ReplayGateError("Isolated YAML may not emit syslog")
             if name == "eve-log" and opts.get("enabled", True) is not False:
                 eve_enabled = opts.get("filename") == "eve.json"
     if not eve_enabled:
@@ -149,6 +156,23 @@ def attest_six_holdouts(
         or manifest.get("decision_manifest_sha256") != DECISION_SHA
     ):
         raise ReplayGateError("Frozen provenance mismatch")
+    candidate_id = manifest.get("candidate_id")
+    candidate_run_id = manifest.get("run_id")
+    candidate_pcap = manifest.get("pcap_sha256")
+    if (
+        not isinstance(candidate_run_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", candidate_run_id)
+        or not isinstance(candidate_id, str)
+        or not _HEX.fullmatch(candidate_id)
+        or candidate_id != hashlib.sha256(
+            f"{candidate_run_id}:{SID}:{RULE_SHA}".encode()
+        ).hexdigest()
+        or candidate_pcap not in {
+            digest for scenario, digest in EXPECTED_CASES.values()
+            if scenario == "attack"
+        }
+    ):
+        raise ReplayGateError("Candidate identity or source PCAP is not pinned to an original attack holdout")
     case_list = manifest.get("cases")
     if not isinstance(case_list, list) or len(case_list) != 6:
         raise ReplayGateError("Exactly six original holdouts required")
