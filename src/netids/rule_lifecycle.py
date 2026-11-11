@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from netids.lifecycle_attestation import verify_attestation
+from netids.lifecycle_ed25519 import verify_record as verify_ed25519_record
 from netids.rulegen import REJECTED_SIDS, collect_sids
 
 
@@ -71,6 +72,7 @@ class RuleLifecycle:
         existing_sids=(),
         replay_verification_key: bytes | None = None,
         owner_verification_key: bytes | None = None,
+        attestation_mode: str = "ed25519",
     ):
         self.audit_path = Path(audit_path)
         raw_root = Path(isolated_root or self.audit_path.parent / "isolated-lab")
@@ -92,6 +94,9 @@ class RuleLifecycle:
             raise LifecycleError("Isolated root overlaps protected Suricata paths")
         self.isolated_root.mkdir(parents=True, exist_ok=True)
         self.existing_sids = set(existing_sids)
+        if attestation_mode not in ("ed25519", "legacy-hmac"):
+            raise LifecycleError("Unknown attestation verification mode")
+        self.attestation_mode = attestation_mode
         self.replay_verification_key = replay_verification_key
         self.owner_verification_key = owner_verification_key
         if (
@@ -161,6 +166,11 @@ class RuleLifecycle:
         finally:
             lock_path.unlink(missing_ok=True)
 
+    def _verified(self, record: dict, key: bytes | None, domain: str) -> bool:
+        if self.attestation_mode == "ed25519":
+            return verify_ed25519_record(record, key, domain=domain) if key else False
+        return verify_attestation(record, key, domain=domain)
+
     def verify_audit(self) -> int:
         """Verify every on-disk record before reporting how many exist."""
         return len(self._audit_records())
@@ -227,7 +237,7 @@ class RuleLifecycle:
             raise LifecycleError("Sensitive transition requires verified lifecycle operation")
         if state == "AWAITING_APPROVAL":
             evidence = candidate.get("validation")
-            if not verify_attestation(
+            if not self._verified(
                 evidence, self.replay_verification_key, domain="isolated-replay-v1"
             ):
                 raise LifecycleError("Authenticated replay evidence is required")
@@ -260,7 +270,7 @@ class RuleLifecycle:
             or evidence["normal_false_positive_count"] != 0
         ):
             raise LifecycleError("Invalid isolated replay results")
-        if not verify_attestation(
+        if not self._verified(
             evidence, self.replay_verification_key, domain="isolated-replay-v1"
         ):
             raise LifecycleError("Authenticated replay attestation required")
@@ -298,7 +308,7 @@ class RuleLifecycle:
             or expires - approved > timedelta(hours=24)
         ):
             raise LifecycleError("Authorization expired, invalid or not yet valid")
-        if not verify_attestation(
+        if not self._verified(
             authorization, self.owner_verification_key,
             domain="isolated-owner-approval-v1",
         ):
@@ -353,7 +363,7 @@ class RuleLifecycle:
         self._valid_authorization(
             candidate, candidate.get("approval"), operation="activate" if activate else "stage",
         )
-        if not verify_attestation(
+        if not self._verified(
             candidate.get("validation"), self.replay_verification_key,
             domain="isolated-replay-v1",
         ):
