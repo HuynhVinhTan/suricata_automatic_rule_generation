@@ -15,7 +15,7 @@ def _hash(payload: bytes) -> str:
 
 def _sources(tmp_path, *, sid=9103999):
     artifact = tmp_path / "existing-worker-output"
-    artifact.mkdir()
+    artifact.mkdir(parents=True)
     rule = (
         f'alert tcp any any -> 192.0.2.10 any '
         f'(msg:"synthetic review artifact"; sid:{sid}; rev:1;)'
