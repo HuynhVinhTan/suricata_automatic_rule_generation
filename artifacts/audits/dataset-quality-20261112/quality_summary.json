@@ -1,0 +1,15 @@
+{
+  "audit": "streaming_read_only_dataset_quality_v1",
+  "source_files_unchanged": true,
+  "datasets": [
+    {"dataset": "UNSW-NB15", "path": "data/raw/unsw-nb15/UNSW_NB15_training-set.csv", "bytes": 32293018, "records": 175341, "sha256": "bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa", "label_distribution": {"0": 56000, "1": 119341}, "contradictory_selected_feature_labels": 298},
+    {"dataset": "UNSW-NB15", "path": "data/raw/unsw-nb15/UNSW_NB15_testing-set.csv", "bytes": 15380800, "records": 82332, "sha256": "734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559", "label_distribution": {"0": 37000, "1": 45332}, "contradictory_selected_feature_labels": 129},
+    {"dataset": "CIC-IDS2017", "path": "data/raw/cic-ids2017/Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv", "bytes": 77123859, "records": 225745, "sha256": "6ff1580f5f81c0ae28a26f7631721018577f5f7c5e0feac28b795fcfe7b411ee", "labels": {"BENIGN": 97718, "DDoS": 128027}, "nonfinite_rate_values": {"Flow Bytes/s": 34, "Flow Packets/s": 34}},
+    {"dataset": "CIC-IDS2017", "path": "data/raw/cic-ids2017/Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv", "bytes": 76906168, "records": 286467, "sha256": "ca1824c51bfbb7b3c72290a11be04366ba8815878c6a1cc5c44cb1cee269e99b", "labels": {"BENIGN": 127537, "PortScan": 158930}, "nonfinite_rate_values": {"Flow Bytes/s": 371, "Flow Packets/s": 371}},
+    {"dataset": "CTU-13", "path": "data/raw/ctu-13/capture20110815-2.binetflow", "bytes": 17766203, "records": 129832, "sha256": "ef5c9ed6895d4ca5aec723449dae30054ccd1f6b091713a52ffcb681ff78a02c", "timestamp_format": "YYYY/MM/DD HH:MM:SS.ffffff", "duplicate_check": "BLOCKED_LOW_DISK"},
+    {"dataset": "CTU-13", "path": "data/raw/ctu-13/capture20110817.binetflow", "bytes": 285841002, "records": 2087508, "sha256": "c8de257b6207ec3624467da62e91841073256fbdad5434db5eb5667588178bab", "timestamp_format": "YYYY/MM/DD HH:MM:SS.ffffff", "duplicate_check": "BLOCKED_LOW_DISK"},
+    {"dataset": "CTU-13", "path": "data/raw/ctu-13/capture20110818-2.binetflow", "bytes": 14596615, "records": 107251, "sha256": "cee542d4b5efe4fa1cd59b87ece5aaea9a13d8f0abe56cd07cee31590736428c", "timestamp_format": "YYYY/MM/DD HH:MM:SS.ffffff", "duplicate_check": "BLOCKED_LOW_DISK"},
+    {"dataset": "CTU-13", "path": "data/raw/ctu-13/capture20110819.binetflow", "bytes": 44718958, "records": 325471, "sha256": "1098f0addacedc321c7baefad63ef0d9a0f26630d0155087d37e8da770dd9f2e", "timestamp_format": "YYYY/MM/DD HH:MM:SS.ffffff", "duplicate_check": "BLOCKED_LOW_DISK"}
+  ],
+  "limitations": ["CTU SQLite duplicate/contradiction checks require more temporary disk; no result is inferred.", "Exact feature equality does not prove shared sessions or host/time leakage."]
+}

@@ -19,6 +19,8 @@ Branch: `feat/pcap-ai-worker-integration`
 | Baseline versus augmented improvement | PASS for proxy gate | Baseline candidate 0/6 sessions; augmented candidate 3/3 Attack and 0/3 Normal |
 | Milestone 6 PCAP/EVE/worker correlation | PASS for six lab experiments | Six event/flow-verified envelopes and six exact Elasticsearch read-backs; 303 matching EVE events and 144 matching flows; four historical AI-summary documents preserved |
 | tcpdump capability cleanup | PASS | VM1 `getcap -v /usr/bin/tcpdump` returned `/usr/bin/tcpdump` only |
+| Dataset inventory and quality audit | CONDITIONAL | UNSW, CIC and CTU raw files inventoried and hashed; CIC non-finite rates and UNSW feature-vector label contradictions recorded; largest CTU duplicate audit awaits more temporary disk |
+| Rule lifecycle safety | PASS for review-only code | Explicit provenance-bound state machine, approval gate, dry-run staging and rollback audit; active isolated-lab installation remains pending owner approval |
 
 The six holdouts are controlled-lab evidence, not a production accuracy claim.
 The complete-hybrid-in-Suricata criterion is not met; the review-only RST proxy
