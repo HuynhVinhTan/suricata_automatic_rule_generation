@@ -13,6 +13,7 @@ dependencies = [
     "scikit-learn",
     "joblib",
     "cryptography>=42",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
