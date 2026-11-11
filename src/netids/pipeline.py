@@ -18,17 +18,9 @@ from netids.rulegen import (
 )
 from netids.port_diversity import analyze_port_diversity, read_pcap_syn
 from netids.hybrid_review import calibrate_hybrid_thresholds, evaluate_hybrid
+from netids.hybrid_provenance import load_calibration_provenance
 from netids.rst_evidence import analyze_rst_evidence
 from netids.tcp_handshake import summarize_tcp_handshake
-
-
-_AUDITED_NORMAL_PCAPS = (
-    ("normal-batch-v01/normal-train.pcap", "192.168.10.20", "192.168.10.10"),
-    ("normal-batch-v01/normal-cal.pcap", "192.168.10.20", "192.168.10.10"),
-    ("normal-independent-20261031-v01/normal-independent.pcap", "192.168.10.20", "192.168.10.10"),
-    ("normal-matched12-20261031-v01/normal-matched12.pcap", "192.168.10.20", "192.168.10.10"),
-    ("normal-multiport-20261031-v01/normal-multiport.pcap", "192.168.10.20", "192.168.10.10"),
-)
 
 
 def _complete_capture_metadata(metadata):
@@ -41,29 +33,19 @@ def _complete_capture_metadata(metadata):
     }
 
 
-def _hybrid_reference_evidence(private_root):
-    """Build calibration evidence only from explicitly audited Normal PCAPs.
-
-    The similarly named tcp-connect-recon reference is intentionally absent:
-    its packet behavior is Normal-like, but no explicit ground-truth manifest
-    exists, so it is not safe calibration data.
-    """
+def _hybrid_reference_evidence(private_root, provenance):
+    """Build calibration evidence only from validated provenance entries."""
     evidence = []
-    complete_metadata = {
-        "packet_records_complete": True,
-        "snaplen_truncated": False,
-        "capture_drops": False,
-    }
-    for relative, source_ip, destination_ip in _AUDITED_NORMAL_PCAPS:
-        path = private_root / "lab-sessions" / relative
-        if not path.is_file():
-            return []
+    for reference in provenance["references"]:
+        path = private_root / reference["path"]
+        source_ip = reference["source_ipv4"]
+        destination_ip = reference["destination_ipv4"]
         rst = analyze_rst_evidence(
             path,
             source_ip=source_ip,
             destination_ip=destination_ip,
             window_seconds=60,
-            capture_metadata=complete_metadata,
+            capture_metadata=reference["capture_metadata"],
         )
         syn_events = [
             event for event in read_pcap_syn(path)
@@ -352,9 +334,29 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         ),
     }
 
-    hybrid_references = _hybrid_reference_evidence(private_root)
-    hybrid_result = None
-    hybrid_thresholds = None
+    calibration_path = (
+        Path(__file__).resolve().parents[2]
+        / "configs" / "hybrid_normal_calibration.json"
+    )
+    calibration_provenance = {
+        "manifest_path": "configs/hybrid_normal_calibration.json",
+        "manifest_sha256": sha256(calibration_path) if calibration_path.is_file() else None,
+        "status": "rejected",
+    }
+    hybrid_references = []
+    try:
+        provenance = load_calibration_provenance(calibration_path, private_root)
+        hybrid_references = _hybrid_reference_evidence(private_root, provenance)
+        calibration_provenance.update({
+            "status": "accepted",
+            "feature_definition": provenance["feature_definition"],
+            "window_seconds": provenance["window_seconds"],
+            "threshold_provenance": provenance["threshold_provenance"],
+            "reference_count": len(provenance["references"]),
+        })
+    except (OSError, ValueError) as exc:
+        calibration_provenance["rejection_reason"] = str(exc)
+
     if hybrid_references:
         hybrid_thresholds = calibrate_hybrid_thresholds(hybrid_references)
         rst_evidence = analyze_rst_evidence(
@@ -374,15 +376,10 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         review["hybrid_review"] = {
             **hybrid_result,
             "calibration_reference_count": len(hybrid_references),
-            "calibration_reference_pcap_sha256": [
-                sha256(private_root / "lab-sessions" / relative)
-                for relative, _src, _dst in _AUDITED_NORMAL_PCAPS
-            ],
-            "excluded_ambiguous_references": [
-                "tcp-connect-recon-20261031-v01/tcp-connect-recon.pcap"
-            ],
+            "calibration_provenance": calibration_provenance,
             "python_only": True,
             "suricata_signature_equivalent": False,
+            "calibration_provenance": calibration_provenance,
         }
     else:
         review["hybrid_review"] = {
@@ -394,6 +391,7 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
             "deployed": False,
             "python_only": True,
             "suricata_signature_equivalent": False,
+            "calibration_provenance": calibration_provenance,
         }
 
     # AI and Port-Diversity must pass; TCP may veto.
@@ -402,6 +400,7 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         flagged > 0
         and review["port_diversity_evidence"]["triggered"]
         and not tcp_benign_like_veto
+        and review["hybrid_review"]["classification"] == "reconnaissance_consistent"
     )
 
     # Correlated detection with complete TCP traffic is ambiguous.
@@ -435,6 +434,10 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
             review["port_diversity_evidence"]["triggered"]
         ),
         "tcp_completed_payload_veto": tcp_benign_like_veto,
+        "hybrid_calibrated_reconnaissance": (
+            review["hybrid_review"]["classification"]
+            == "reconnaissance_consistent"
+        ),
         "passed": candidate_gate_passed,
         "rule_approval_authorized": False,
     }

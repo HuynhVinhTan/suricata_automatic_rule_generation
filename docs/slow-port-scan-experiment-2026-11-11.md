@@ -63,7 +63,7 @@ Frozen IF/AE inference used model SHA256 `206dadafc8d6cd96e21d838a52211d9b06d4a6
 
 ## Hybrid review layer
 
-`src/netids/hybrid_review.py` adds a separate review-only decision layer. It does not alter the five-feature contract, model files, or IF/AE thresholds. The worker now carries the validated manifest capture-integrity metadata into this layer. Calibration uses only five explicitly audited, Normal-labeled PCAP references: `normal-train`, `normal-cal`, `normal-independent-20261031-v01`, `normal-matched12-20261031-v01`, and `normal-multiport-20261031-v01`. `tcp-connect-recon-20261031-v01` is excluded: packet behavior is Normal-like, but no explicit ground-truth manifest was found and its name is ambiguous. The accepted references observed a ceiling of 12 distinct ports in a 60-second window, zero correlated server RSTs, and zero incomplete handshakes, producing thresholds of 13 ports, 1 RST, and zero allowed Normal handshake failures. Whole-PCAP distinct-port totals are retained for reporting only; classification uses the 60-second sliding-window maximum.
+`src/netids/hybrid_review.py` adds a separate review-only decision layer. It does not alter the five-feature contract, model files, or IF/AE thresholds. Calibration now requires `configs/hybrid_normal_calibration.json`, exact PCAP SHA256 values, explicit Normal ground truth, source/destination endpoints, and authentic capture metadata proving packet completeness, full snaplen, and zero capture drops. The five existing lab-session PCAPs have no authentic per-capture manifest or log with those integrity facts, so the persistent manifest records their hashes and labels but deliberately marks capture metadata unknown. Calibration therefore fails closed and no hybrid threshold is accepted. `tcp-connect-recon-20261031-v01` remains excluded because its name is ambiguous and no explicit ground-truth manifest was found. Whole-PCAP distinct-port totals remain reporting-only; any calibrated classification uses the 60-second sliding-window maximum.
 
 The final holdouts were evaluated once with those frozen hybrid thresholds:
 
@@ -74,7 +74,7 @@ The final holdouts were evaluated once with those frozen hybrid thresholds:
 
 The distinction is hybrid protocol evidence, not improved standalone IF/AE accuracy. The layer always returns condition-level explanations and keeps `approved=false`, `deployable=false`, and `deployed=false`. Incomplete capture evidence is classified as ambiguous and cannot pass.
 
-Attack v02 and Normal v03 remain exploratory examples, not final independent validation. No fresh, independently generated Attack and challenging Normal sessions were authorized or captured in this continuation, so final independent-validation success and baseline-versus-augmented improvement are not claimed.
+Fresh worker runs `hybrid-worker-attack-v02-20261111-r3` and `hybrid-worker-normal-v03-20261111-r3` used the existing PCAPs without overwriting earlier evidence. Both had standalone IF=5, AE=5, consensus=5; both hybrid classifications were `unavailable_missing_calibration`, with calibration status `rejected` and reason `Hybrid calibration capture metadata is unknown`. Source PCAP, feature CSV, and frozen model SHA256 links verified, and `approved=false`, `deployable=false`, `deployed=false` were exact booleans. Attack v02 and Normal v03 remain exploratory examples, not final independent validation; one Attack and one Normal PCAP are not statistically meaningful independent evaluation.
 
 ## Isolated baseline replay for final holdouts
 
@@ -96,9 +96,11 @@ Production Suricata and Filebeat remained active throughout. The owner verified 
 
 | Criterion | Status |
 |---|---|
-| Hybrid integrated into PCAP/ML worker | Achieved; review-only and provenance-checked |
+| Hybrid integrated into PCAP/ML worker | Achieved; review-only, provenance-checked, and fail-closed |
 | Independent Attack/Normal validation | Not achieved; v02/v03 are exploratory holdouts |
 | Safe candidate Suricata rule generated | No; evidence gates correctly rejected it |
 | Suricata Attack replay of candidate | Not run; no candidate existed |
 | Suricata Normal replay of candidate | Not run; no candidate existed |
 | Baseline versus augmented improvement | Not demonstrated |
+
+The smallest scientifically defensible next step is for the capture owner to provide authentic manifests/logs for the Normal calibration PCAPs containing packet-record completeness, snaplen/truncation, capture-drop status, ground-truth label, endpoints, and the recorded PCAP SHA256. Until those are independently bound, the Python hybrid cannot claim calibrated classification and no executable Suricata approximation should be generated.
