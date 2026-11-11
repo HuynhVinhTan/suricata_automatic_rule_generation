@@ -22,12 +22,27 @@ class RuleReviewSafetyTests(unittest.TestCase):
             PRIVATE / "lab-models"
             / "lab_syn_anomaly_v0_1" / "report.json"
         )
-        report = json.loads(
-            model_report_path.read_text(encoding="utf-8")
-        )
-
         old_dir = (
             PRIVATE / "lab-rule-candidates" / "syn_scan_v0_1"
+        )
+        required_private_files = (
+            model_report_path,
+            old_dir / "proposal.json",
+            PRIVATE / "lab-sessions" / "normal-batch-v01"
+            / "syn_windows_10s_normal-train.csv",
+            PRIVATE / "lab-sessions" / "normal-batch-v01"
+            / "syn_windows_10s_normal-cal.csv",
+            old_dir / "candidate.rules",
+        )
+        missing = [str(path.relative_to(ROOT)) for path in required_private_files if not path.is_file()]
+        if missing:
+            self.skipTest(
+                "Owner-held private lab evidence is unavailable in this checkout: "
+                + ", ".join(missing)
+            )
+
+        report = json.loads(
+            model_report_path.read_text(encoding="utf-8")
         )
         old_proposal = json.loads(
             (old_dir / "proposal.json").read_text(
