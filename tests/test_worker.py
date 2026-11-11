@@ -519,7 +519,10 @@ def test_symlink_escape_is_rejected(tmp_path, monkeypatch):
         with pytest.raises(ValueError, match="allowlisted root"):
             worker.run_worker(**values)
     finally:
-        if link.exists():
+        if link.is_symlink():
+            link.unlink()
+        elif link.exists():
+            # Windows directory junctions are not always reported as symlinks.
             os.rmdir(link)
 
 
