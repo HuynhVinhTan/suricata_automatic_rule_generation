@@ -114,3 +114,13 @@ production rule set was changed.
 No GUI screenshots were committed. The terminal/API evidence above is
 authentic and is paired with the owner screenshot checklist in the defense
 demo document.
+
+## PR #2 review-fix closeout
+
+The dataset profiler and rule lifecycle now fail closed for malformed input,
+disk-bounded partial audits, duplicate headers, blocked/conflicting SIDs,
+missing or stale provenance, spoofed/expired approval, unsafe paths and
+unauthorized transitions. See `docs/pr2-review-fixes-evidence-2026-11-12.md`.
+The six existing envelopes remain unchanged: 303 matching EVE events and 144
+matching flows. Active isolated installation remains owner-gated and no
+production component was modified.

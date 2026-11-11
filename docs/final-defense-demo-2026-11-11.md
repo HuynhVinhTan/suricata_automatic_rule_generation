@@ -42,3 +42,8 @@
 - The dedicated `suricata-ai-correlated-lab` index, its data view and six
   stable documents.
 - A final negative screenshot showing no production rule reload or deployment.
+
+For the PR #2 review-fix demonstration, also show strict dataset-audit test
+results, the append-only lifecycle audit record, an expired or mismatched
+authorization rejection, and dry-run staging below the configured isolated
+root. Do not activate a rule or alter production services.
