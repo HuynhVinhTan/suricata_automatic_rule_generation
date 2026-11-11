@@ -1,10 +1,11 @@
 """Add the lab correlation data view and panels to the existing dashboard."""
 
 import json
+import os
 import urllib.request
 
 
-BASE = "http://127.0.0.1:5601"
+BASE = os.environ.get("KIBANA_BASE_URL", "http://127.0.0.1:5601")
 HEADERS = {"kbn-xsrf": "true", "Content-Type": "application/json"}
 CORR_VIEW = "m6-correlation-view"
 CORR_INDEX = "suricata-ai-correlated-lab"
@@ -67,16 +68,29 @@ def main():
     dashboard = request("GET", "/api/saved_objects/dashboard/suricata-ai-ids-lab-dashboard")
     attrs = dashboard["attributes"]
     panels = json.loads(attrs["panelsJSON"])
-    existing = {panel.get("panelIndex") for panel in panels}
-    for index, (ident, title, _) in enumerate(specs, start=len(panels)):
+    spec_titles = {title for _, title, _ in specs}
+    deduplicated = []
+    seen_titles = set()
+    for panel in panels:
+        title = panel.get("title")
+        if title in spec_titles:
+            if title in seen_titles:
+                continue
+            seen_titles.add(title)
+        deduplicated.append(panel)
+    panels = deduplicated
+    existing_titles = {panel.get("title") for panel in panels}
+    base_count = len(panels)
+    for index, (ident, title, _) in enumerate(specs, start=base_count):
         panel_id = f"m6-{index}"
-        if panel_id in existing:
+        if title in existing_titles:
             continue
         panels.append({"version": "8.5.0", "type": "visualization",
                        "gridData": {"x": ((index - len(panels) + 6) % 2) * 24,
                                     "y": ((index - 6) // 2 + 4) * 12,
                                     "w": 24, "h": 11, "i": panel_id},
                        "panelIndex": panel_id, "embeddableConfig": {}, "title": title})
+        existing_titles.add(title)
     attrs["panelsJSON"] = json.dumps(panels)
     dashboard_refs = dashboard.get("references", []) + refs
     request("PUT", "/api/saved_objects/dashboard/suricata-ai-ids-lab-dashboard?overwrite=true",

@@ -885,6 +885,64 @@ def test_hybrid_classification_mismatch_is_rejected():
         )
 
 
+def test_build_derived_summary_uses_validated_review_classification():
+    summary = _elasticsearch_summary()
+    review = {
+        "hybrid_review": {
+            "classification": "reconnaissance_consistent",
+            "approved": False,
+            "deployable": False,
+            "deployed": False,
+        },
+        "feature_csv_sha256": "c" * 64,
+        "source_pcap_sha256": "a" * 64,
+        "model_sha256": "b" * 64,
+        "status": "needs_review",
+        "approved": False,
+        "deployable": False,
+        "deployed": False,
+    }
+
+    derived = worker.build_derived_summary(
+        summary,
+        review,
+        manifest_sha256="d" * 64,
+        feature_csv_sha256="c" * 64,
+        original_worker_summary_sha256="e" * 64,
+        source_review_sha256="f" * 64,
+    )
+
+    assert derived["derivation_type"] == "worker_summary_plus_verified_review"
+    assert derived["hybrid_classification"] == "reconnaissance_consistent"
+    assert derived["approved"] is False
+    assert summary.get("hybrid_classification") is None
+
+
+@pytest.mark.parametrize(
+    "review,field",
+    [
+        ({"feature_csv_sha256": "c" * 64}, "hybrid_review"),
+        (
+            {
+                "feature_csv_sha256": "c" * 64,
+                "hybrid_review": {"classification": "unknown"},
+            },
+            "classification",
+        ),
+    ],
+)
+def test_build_derived_summary_rejects_invalid_review(review, field):
+    with pytest.raises(ValueError, match=field):
+        worker.build_derived_summary(
+            _elasticsearch_summary(),
+            review,
+            manifest_sha256="d" * 64,
+            feature_csv_sha256="c" * 64,
+            original_worker_summary_sha256="e" * 64,
+            source_review_sha256="f" * 64,
+        )
+
+
 def test_elasticsearch_rejects_non_boolean_rule_generation_metadata(monkeypatch):
     monkeypatch.setattr(
         worker.urllib.request,

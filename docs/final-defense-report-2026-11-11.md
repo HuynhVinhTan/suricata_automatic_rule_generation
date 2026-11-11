@@ -5,10 +5,11 @@
 Phases 1 and 2 remain accepted for the bounded VM1/VM2 laboratory experiment.
 Milestone 4 is met for the existing EVE-to-ELK path and review-only Kibana
 dashboard. Milestone 5 is met only for a validated review-only RST telemetry
-proxy; it is not the complete Python hybrid decision. Milestone 6 is partially
-met: derived envelopes prove six PCAP-to-EVE-to-worker-artifact joins at
-event/flow level, but the six worker summaries are not present in the existing
-`suricata-ai-summary` index.
+proxy; it is not the complete Python hybrid decision. Milestone 6 is fully
+accepted for six lab experiments: derived envelopes prove six PCAP-to-EVE-to-
+worker-artifact joins at event/flow level, and six derived worker summaries
+passed exact read-back in the existing `suricata-ai-summary` index. Live
+production EVE correlation by run ID is not claimed.
 
 This result is not a production-accuracy claim. Only three independent Attack
 sessions and three independent Normal sessions were tested in one controlled

@@ -18,9 +18,11 @@
    cannot count unique ports or implement the full hybrid verdict.
 8. Show the six correlation envelopes, exact PCAP/EVE/summary hashes, 303
    matching EVE events and 144 matching flows in
-   `suricata-ai-correlated-lab`. State that the six worker summaries are local
-   artifacts and are not present in the existing `suricata-ai-summary` index.
-8. Show production service status and configuration hashes. Do not reload or
+   `suricata-ai-correlated-lab`. Show the six exact read-backs in
+   `suricata-ai-summary` alongside the four preserved historical documents.
+   State that this is experiment-level correlation only; live production EVE
+   correlation by run ID is not claimed.
+9. Show production service status and configuration hashes. Do not reload or
    deploy rules during the demonstration.
 
 ## Evidence screenshots still needed
