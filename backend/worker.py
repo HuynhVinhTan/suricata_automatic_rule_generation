@@ -370,9 +370,11 @@ def _validate_generated_rule_artifacts(
         or metadata.get("pcap_sha256") != pcap_sha256.lower()
         or metadata.get("model_sha256") != model_sha256
         or metadata.get("rule_sha256") != expected_rule_sha
-        or metadata.get("status") != "needs_review"
+        or metadata.get("status")
+        not in {"needs_review", "rejected_validation_failure"}
         or any(metadata.get(field) is not False for field in ("approved", "deployable", "deployed"))
         or review.get("generated_rule") != rule_text
+        or metadata.get("status") != review.get("status")
         or review.get("generated_rule_sid") is None
         or review.get("generated_rule_metadata", {}).get("rule_sha256") != expected_rule_sha
     ):
