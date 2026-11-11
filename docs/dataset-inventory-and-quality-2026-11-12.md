@@ -17,15 +17,17 @@ under `data/private/` and are not committed.
 | CIC Friday DDoS CSV | 77,123,859 | 225,745 | `6ff1580f...b411ee` | BENIGN 97,718; DDoS 128,027; rate NaN/Inf present |
 | CIC Friday PortScan CSV | 76,906,168 | 286,467 | `ca1824c5...e269e99b` | BENIGN 127,537; PortScan 158,930; rate NaN/Inf present |
 | CTU capture20110815-2 | 17,766,203 | 129,832 | `ef5c9ed6...f78a02c` | Flow labels include Background, Normal and Botnet families |
-| CTU capture20110817 | 285,841,002 | 2,087,508 | `c8de257b...8178bab` | Largest file; streaming-only audit required |
+| CTU capture20110817 | 285,841,002 | 2,087,508 | `c8de257b...8178bab` | Exact audit completed; 0 duplicate rows, 14,873 contradictory selected vectors |
 | CTU capture20110818-2 | 14,596,615 | 107,251 | `cee542d4...736428` | Flow labels include Background, Normal and Botnet families |
 | CTU capture20110819 | 44,718,958 | 325,471 | `1098f0ad...dd9f2e` | Flow labels include Background, Normal and Botnet families |
 
-The complete hashes are in the generated audit output when sufficient disk is
-available. The profiler is `scripts/phase04_01_data_quality.py` and uses
+The complete hashes and metrics are in
+`artifacts/audits/dataset-quality-20261112/quality_summary.json`. The profiler
+is `scripts/phase04_01_data_quality.py` and uses
 `src/netids/dataset_audit.py`; it streams CSV rows and uses temporary SQLite
-only after checking free disk. During this run, the large CTU SQLite audit was
-blocked by approximately 206 MB remaining space; source files were untouched.
+only after checking free disk. The completed run used D: temporary storage,
+kept at least 1 GB free, and removed all temporary SQLite files. Source files
+were untouched.
 
 ## Quality findings
 
@@ -41,16 +43,17 @@ blocked by approximately 206 MB remaining space; source files were untouched.
 - CTU uses 15-column `.binetflow` records and slash-delimited `StartTime` values.
   The adapter maps labels to `Normal`, `Botnet` and `Background`; Background is
   not automatically treated as Normal. Botnet is not Port Scanning.
-- Exact duplicate and contradictory-feature checks are available in the
-  profiler. The large CTU duplicate check is marked blocked until temporary
-  disk is available; no result is fabricated.
+- CTU exact audit completed for all four files: exact duplicate rows were zero
+  in each file; contradictory selected-vector labels were 354, 14,873, 168 and
+  859 respectively. Invalid timestamps were zero. Missing values were present
+  in transport/state fields and CTU label families remained distinct.
 
 ## Suitability
 
 | Intended use | Verdict | Reason |
 |---|---|---|
 | UNSW four-feature supervised flow ML | CONDITIONAL | Adapter and frozen lineage exist, but feature-vector overlap and feature-only split limitations remain |
-| CTU cross-scenario flow evaluation | CONDITIONAL | Existing frozen report is reusable; labels and background policy are explicit, UDP recall is low |
+| CTU cross-scenario flow evaluation | CONDITIONAL | Exact quality audit is complete and labels/background policy are explicit; frozen UDP recall remains low and selected-vector contradictions remain |
 | CIC model training | FAIL | Non-finite rates, duplicate normalized headers and no verified adapter/training lineage |
 | Frozen five-feature lab PCAP worker | PASS in bounded lab | Separate Normal-trained IF/AE artifacts, six holdout manifests and existing correlation evidence |
 | Production Suricata rule validation | CONDITIONAL | Only isolated replay evidence is accepted; no production reload or deployment is permitted |
