@@ -57,11 +57,13 @@ zero kernel drops, global-header snaplen, per-record captured/original lengths,
 PCAP SHA256, and hashes of the original manifest/log files. Missing or
 contradictory fields reject the run.
 
-The owner-controlled temporary tcpdump capture permission may be used only if
-explicitly authorized for these exact runs. After all captures, the owner must
-revoke it with `sudo setcap -r /usr/bin/tcpdump` and verify `getcap
-/usr/bin/tcpdump` returns no capability. No sudoers, firewall, production
-Suricata, EVE, model, or benchmark changes are part of this plan.
+The owner-controlled temporary tcpdump capture permission was used only for
+the explicitly authorized runs. The final audit still reports
+`/usr/bin/tcpdump cap_net_raw=ep`; capability revocation is therefore a
+pending owner action. The owner must revoke it interactively with
+`sudo setcap -r /usr/bin/tcpdump` and verify `getcap /usr/bin/tcpdump` returns
+no capability. No sudoers, firewall, production Suricata, EVE, model, or
+benchmark changes are part of this plan.
 
 ## Frozen evaluation outputs
 

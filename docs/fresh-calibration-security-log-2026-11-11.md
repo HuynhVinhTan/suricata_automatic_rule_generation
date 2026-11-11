@@ -49,3 +49,23 @@
 - No executable Suricata rule was approved, loaded, replayed or deployed.
 - The temporary HTTP service was stopped and port 18081 verified closed.
 - No tcpdump process remains. Capability removal remains owner-controlled.
+
+## 2026-11-11T— final read-only security diagnosis
+
+- VM1 still reports `/usr/bin/tcpdump cap_net_raw=ep`, root-owned mode `755`.
+- The current SSH shell has empty permitted/effective capabilities, while
+  PID 1 has the full bounding/permitted/effective capability set including
+  `CAP_SETFCAP`. `NoNewPrivs=0` and `Seccomp=0` were observed in both the
+  current shell and PID 1. The filesystem is ext4 read-write and neither
+  `/usr/bin/tcpdump` nor `/usr/sbin/setcap` is immutable. `setcap` has no file
+  capability. No tcpdump-specific sudoers or systemd restriction was found in
+  the safely inspectable configuration; sudo-rs requires interactive
+  authentication for `sudo -n -l`. AppArmor is loaded but its profile set was
+  not readable by the unprivileged audit.
+- These observations do not reproduce the owner's failing interactive root
+  context and therefore do not prove the cause of `CAP_SETFCAP ... Operation
+  not permitted`. A context-specific root capability transition, LSM/policy
+  denial, or other execution restriction remains possible but unconfirmed.
+- No privilege or production setting was changed. The owner must inspect the
+  same `sudo -i` shell's `/proc/$$/status`, `capsh --print`, and kernel audit
+  messages, then perform and verify capability removal interactively.

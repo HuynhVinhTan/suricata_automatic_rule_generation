@@ -110,7 +110,11 @@ Attack produced 24 flows and zero baseline alerts. Normal produced 24 flows, 22 
 
 The hybrid review result is not convertible to a safe single RST Suricata rule: an RST-only candidate calibrated at one response would also match Normal v03's two legitimate closed-port controls, while Suricata rule syntax cannot express the required unique-port and completed-handshake conditions together. Candidate generation therefore remains correctly blocked.
 
-Production Suricata and Filebeat remained active throughout. The owner verified after capture completion that `/usr/bin/tcpdump` has no file capability. No production service, sudoers configuration, or capability was changed in this continuation.
+Production Suricata and Filebeat remained active throughout. The final
+read-only audit still reports `/usr/bin/tcpdump cap_net_raw=ep`; the earlier
+contrary cleanup statement is superseded by that audit and capability removal
+remains an owner-controlled blocker. No production service, sudoers
+configuration, or capability was changed in this continuation.
 
 ## Acceptance status
 

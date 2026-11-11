@@ -21,7 +21,9 @@
 
 ## Evidence screenshots still needed
 
-- VM1 `getcap -v /usr/bin/tcpdump` after owner cleanup, showing no capability.
+- VM1 `getcap -v /usr/bin/tcpdump` after owner cleanup. The current audit still
+  shows `cap_net_raw=ep`; this screenshot is a required owner-controlled
+  cleanup gate and must be marked FAILED until it shows no capability.
 - VM1 `systemctl is-active suricata` and `systemctl is-active filebeat`.
 - VM1 production `suricata.yaml` and ruleset hash output.
 - The frozen calibration decision with timestamp and threshold fields.
