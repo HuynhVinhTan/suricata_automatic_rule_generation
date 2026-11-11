@@ -16,7 +16,7 @@ This experiment completed controlled Attack and Normal holdouts, but the final r
 | VM2 alias | `suricata-vm2`, verified as Kali `192.168.10.20/24` |
 | Production services | Suricata and Filebeat active; no restart/reload performed |
 
-VM2 was verified on `eth1` at `192.168.10.20/24`. VM1 port verification found the temporary HTTP service on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. The owner has verified that `/usr/bin/tcpdump` has no file capability after capture completion; no capability or sudoers change was performed in this continuation.
+VM2 was verified on `eth1` at `192.168.10.20/24`. VM1 port verification found the temporary HTTP service on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. The final read-only audit still reports `/usr/bin/tcpdump cap_net_raw=ep`; no capability or sudoers change was performed, and owner cleanup remains pending.
 
 ## Experiment design held for execution
 
@@ -60,6 +60,12 @@ Final independent sessions used a bidirectional filter for the private lab pair 
 RST correlation marked both captures complete: Attack `rst_ratio=1.0`, 24/24 RST-ACK responses, 24 unique destination ports; Normal `rst_ratio=0.0833333333`, 2/2 RST-ACK responses, 3 unique destination ports, and 22 bidirectional payload flows. The earlier one-way captures and the first Normal capture that contained only 23 SYNs are retained as non-qualifying evidence and are not used for claims.
 
 Frozen IF/AE inference used model SHA256 `206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d`, with no training or threshold change. Both final sessions produced 5 windows, with IF=5, AE=5, and consensus=5. Because Normal also produced 5/5 consensus alerts, the independent false-positive/ML gate failed. No RST-aware rule was generated, and isolated Suricata 8.0.3 validation/replay was correctly not run for a nonexistent candidate.
+
+## Historical pre-fresh calibration state
+
+The following records describe the state before the fresh 2026-11-11
+calibration. They are retained for reproducibility and are not the current
+acceptance result.
 
 ## Hybrid review layer
 
