@@ -30,7 +30,7 @@ def test_incomplete_capture_is_not_called_closed():
     result = correlate_rst_events([(1.0, (40000, 18100), "client", 100, 0, 0x02, 0)])
     assert result["rst_count"] == 0
     assert result["filtered_no_response_count"] == 1
-    assert result["capture_complete"] is True
+    assert result["capture_integrity"]["capture_complete"] is None
 
 
 def test_mixed_open_and_closed_ports_preserves_each_outcome():
@@ -60,3 +60,36 @@ def test_zero_syn_packets_has_zero_ratios():
 def test_invalid_timestamp_is_rejected():
     with pytest.raises(ValueError):
         correlate_rst_events([(math.nan, (40000, 18100), "client", 1, 0, 2, 0)])
+
+
+def test_rst_ack_must_match_syn_sequence_plus_one_with_wraparound():
+    result = correlate_rst_events([
+        (1.0, (40000, 18100), "client", 0xFFFFFFFF, 0, 0x02, 0),
+        (1.01, (40000, 18100), "server", 200, 7, 0x14, 0),
+    ])
+    assert result["rst_count"] == 0
+
+
+def test_rst_ack_wraparound_valid_ack_is_correlated():
+    result = correlate_rst_events([
+        (1.0, (40000, 18100), "client", 0xFFFFFFFF, 0, 0x02, 0),
+        (1.01, (40000, 18100), "server", 200, 0, 0x14, 0),
+    ])
+    assert result["rst_ack_count"] == 1
+    assert result["rst_count"] == 1
+
+
+def test_rst_window_and_integrity_metadata_are_conservative():
+    events = [
+        (1.0, (40000, 18100), "client", 100, 0, 0x02, 0),
+        (62.0, (40000, 18100), "server", 200, 101, 0x14, 0),
+    ]
+    outside = correlate_rst_events(events, window_seconds=60)
+    assert outside["rst_count"] == 0
+    unknown = correlate_rst_events(events, capture_metadata={})
+    assert unknown["capture_integrity"]["capture_complete"] is None
+    incomplete = correlate_rst_events(
+        events,
+        capture_metadata={"packet_records_complete": False, "snaplen_truncated": False, "capture_drops": False},
+    )
+    assert incomplete["capture_integrity"]["capture_complete"] is False

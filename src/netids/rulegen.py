@@ -179,6 +179,9 @@ def generate_rst_rule(
         "rule": None,
         "metadata": metadata,
     }
+    if rst_evidence.get("capture_integrity", {}).get("capture_complete") is not True:
+        result["rejection_reason"] = "incomplete_capture_evidence"
+        return result
     if any(count >= threshold for count in normal_validation):
         result["rejection_reason"] = "normal_validation_false_positive"
         return result

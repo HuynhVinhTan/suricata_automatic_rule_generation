@@ -30,40 +30,105 @@ def _validate_events(events):
     return sorted(normalized, key=lambda event: event[0])
 
 
-def correlate_rst_events(events, *, window_seconds=60):
-    """Correlate directed TCP events without counting retransmissions twice.
+def _capture_integrity(capture_metadata):
+    """Return conservative completeness evidence; unknown remains ``None``."""
+    metadata = capture_metadata if isinstance(capture_metadata, dict) else {}
+    packet_records_complete = metadata.get("packet_records_complete")
+    snaplen_truncated = metadata.get("snaplen_truncated")
+    capture_drops = metadata.get("capture_drops")
+    if any(value is not None and type(value) is not bool for value in (
+        packet_records_complete, snaplen_truncated, capture_drops
+    )):
+        raise ValueError("Capture integrity fields must be boolean or unknown")
+    if packet_records_complete is False or snaplen_truncated is True or capture_drops is True:
+        complete = False
+    elif packet_records_complete is True and snaplen_truncated is False and capture_drops is False:
+        complete = True
+    else:
+        complete = None
+    return {
+        "packet_records_complete": packet_records_complete,
+        "snaplen_truncated": snaplen_truncated,
+        "capture_drops": capture_drops,
+        "capture_complete": complete,
+    }
 
-    The returned values are protocol evidence only. A server-direction RST or
-    RST-ACK is associated with a preceding client SYN on the same normalized
-    client-port/destination-port pair. No-response traffic is retained as
-    filtered/unknown evidence and is never classified as a closed port.
+
+def _nearest_syn(syns, pair, timestamp, window_seconds):
+    candidates = [
+        (syn_timestamp, seq)
+        for syn_timestamp, seq in syns.get(pair, [])
+        if syn_timestamp <= timestamp <= syn_timestamp + window_seconds
+    ]
+    return max(candidates, default=None)
+
+
+def correlate_rst_events(events, *, window_seconds=60, capture_metadata=None):
+    """Correlate server RST/RST-ACK packets with preceding client SYNs.
+
+    Correlation uses the normalized client-port/destination-port pair, a
+    preceding SYN time window, and (for RST-ACK) ``ack == syn_seq + 1`` with
+    32-bit wraparound. Retransmissions are de-duplicated by packet identity,
+    not timestamp. No-response traffic remains filtered/unknown evidence.
     """
     if type(window_seconds) is not int or window_seconds <= 0:
         raise ValueError("window_seconds must be a positive integer")
     events = _validate_events(events)
-    unique = list(dict.fromkeys(events))
-    syns = {}
-    rsts = {}
-    handshakes = defaultdict(lambda: {"synack": False, "ack": False, "client_payload": False, "server_payload": False})
+    deduplicated = []
+    seen = set()
+    for event in events:
+        timestamp, pair, direction, seq, ack, flags, payload = event
+        identity = (pair, direction, seq, ack, flags, payload)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduplicated.append(event)
 
-    for timestamp, pair, direction, seq, ack, flags, payload in unique:
+    syns = defaultdict(list)
+    rst_packets = []
+    handshakes = defaultdict(lambda: {
+        "syn_seq": None,
+        "server_seq": None,
+        "synack": False,
+        "ack": False,
+        "client_payload": False,
+        "server_payload": False,
+    })
+
+    for timestamp, pair, direction, seq, ack, flags, payload in deduplicated:
         state = handshakes[pair]
         if direction == "client" and flags & 0x02 and not flags & 0x10:
-            syns.setdefault((pair, seq), timestamp)
+            if not any(existing_seq == seq for _time, existing_seq in syns[pair]):
+                syns[pair].append((timestamp, seq))
+                if state["syn_seq"] is None:
+                    state["syn_seq"] = seq
+        if direction == "server" and flags & 0x04:
+            matched = _nearest_syn(syns, pair, timestamp, window_seconds)
+            if matched is not None:
+                _syn_timestamp, syn_seq = matched
+                if not flags & 0x10 or ack == (syn_seq + 1) % (2 ** 32):
+                    rst_packets.append((timestamp, pair, seq, ack, flags, payload))
         if direction == "server" and flags & 0x02 and flags & 0x10:
-            state["synack"] = True
+            matched = _nearest_syn(syns, pair, timestamp, window_seconds)
+            if matched is not None and ack == (matched[1] + 1) % (2 ** 32):
+                state["syn_seq"] = matched[1]
+                state["server_seq"] = seq
+                state["synack"] = True
         if direction == "client" and flags & 0x10 and not flags & 0x02:
-            state["ack"] = True
+            if (
+                state["synack"]
+                and state["syn_seq"] is not None
+                and state["server_seq"] is not None
+                and seq == (state["syn_seq"] + 1) % (2 ** 32)
+                and ack == (state["server_seq"] + 1) % (2 ** 32)
+            ):
+                state["ack"] = True
         if payload > 0:
             state[f"{direction}_payload"] = True
-        if direction == "server" and flags & 0x04 and any(key[0] == pair and value <= timestamp for key, value in syns.items()):
-            rsts.setdefault((pair, seq, ack, flags, payload), timestamp)
 
-    pair_syn_times = defaultdict(list)
-    for (pair, _seq), timestamp in syns.items():
-        pair_syn_times[pair].append(timestamp)
-    pairs = set(pair for pair, _seq in syns)
-    rst_pairs = {event[0] for event in rsts}
+    rst_packets = list(dict.fromkeys(rst_packets))
+    pairs = set(syns)
+    rst_pairs = {pair for _time, pair, _seq, _ack, _flags, _payload in rst_packets}
     handshake_pairs = {
         pair for pair, state in handshakes.items()
         if pair in pairs and state["synack"] and state["ack"]
@@ -72,16 +137,17 @@ def correlate_rst_events(events, *, window_seconds=60):
         pair for pair, state in handshakes.items()
         if pair in pairs and state["client_payload"] and state["server_payload"]
     }
-    first_syn = min(syns.values()) if syns else None
+    first_syn = min((timestamp for values in syns.values() for timestamp, _seq in values), default=None)
     windows = []
     if first_syn is not None:
         counts = defaultdict(int)
-        for timestamp in rsts.values():
+        for timestamp, _pair, _seq, _ack, _flags, _payload in rst_packets:
             counts[int((timestamp - first_syn) // window_seconds)] += 1
         windows = [counts[index] for index in sorted(counts)]
 
-    syn_count = len(syns)
-    rst_count = len(rsts)
+    syn_count = sum(len(values) for values in syns.values())
+    rst_count = len(rst_packets)
+    integrity = _capture_integrity(capture_metadata)
     return {
         "method": "offline_tcp_rst_correlation",
         "evidence_type": "protocol_heuristic_not_ml",
@@ -89,7 +155,7 @@ def correlate_rst_events(events, *, window_seconds=60):
         "initial_syn_packets": syn_count,
         "unique_destination_ports": len({pair[1] for pair in pairs}),
         "rst_count": rst_count,
-        "rst_ack_count": sum(bool(flags & 0x10) for _pair, _seq, _ack, flags, _payload in rsts),
+        "rst_ack_count": sum(bool(flags & 0x10) for _time, _pair, _seq, _ack, flags, _payload in rst_packets),
         "rst_ratio": rst_count / syn_count if syn_count else 0.0,
         "rst_flows": len(rst_pairs),
         "handshake_success_count": len(handshake_pairs),
@@ -100,13 +166,16 @@ def correlate_rst_events(events, *, window_seconds=60):
         "filtered_no_response_count": max(0, syn_count - len(handshake_pairs) - len(rst_pairs)),
         "rst_counts_by_window": windows,
         "max_rst_count_per_window": max(windows, default=0),
-        "capture_complete": True,
+        "capture_integrity": integrity,
     }
 
 
-def analyze_rst_evidence(pcap, *, source_ip, destination_ip, window_seconds=60):
+def analyze_rst_evidence(pcap, *, source_ip, destination_ip, window_seconds=60, capture_metadata=None):
     """Read an Ethernet PCAP and return RST correlation evidence."""
-    events = _tcp_events(pcap, source_ip, destination_ip)
-    evidence = correlate_rst_events(events, window_seconds=window_seconds)
+    evidence = correlate_rst_events(
+        _tcp_events(pcap, source_ip, destination_ip),
+        window_seconds=window_seconds,
+        capture_metadata=capture_metadata,
+    )
     evidence["source_pcap"] = str(pcap)
     return evidence
