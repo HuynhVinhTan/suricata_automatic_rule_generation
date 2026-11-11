@@ -28,6 +28,7 @@ from netids.rule_lifecycle import RuleLifecycle, LifecycleError
 from netids.trusted_replay import SID, RULE_SHA, MODEL_SHA, CAL_SHA, EXPECTED_CASES
 
 _HEX = re.compile(r"^[a-f0-9]{64}$")
+PINNED_PRODUCTION_YAML_SHA256 = "6224bc7d0bc04d97c4282f54a71e0736341341aa82c530fe22aed3da28814d72"
 
 
 class OperationError(RuntimeError):
@@ -62,9 +63,22 @@ def production_snapshot(production_yaml: Path, production_rules: Path) -> dict:
     """Read-only production proof; never reopen or modify service files."""
     if socket.gethostname() != VM1_HOST:
         raise OperationError("Target is not VM1")
+    production_yaml = Path(production_yaml)
+    production_rules = Path(production_rules)
+    if production_yaml.resolve() != Path("/etc/suricata/suricata.yaml"):
+        raise OperationError("Expected real VM1 production YAML, not an alternate config")
+    if not any(
+        production_rules.resolve().is_relative_to(base)
+        for base in (Path("/var/lib/suricata/rules"), Path("/etc/suricata/rules"))
+    ):
+        raise OperationError("Production rule manifest must be under the actual Suricata rules directories")
     for file in (production_yaml, production_rules):
         if file.is_symlink() or not file.is_file():
             raise OperationError("Production snapshot source is missing or a symlink")
+    if sha256_file(production_yaml) != PINNED_PRODUCTION_YAML_SHA256:
+        raise OperationError("Production YAML differs from the last verified lab baseline; stop")
+    if re.search(rb"\bsid\s*:\s*9103003\s*;", production_rules.read_bytes()):
+        raise OperationError("SID 9103003 is already present in production rules; stop")
     with production_yaml.open(encoding="utf-8") as source:
         config = yaml.safe_load(source)
     if not isinstance(config, dict):
