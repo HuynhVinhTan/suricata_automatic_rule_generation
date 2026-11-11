@@ -330,6 +330,59 @@ def _review_is_safe(review: Mapping[str, Any]) -> str:
     return status
 
 
+def _validate_generated_rule_artifacts(
+    output_dir: Path,
+    review: Mapping[str, Any],
+    *,
+    run_id: str,
+    pcap_sha256: str,
+    model_sha256: str,
+) -> None:
+    """Validate the generated rule as a review-only, provenance-bound pair."""
+    rule_path = output_dir / "ml-generated.rules"
+    metadata_path = output_dir / "ml-generated.metadata.json"
+    generated = review.get("rule_generated_in_this_run") is True
+
+    if not generated:
+        if rule_path.exists() or metadata_path.exists():
+            raise WorkerProcessingError(
+                "Rule artifacts exist without a generated-rule review claim"
+            )
+        return
+
+    try:
+        if rule_path.is_symlink() or metadata_path.is_symlink():
+            raise WorkerProcessingError("Generated rule artifacts must not be symlinks")
+        rule_text_with_newline = rule_path.read_text(encoding="utf-8")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkerProcessingError(
+            "Generated rule artifacts are missing or invalid"
+        ) from exc
+
+    if not isinstance(metadata, dict) or not rule_text_with_newline.endswith("\n"):
+        raise WorkerProcessingError("Generated rule artifacts are malformed")
+    rule_text = rule_text_with_newline[:-1]
+    expected_rule_sha = hashlib.sha256(rule_text.encode("utf-8")).hexdigest()
+    if (
+        metadata.get("schema_version") != "ml_rule_metadata_v1"
+        or metadata.get("run_id") != run_id
+        or metadata.get("pcap_sha256") != pcap_sha256.lower()
+        or metadata.get("model_sha256") != model_sha256
+        or metadata.get("rule_sha256") != expected_rule_sha
+        or metadata.get("status") != "needs_review"
+        or any(metadata.get(field) is not False for field in ("approved", "deployable", "deployed"))
+        or review.get("generated_rule") != rule_text
+        or review.get("generated_rule_sid") is None
+        or review.get("generated_rule_metadata", {}).get("rule_sha256") != expected_rule_sha
+    ):
+        raise WorkerProcessingError("Generated rule provenance or review-only safety mismatch")
+
+    sids = [int(value) for value in re.findall(r"\bsid:(\d+);", rule_text)]
+    if len(sids) != 1 or sids[0] != review["generated_rule_sid"] or sids[0] in {9102001, 9102002}:
+        raise WorkerProcessingError("Generated rule SID is invalid or rejected")
+
+
 def _require_provenance_sha256(
     artifact: Mapping[str, Any], field: str, expected: str, name: str
 ) -> None:
@@ -584,6 +637,13 @@ def verify_completed_run(
         raise WorkerProcessingError(
             "Completed worker summary does not match the review artifact"
         )
+    _validate_generated_rule_artifacts(
+        output_dir,
+        review,
+        run_id=run_id,
+        pcap_sha256=pcap_sha256,
+        model_sha256=artifacts["model_sha256"],
+    )
     try:
         generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
         if generated.utcoffset() is None:
@@ -964,6 +1024,18 @@ def run_worker(
             )
             _record_output_failure(output_dir, run_id, expected_sha, failure)
             raise failure
+
+        try:
+            _validate_generated_rule_artifacts(
+                output_dir,
+                review,
+                run_id=run_id,
+                pcap_sha256=expected_sha,
+                model_sha256=artifacts["model_sha256"],
+            )
+        except WorkerProcessingError as exc:
+            _record_output_failure(output_dir, run_id, expected_sha, exc)
+            raise
 
         predictions_path = output_dir / "predictions.json"
         try:
