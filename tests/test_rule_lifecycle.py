@@ -292,3 +292,12 @@ def test_concurrent_audit_writer_blocks_mutation(tmp_path):
     lock.write_text("other writer", encoding="utf-8")
     with pytest.raises(LifecycleError, match="Concurrent"):
         lifecycle.create_candidate(_candidate())
+
+
+def test_isolated_root_must_be_explicit_and_nonproduction(tmp_path):
+    with pytest.raises(LifecycleError, match="isolated-lab directory"):
+        RuleLifecycle(tmp_path / "audit.jsonl", isolated_root=tmp_path / "production-rules")
+    assert not (tmp_path / "production-rules").exists()
+
+    with pytest.raises(LifecycleError, match="protected Suricata"):
+        RuleLifecycle(tmp_path / "audit.jsonl", isolated_root=Path("/etc/suricata/isolated-lab"))
