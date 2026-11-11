@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/pcap-ai-worker-integration
+      - feat/dataset-audit-rule-lifecycle
   pull_request:
     branches:
       - dev
@@ -39,6 +40,6 @@ jobs:
       - name: Install project and test dependencies (no model or dataset downloads)
         run: python -m pip install -e . pytest
       - name: Dataset and rule lifecycle gates
-        run: python -m pytest -q tests/test_dataset_audit.py tests/test_rule_lifecycle.py tests/test_rule_lifecycle_integration.py tests/test_worker.py
+        run: python -m pytest -q
       - name: Compile and diff hygiene
         run: python -m compileall -q backend src scripts tests && git diff --check
