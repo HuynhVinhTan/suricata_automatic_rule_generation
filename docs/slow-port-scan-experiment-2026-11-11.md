@@ -8,21 +8,19 @@ This experiment completed controlled Attack and Normal holdouts, but the final r
 
 | Check | Result |
 |---|---|
-| Local branch/HEAD | `feat/pcap-ai-worker-integration` / `30197eea9702227aed70465b3fd589413ac55afb` |
+| Local branch/HEAD | `feat/pcap-ai-worker-integration` / `c7df7d4d768f506c0ab27b73ae002277d88d8569` |
 | VM1 alias | `suricata-vm1`, authenticated non-interactively |
 | VM1 capture interface | `ens33`, `192.168.10.10/24` |
 | VM3 alias | `suricata-vm3`, authenticated non-interactively |
 | VM3 capture interface | `ens33`, `192.168.10.30/24` |
-| VM2 alias | Initially unresolved; later verified as Kali `192.168.10.20/24` |
+| VM2 alias | `suricata-vm2`, verified as Kali `192.168.10.20/24` |
 | Production services | Suricata and Filebeat active; no restart/reload performed |
 
-The configured fallback SSH identities for the unresolved VM2 name use the local default username `asus-pro`. That username was not assumed or tried against an IP address. The owner action required is: provide a working SSH config alias for the Kali scanner VM, including its verified private-lab address, username, and existing SSH-agent key mapping. No password automation is required or requested.
-
-VM2 subsequently became reachable and was verified as Kali on `eth1` at `192.168.10.20/24`. VM1 port verification found a temporary HTTP service candidate on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. Capture then stopped at VM1 because the authenticated user lacks `CAP_NET_RAW`; `sudo -n tcpdump` requires interactive authentication, while production Suricata `pcap-log` is disabled. The owner action now required is to grant a narrowly scoped non-interactive capture capability for the lab interface, for example a dedicated capture service/account or a reviewed `tcpdump` capability, without changing production Suricata configuration. The temporary HTTP service was stopped without generating traffic.
+VM2 was verified on `eth1` at `192.168.10.20/24`. VM1 port verification found the temporary HTTP service on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. A temporary `cap_net_raw` capability was used only for the bounded captures and remains pending owner-side revocation because VM1 sudo requires interactive authentication.
 
 ## Experiment design held for execution
 
-After VM2 access is supplied, the planned experiment is:
+The executed experiment was:
 
 1. Discover VM2's actual `192.168.10.0/24` interface and route.
 2. Verify two open synthetic service ports on VM1 and at least 24 closed TCP ports that return RST rather than timing out.
@@ -62,5 +60,32 @@ Final independent sessions used a bidirectional filter for the private lab pair 
 RST correlation marked both captures complete: Attack `rst_ratio=1.0`, 24/24 RST-ACK responses, 24 unique destination ports; Normal `rst_ratio=0.0833333333`, 2/2 RST-ACK responses, 3 unique destination ports, and 22 bidirectional payload flows. The earlier one-way captures and the first Normal capture that contained only 23 SYNs are retained as non-qualifying evidence and are not used for claims.
 
 Frozen IF/AE inference used model SHA256 `206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d`, with no training or threshold change. Both final sessions produced 5 windows, with IF=5, AE=5, and consensus=5. Because Normal also produced 5/5 consensus alerts, the independent false-positive/ML gate failed. No RST-aware rule was generated, and isolated Suricata 8.0.3 validation/replay was correctly not run for a nonexistent candidate.
+
+## Hybrid review layer
+
+`src/netids/hybrid_review.py` adds a separate review-only decision layer. It does not alter the five-feature contract, model files, or IF/AE thresholds. It calibrates from complete pre-existing Normal references only: `normal-train`, `normal-cal`, `normal-independent-20261031-v01`, `normal-matched12-20261031-v01`, `normal-multiport-20261031-v01`, and `tcp-connect-recon-20261031-v01`. Their observed ceiling was 12 distinct ports in a 60-second window, zero correlated server RSTs, and zero incomplete handshakes, producing thresholds of 13 ports, 1 RST, and zero allowed Normal handshake failures.
+
+The final holdouts were evaluated once with those frozen hybrid thresholds:
+
+| Session | ML consensus | Hybrid classification | Result |
+|---|---:|---|---|
+| Attack v02 | 5/5 | `reconnaissance_consistent` | All calibrated conditions passed |
+| Normal v03 | 5/5 | `anomalous_not_reconnaissance` | Port diversity and successful-handshake conditions failed |
+
+The distinction is hybrid protocol evidence, not improved standalone IF/AE accuracy. The layer always returns condition-level explanations and keeps `approved=false`, `deployable=false`, and `deployed=false`. Incomplete capture evidence is classified as ambiguous and cannot pass.
+
+## Isolated baseline replay for final holdouts
+
+Offline replay used Suricata `8.0.3 RELEASE`, a copy of the existing isolated YAML with `baseline.rules`, and separate `/tmp/suricata-hybrid-baseline-20261111/{attack-k-none,normal-k-none}` output directories. Commands were:
+
+```bash
+suricata -T --init-errors-fatal -c /tmp/suricata-hybrid-baseline-20261111/isolated-baseline.yaml -l /tmp/suricata-hybrid-baseline-20261111/syntax
+suricata -k none -r /tmp/hybrid-attack-v02.pcap -c /tmp/suricata-hybrid-baseline-20261111/isolated-baseline.yaml -l /tmp/suricata-hybrid-baseline-20261111/attack-k-none
+suricata -k none -r /tmp/hybrid-normal-v03.pcap -c /tmp/suricata-hybrid-baseline-20261111/isolated-baseline.yaml -l /tmp/suricata-hybrid-baseline-20261111/normal-k-none
+```
+
+Attack produced 24 flows and zero baseline alerts. Normal produced 24 flows, 22 `ET INFO Python SimpleHTTP ServerBanner` alerts, and 109 `SURICATA TCPv4 invalid checksum` alerts. The latter are decoder/checksum artifacts from the captured HTTP traffic, not a scenario-specific reconnaissance verdict. Isolated EVE SHA256 values were `2efb4518eec7c8aeaffc49840d9b2ee830fc9629b48ba212976c7a6ce1cd0e10` (Attack) and `2a221006ea3bd65fe37c8546beeb4be183ba987e1653949becd5bd63f6d4cad5` (Normal). No production EVE file, rule file, service, or daemon was modified.
+
+The hybrid review result is not convertible to a safe single RST Suricata rule: an RST-only candidate calibrated at one response would also match Normal v03's two legitimate closed-port controls, while Suricata rule syntax cannot express the required unique-port and completed-handshake conditions together. Candidate generation therefore remains correctly blocked.
 
 Production Suricata and Filebeat remained active throughout. The temporary tcpdump capability revocation was attempted after captures, but VM1's `sudo` requires interactive authentication; `cap_net_raw=ep` therefore remains and needs an operator to run `sudo setcap -r /usr/bin/tcpdump`, followed by `getcap /usr/bin/tcpdump` returning no capability.
