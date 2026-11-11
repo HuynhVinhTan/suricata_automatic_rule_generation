@@ -60,4 +60,3 @@ def test_zero_syn_packets_has_zero_ratios():
 def test_invalid_timestamp_is_rejected():
     with pytest.raises(ValueError):
         correlate_rst_events([(math.nan, (40000, 18100), "client", 1, 0, 2, 0)])
-
