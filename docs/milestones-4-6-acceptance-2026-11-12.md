@@ -11,14 +11,15 @@ It does not implement the complete Python hybrid decision. The Python worker
 remains authoritative for unique destination ports, correlated RST/RST-ACK
 evidence, handshake evidence and frozen IF/AE consensus.
 
-Milestone 6 is partially accepted. A derived, versioned correlation envelope
-now verifies each original PCAP against its isolated Suricata EVE replay and
-validated worker review artifact at event/flow level. The six worker summaries
-are not present in the existing `suricata-ai-summary` index, so this evidence
-does not claim that the existing production AI-summary index contains these six
-runs.
+Milestone 6 is fully accepted for the six verified lab experiments. A derived,
+versioned correlation envelope verifies each original PCAP against its isolated
+Suricata EVE replay and validated worker review artifact at event/flow level;
+the six derived summaries are now present in `suricata-ai-summary` with exact
+read-back verification. This does not claim live production EVE event
+correlation by run ID.
 
-The dedicated index `suricata-ai-correlated-lab` contains six stable documents.
+The dedicated index `suricata-ai-correlated-lab` contains six stable documents;
+`suricata-ai-summary` contains four historical plus six derived documents.
 Exact run IDs, hashes, event counts and flow counts are recorded in
 `docs/milestone-6-correlation-evidence-2026-11-12.md` and the committed
 correlation envelope artifact.
@@ -57,9 +58,10 @@ Created saved objects:
   IPs, protocol distribution, flow/event types, AI anomaly and hybrid review
   status, and approved/deployable/deployed safety state.
 
-The AI panel uses the actual indexed `review_status` field. No hybrid
-classification field was fabricated because it is not present in the existing
-summary mapping.
+The AI panel uses the actual indexed `review_status` and
+`hybrid_classification` fields. The hybrid classification is copied only from
+the validated review artifact into a derived document; it is not added to the
+original worker summary artifact.
 
 ## Milestone 5 rule evidence
 

@@ -2,11 +2,10 @@
 
 ## Blocking
 
-1. Milestone 6 is only partially accepted. The six PCAP/EVE/worker joins are
-   event/flow verified in `suricata-ai-correlated-lab`, but the six worker
-   summaries are not present in the existing `suricata-ai-summary` index. The
-   production Filebeat input and existing summary index must not be changed
-   solely to add correlation metadata.
+1. Milestone 6 is accepted for the six verified lab experiments. The six
+   derived summaries are present in `suricata-ai-summary` with exact read-back,
+   while the four historical documents remain preserved. This does not claim
+   live production EVE correlation by run ID.
 2. The validated SID 9103003 is a review-only RST telemetry proxy. The Python
    hybrid remains authoritative and is not equivalent to a single Suricata
    signature.

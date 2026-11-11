@@ -2,11 +2,11 @@
 
 ## Acceptance decision
 
-Milestone 6 is partially accepted. All six original holdout PCAPs have a
-verified event/flow-level join to their isolated Suricata 8.0.3 replay output
-and validated AI Worker review artifact. The six worker summaries were not
-found in the existing `suricata-ai-summary` index, so this is not claimed as a
-complete production-index correlation.
+Milestone 6 is fully accepted for the six verified lab experiments. All six
+original holdout PCAPs have a verified event/flow-level join to their isolated
+Suricata 8.0.3 replay output and derived AI Worker summary indexed in
+`suricata-ai-summary`. This remains experiment-level evidence, not a claim
+that the live production EVE stream carries these run IDs.
 
 ## Correlation method
 
@@ -39,13 +39,19 @@ SID `9103003`, and all three safety booleans false.
 
 ## Elasticsearch and Kibana
 
-`suricata-ai-correlated-lab` contains exactly six documents. The dedicated
-Kibana data view is `Suricata AI Correlated Lab`. The existing dashboard now has
-panels for scenario, hybrid classification, SID matches, SHA provenance,
-verification status and safety flags.
+`suricata-ai-correlated-lab` contains exactly six documents and
+`suricata-ai-summary` contains ten documents: four historical documents plus
+the six newly indexed derived summaries. Every new document passed exact GET
+read-back using its stable SHA256(run_id) ID. The six read-back safe-document
+SHA256 values are recorded in
+`artifacts/milestones-4-6-acceptance-20261112/milestone-6-indexed-correlation-evidence.json`.
+The existing Kibana data view `Suricata AI Summary` recognizes the additive
+provenance, classification and safety fields. The dedicated Kibana data view
+is `Suricata AI Correlated Lab`; the existing dashboard has panels for
+scenario, hybrid classification, SID matches, SHA provenance, verification
+status and safety flags.
 
 The deterministic AI summary IDs and hashes identify the six local worker
-summary artifacts. `ai_summary_indexed=false` is intentionally retained because
-the existing `suricata-ai-summary` index contains four unrelated historical
-documents and none of these six PCAP hashes. Native EVE and existing indices
-were not modified.
+summary artifacts. The original worker summaries remain unchanged; the indexed
+documents are derived from each summary plus its validated review artifact.
+Native EVE and existing production indices were not modified.

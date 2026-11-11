@@ -114,6 +114,104 @@ def validate_hybrid_classification_match(
     return summary_classification
 
 
+def build_derived_summary(
+    summary: Mapping[str, Any],
+    review: Mapping[str, Any],
+    *,
+    manifest_sha256: str,
+    feature_csv_sha256: str,
+    original_worker_summary_sha256: str,
+    source_review_sha256: str,
+) -> Dict[str, Any]:
+    """Build a non-mutating summary document from a worker summary and review."""
+    safe_summary = _safe_summary_fields(summary)
+    for name, value in {
+        "manifest_sha256": manifest_sha256,
+        "feature_csv_sha256": feature_csv_sha256,
+        "original_worker_summary_sha256": original_worker_summary_sha256,
+        "source_review_sha256": source_review_sha256,
+    }.items():
+        if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
+            raise ValueError(f"Invalid {name}")
+    if not isinstance(review, Mapping):
+        raise ValueError("Review artifact must be an object")
+    hybrid_review = review.get("hybrid_review")
+    if not isinstance(hybrid_review, Mapping):
+        raise ValueError("Review is missing hybrid_review")
+    classification = normalize_hybrid_classification(
+        hybrid_review.get("classification")
+    )
+    review_feature_sha256 = review.get("feature_csv_sha256")
+    if review_feature_sha256 != feature_csv_sha256:
+        raise ValueError("Feature hash mismatch")
+    if review.get("source_pcap_sha256") != summary.get("pcap_sha256"):
+        raise ValueError("PCAP hash mismatch")
+    if review.get("model_sha256") != summary.get("model_sha256"):
+        raise ValueError("Model hash mismatch")
+    summary_for_match = dict(summary)
+    summary_for_match["hybrid_classification"] = classification
+    validate_hybrid_classification_match(summary_for_match, review)
+    if summary.get("approved", False) is not False:
+        raise ValueError("Refusing to publish an approved rule claim")
+    if summary.get("deployable") is not False or summary.get("deployed") is not False:
+        raise ValueError("Refusing to publish a deployable or deployed rule claim")
+    for source in (review, hybrid_review):
+        for key in ("approved", "deployable", "deployed"):
+            if source.get(key) is not False:
+                raise ValueError(f"Review safety flag {key} must be false")
+    if summary.get("review_status") != review.get("status"):
+        raise ValueError("Review status mismatch")
+    derived = dict(safe_summary)
+    derived.update(
+        {
+            "summary_schema_version": summary["schema_version"],
+            "derivation_type": "worker_summary_plus_verified_review",
+            "derivation_version": "milestone6-v1",
+            "manifest_sha256": manifest_sha256,
+            "feature_csv_sha256": feature_csv_sha256,
+            "original_worker_summary_sha256": original_worker_summary_sha256,
+            "source_review_sha256": source_review_sha256,
+            "hybrid_classification": classification,
+            "approved": False,
+        }
+    )
+    return derived
+
+
+def _safe_derived_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
+    required = {
+        "summary_schema_version",
+        "derivation_type",
+        "derivation_version",
+        "manifest_sha256",
+        "feature_csv_sha256",
+        "original_worker_summary_sha256",
+        "source_review_sha256",
+        "hybrid_classification",
+        "approved",
+    }
+    missing = required - set(summary)
+    if missing:
+        raise ValueError(
+            f"Derived Elasticsearch summary is missing required fields: {sorted(missing)}"
+        )
+    safe = _safe_summary_fields(summary)
+    if summary["derivation_type"] != "worker_summary_plus_verified_review":
+        raise ValueError("Unsupported derived summary type")
+    if summary["approved"] is not False:
+        raise ValueError("Refusing to publish an approved rule claim")
+    for key in (
+        "manifest_sha256",
+        "feature_csv_sha256",
+        "original_worker_summary_sha256",
+        "source_review_sha256",
+    ):
+        if not SHA256_PATTERN.fullmatch(summary[key]):
+            raise ValueError(f"Invalid {key}")
+    safe.update({key: summary[key] for key in required})
+    return safe
+
+
 def load_manifest(path: Path) -> Dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
@@ -779,7 +877,11 @@ def write_elasticsearch_summary(
     ):
         raise ValueError("Elasticsearch URL must be an HTTP(S) base URL without credentials")
 
-    safe_document = _safe_summary_fields(summary)
+    safe_document = (
+        _safe_derived_summary_fields(summary)
+        if "derivation_type" in summary
+        else _safe_summary_fields(summary)
+    )
     document_id = hashlib.sha256(
         summary["run_id"].encode("utf-8")
     ).hexdigest()
