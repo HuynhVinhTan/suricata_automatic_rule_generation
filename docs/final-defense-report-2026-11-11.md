@@ -2,10 +2,12 @@
 
 ## Decision
 
-Phases 1 and 2 are accepted for the bounded VM1/VM2 laboratory experiment.
-Phase 3 is **not met**: no safe executable Suricata rule was generated or
-validated. The Python hybrid review separated the six fresh holdouts, but the
-frozen standalone IF/AE models did not.
+Phases 1 and 2 remain accepted for the bounded VM1/VM2 laboratory experiment.
+Milestone 4 is met for the existing EVE-to-ELK path and review-only Kibana
+dashboard. Milestone 5 is met only for a validated review-only RST telemetry
+proxy; it is not the complete Python hybrid decision. Milestone 6 is partially
+met: the live EVE path and independent AI summary path are operational, but no
+shared run identifier or hash was present to prove event-level correlation.
 
 This result is not a production-accuracy claim. Only three independent Attack
 sessions and three independent Normal sessions were tested in one controlled
@@ -67,18 +69,21 @@ baseline and augmented whole-PCAP results of TP=1, FP=1, FN=0, TN=0, precision
 0.5, recall 1.0, F1 0.667 and FPR 1.0. That candidate was rejected because it
 alerted on Normal traffic as well as Attack traffic.
 
-No new executable rule was generated or replayed for the fresh experiment.
-Suricata syntax cannot express the complete Python verdict: unique destination
+The complete Python verdict remains non-expressible by one Suricata signature:
+unique destination
 port counting over a sliding window, correlated RST evidence, handshake
 failure conditions and frozen ML consensus. An RST-only rule would be a narrow
 proxy and would create false positives on legitimate failed connections.
 
-The smallest viable alternative is a review-only architecture: keep the Python
-hybrid as the decision layer and, only after owner approval, use Suricata for a
-narrow telemetry/proxy signal whose semantics are explicitly not equivalent to
-the hybrid verdict. A future exact implementation would require stateful
-correlation outside one Suricata signature and a new approval-controlled
-integration.
+The validated alternative is a review-only architecture: keep the Python hybrid
+as the decision layer and use Suricata SID 9103003 only as a narrow telemetry
+proxy. The candidate uses `flags:R+`, `track by_dst`, threshold 3 in 60 seconds,
+and rule SHA-256
+`7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df`. It
+triggered 3/3 Attack sessions and 0/3 Normal sessions in isolated Suricata
+8.0.3 replay. The status is `validated_for_review`; approved, deployable and
+deployed are all false. This does not count unique ports or implement the full
+hybrid verdict.
 
 ## Safety and reproducibility
 
@@ -89,8 +94,8 @@ Filebeat, EVE-to-ELK, firewall settings and privileges were not modified by
 the experiment.
 
 The temporary HTTP service and tcpdump processes are gone, and port 18081 is
-closed. The final audit still reports `/usr/bin/tcpdump cap_net_raw=ep`; owner
-cleanup therefore remains unresolved and must be completed interactively.
+closed. The final audit at `2026-11-11T17:34:31Z` reports
+`getcap -v /usr/bin/tcpdump` as `/usr/bin/tcpdump`, with no capability text.
 The current production Suricata YAML SHA-256 is
 `6224bc7d0bc04d97c4282f54a71e0736341341aa82c530fe22aed3da28814d72`; the
 deterministic rules-directory manifest SHA-256 is
@@ -105,7 +110,8 @@ deterministic rules-directory manifest SHA-256 is
 | Independent Attack/Normal holdouts | Met for 3 + 3 controlled sessions |
 | Standalone IF/AE separation | Not met |
 | Python hybrid separation | Met in this bounded lab |
-| Safe executable Suricata rule | **Not met** |
-| Baseline versus augmented Suricata improvement | Not demonstrated |
+| Review-only RST proxy rule | **Met: validated_for_review, SID 9103003** |
+| Complete hybrid logic in Suricata | **Not met by design** |
+| Baseline versus augmented Suricata comparison | Met for proxy gate: 3/3 Attack, 0/3 Normal |
 | Production safety | Preserved |
-| tcpdump capability cleanup | **Owner action still required** |
+| tcpdump capability cleanup | **Met: no capability reported** |

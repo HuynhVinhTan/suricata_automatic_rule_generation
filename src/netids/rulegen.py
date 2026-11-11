@@ -126,7 +126,7 @@ def _build_rst_rule(*, source_ip, destination_ip, threshold, window_seconds, sid
     return (
         f"alert tcp {source} any -> {destination} any "
         '(msg:"ML REVIEW - repeated TCP RST responses"; '
-        f"flow:stateless; flags:R; threshold:type threshold,track by_dst,"
+        f"flow:stateless; flags:R+; threshold:type threshold,track by_dst,"
         f"count {threshold},seconds {window_seconds}; "
         f"classtype:attempted-recon; sid:{sid}; rev:1;)"
     )

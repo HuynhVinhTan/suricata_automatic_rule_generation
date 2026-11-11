@@ -1,6 +1,6 @@
 # Final technical acceptance checklist
 
-Date: 2026-11-11
+Date: 2026-11-12
 Branch: `feat/pcap-ai-worker-integration`
 
 | Gate | Decision | Evidence / limitation |
@@ -13,9 +13,13 @@ Branch: `feat/pcap-ai-worker-integration`
 | Standalone IF/AE evaluation | PASS as reported | TP=3, FP=3, FN=0, TN=0, FPR=1.0 |
 | Python hybrid evaluation | PASS as reported | TP=3, FP=0, FN=0, TN=3, observed FPR=0.0 |
 | Review-only safety | PASS | `approved=false`, `deployable=false`, `deployed=false` exact booleans |
-| Safe executable Suricata rule | NOT MET | No rule can express the validated unique-port/window/RST/handshake conjunction safely |
-| Baseline versus augmented improvement | NOT DEMONSTRATED | No safe candidate existed to replay |
-| tcpdump capability cleanup | FAILED / OWNER ACTION REQUIRED | VM1 still reports `cap_net_raw=ep`; no removal was attempted by this audit |
+| Milestone 4 EVE-to-ELK | PASS | Live EVE/Filebeat path; `suricata-eve-*` and `suricata-ai-summary` indexed; Kibana objects present |
+| Review-only RST proxy | PASS | SID `9103003`, threshold 3/60s, rule SHA-256 `7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df`; 3/3 Attack and 0/3 Normal sessions |
+| Complete hybrid logic in Suricata | NOT MET | Python remains authoritative for unique ports, correlated RST, handshake and frozen ML consensus |
+| Baseline versus augmented improvement | PASS for proxy gate | Baseline candidate 0/6 sessions; augmented candidate 3/3 Attack and 0/3 Normal |
+| Milestone 6 event-level correlation | NOT MET | Existing EVE and AI summary documents lack a verified shared run ID or hash |
+| tcpdump capability cleanup | PASS | VM1 `getcap -v /usr/bin/tcpdump` returned `/usr/bin/tcpdump` only |
 
 The six holdouts are controlled-lab evidence, not a production accuracy claim.
-The rule-generation criterion must not be declared complete.
+The complete-hybrid-in-Suricata criterion is not met; the review-only RST proxy
+criterion is met and remains non-deployable.

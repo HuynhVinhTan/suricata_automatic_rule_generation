@@ -176,7 +176,7 @@ def test_generates_rst_rule_only_with_all_independent_gates(tmp_path):
     )
     assert result["status"] == "needs_review"
     assert result["sid"] == 9103003
-    assert 'flags:R;' in result["rule"]
+    assert 'flags:R+;' in result["rule"]
     assert "track by_dst" in result["rule"]
     assert result["metadata"]["rule_sha256"]
     assert result["metadata"]["approved"] is False

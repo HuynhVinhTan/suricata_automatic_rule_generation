@@ -2,15 +2,12 @@
 
 ## Blocking
 
-1. The owner must remove and verify the temporary VM1 tcpdump file capability.
-   The current read-only audit still reports `/usr/bin/tcpdump cap_net_raw=ep`.
-   This audit did not alter privileges. The owner should diagnose the same
-   interactive `sudo -i` context and then verify `getcap -v /usr/bin/tcpdump`
-   returns no capability.
-2. A safe executable Suricata rule remains unavailable. The Python hybrid is a
-   review-only decision and is not equivalent to a single Suricata signature.
-3. Baseline-versus-augmented Suricata improvement is not demonstrated because
-   no candidate survived the false-positive and semantic-equivalence gates.
+1. Milestone 6 event-level correlation remains unproven. The production EVE
+   documents and AI summaries have no verified shared run ID or hash, and the
+   production Filebeat input must not be changed solely to add one.
+2. The validated SID 9103003 is a review-only RST telemetry proxy. The Python
+   hybrid remains authoritative and is not equivalent to a single Suricata
+   signature.
 
 ## Scientific scope
 

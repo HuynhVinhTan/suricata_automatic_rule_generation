@@ -2,7 +2,9 @@
 
 ## Status
 
-This experiment completed controlled Attack and Normal holdouts, but the final rule gate **failed**. No rule was generated, deployed, or replayed. The prior SID 9103001 result remains rejected and is not reused.
+The original 2026-11-11 experiment rejected the SYN candidate. The 2026-11-12
+continuation validated a separate review-only RST proxy, SID 9103003; the prior
+SIDs 9102001, 9102002, 9103001 and 9103002 remain rejected and are not reused.
 
 ## Preflight evidence
 
@@ -16,7 +18,7 @@ This experiment completed controlled Attack and Normal holdouts, but the final r
 | VM2 alias | `suricata-vm2`, verified as Kali `192.168.10.20/24` |
 | Production services | Suricata and Filebeat active; no restart/reload performed |
 
-VM2 was verified on `eth1` at `192.168.10.20/24`. VM1 port verification found the temporary HTTP service on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. The final read-only audit still reports `/usr/bin/tcpdump cap_net_raw=ep`; no capability or sudoers change was performed, and owner cleanup remains pending.
+VM2 was verified on `eth1` at `192.168.10.20/24`. VM1 port verification found the temporary HTTP service on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. The final read-only audit at `2026-11-11T17:34:31Z` reports `/usr/bin/tcpdump` with no file capability; no capability or sudoers change was performed.
 
 ## Experiment design held for execution
 
@@ -36,7 +38,7 @@ No threshold, model bundle, five-feature contract, production YAML, production r
 
 `src/netids/rst_evidence.py` correlates server-direction RST and RST-ACK packets with preceding client SYNs, de-duplicates retransmissions, preserves no-response/filtered traffic as unknown evidence, and reports RST ratio, handshake success ratio, bidirectional payload ratio, failed connections, RST windows, and PCAP provenance. It does not add these fields to the frozen model feature vector.
 
-`src/netids/rulegen.py` now supports a separate review-only RST rule family. Its threshold is `max(Normal calibration RST count) + 1`; Normal validation, ML consensus, port diversity, attack RST evidence, SID collision checks, and provenance are required. The rule uses `flags:R` and `threshold:type threshold,track by_dst`, so it does not claim to count unique destination ports. SIDs 9102001, 9102002, 9103001, and 9103002 are reserved from allocation.
+`src/netids/rulegen.py` now supports a separate review-only RST rule family. Its threshold is `max(Normal calibration RST count) + 1`; Normal validation, ML consensus, port diversity, attack RST evidence, SID collision checks, and provenance are required. The validated candidate uses `flags:R+` and `threshold:type threshold,track by_dst`, so it does not claim to count unique destination ports. SIDs 9102001, 9102002, 9103001, and 9103002 are reserved from allocation.
 
 ## Isolated syntax evidence
 
@@ -59,7 +61,7 @@ Final independent sessions used a bidirectional filter for the private lab pair 
 
 RST correlation marked both captures complete: Attack `rst_ratio=1.0`, 24/24 RST-ACK responses, 24 unique destination ports; Normal `rst_ratio=0.0833333333`, 2/2 RST-ACK responses, 3 unique destination ports, and 22 bidirectional payload flows. The earlier one-way captures and the first Normal capture that contained only 23 SYNs are retained as non-qualifying evidence and are not used for claims.
 
-Frozen IF/AE inference used model SHA256 `206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d`, with no training or threshold change. Both final sessions produced 5 windows, with IF=5, AE=5, and consensus=5. Because Normal also produced 5/5 consensus alerts, the independent false-positive/ML gate failed. No RST-aware rule was generated, and isolated Suricata 8.0.3 validation/replay was correctly not run for a nonexistent candidate.
+Frozen IF/AE inference used model SHA256 `206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d`, with no training or threshold change. Both final sessions produced 5 windows, with IF=5, AE=5, and consensus=5. Because Normal also produced 5/5 consensus alerts, the original independent false-positive/ML gate failed. The 2026-11-12 continuation separately validated the RST proxy recorded below.
 
 ## Historical pre-fresh calibration state
 
@@ -111,10 +113,9 @@ Attack produced 24 flows and zero baseline alerts. Normal produced 24 flows, 22 
 The hybrid review result is not convertible to a safe single RST Suricata rule: an RST-only candidate calibrated at one response would also match Normal v03's two legitimate closed-port controls, while Suricata rule syntax cannot express the required unique-port and completed-handshake conditions together. Candidate generation therefore remains correctly blocked.
 
 Production Suricata and Filebeat remained active throughout. The final
-read-only audit still reports `/usr/bin/tcpdump cap_net_raw=ep`; the earlier
-contrary cleanup statement is superseded by that audit and capability removal
-remains an owner-controlled blocker. No production service, sudoers
-configuration, or capability was changed in this continuation.
+read-only audit reports `/usr/bin/tcpdump` with no capability text. No
+production service, sudoers configuration, or capability was changed in this
+continuation.
 
 ## Acceptance status
 
@@ -122,10 +123,10 @@ configuration, or capability was changed in this continuation.
 |---|---|
 | Hybrid integrated into PCAP/ML worker | Achieved; review-only, provenance-checked, and fail-closed |
 | Independent Attack/Normal validation | Achieved for six fresh bounded-lab holdouts; v02/v03 remain exploratory |
-| Safe candidate Suricata rule generated | No; evidence gates correctly rejected it |
-| Suricata Attack replay of candidate | Not run; no candidate existed |
-| Suricata Normal replay of candidate | Not run; no candidate existed |
-| Baseline versus augmented improvement | Not demonstrated |
+| Safe candidate Suricata rule generated | SID 9103003, validated_for_review only |
+| Suricata Attack replay of candidate | 3/3 sessions triggered SID 9103003 |
+| Suricata Normal replay of candidate | 0/3 sessions triggered SID 9103003 |
+| Baseline versus augmented improvement | Proxy gate passed; full hybrid equivalence not claimed |
 
 The fresh calibration and holdout record supersedes the earlier recovery blocker. The calibrated result is still bounded to this VM1/VM2 lab and does not establish production generalization.
 
