@@ -327,6 +327,21 @@ def _review_is_safe(review: Mapping[str, Any]) -> str:
         raise WorkerProcessingError(
             f"Review artifact candidate_gate field {key} must be boolean false"
         )
+
+    hybrid = review.get("hybrid_review")
+    if hybrid is not None:
+        if not isinstance(hybrid, dict) or hybrid.get("schema_version") != "hybrid_review_v1":
+            raise WorkerProcessingError("Review artifact hybrid review is malformed")
+        for field in ("approved", "deployable", "deployed", "suricata_signature_equivalent"):
+            if hybrid.get(field) is not False:
+                raise WorkerProcessingError(
+                    f"Review artifact hybrid {field} must be boolean false"
+                )
+        if hybrid.get("requires_manual_review") is not True or hybrid.get("python_only") is not True:
+            raise WorkerProcessingError("Review artifact hybrid safety contract is invalid")
+        provenance = hybrid.get("calibration_provenance")
+        if not isinstance(provenance, dict) or provenance.get("status") not in {"accepted", "rejected"}:
+            raise WorkerProcessingError("Review artifact hybrid calibration provenance is invalid")
     return status
 
 

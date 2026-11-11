@@ -373,6 +373,22 @@ def test_valid_v0_2_review_is_accepted():
     assert worker._review_is_safe(_valid_review()) == "needs_review"
 
 
+def test_hybrid_review_tampering_is_rejected():
+    review = _valid_review()
+    review["hybrid_review"] = {
+        "schema_version": "hybrid_review_v1",
+        "classification": "unavailable_missing_calibration",
+        "requires_manual_review": True,
+        "approved": True,
+        "deployable": False,
+        "deployed": False,
+        "python_only": True,
+        "suricata_signature_equivalent": False,
+    }
+    with pytest.raises(worker.WorkerProcessingError, match="hybrid"):
+        worker._review_is_safe(review)
+
+
 def test_supported_v0_1_review_uses_legacy_schema_contract():
     review = _valid_review()
     review["schema_version"] = "lab_rule_review_v0_1"

@@ -1,0 +1,57 @@
+{
+  "schema_version": "hybrid_normal_calibration_v1",
+  "feature_definition": "TCP SYN destination-port sliding diversity",
+  "window_seconds": 60,
+  "references": [
+    {
+      "path": "lab-sessions/normal-batch-v01/normal-train.pcap",
+      "sha256": "b79b45a8c62394a1fbb7284b4c3beead4139f51ab30438db5ea4df1bea46036a",
+      "ground_truth_label": "NORMAL",
+      "ground_truth_source": "normal-batch-v01 CSV label; capture manifest/log not present",
+      "source_ipv4": "192.168.10.20",
+      "destination_ipv4": "192.168.10.10",
+      "capture_metadata": null
+    },
+    {
+      "path": "lab-sessions/normal-batch-v01/normal-cal.pcap",
+      "sha256": "3920256b68ac424b2296c62554d89637f32fba18ffa9fac4c3a62cb6d2cec5a0",
+      "ground_truth_label": "NORMAL",
+      "ground_truth_source": "normal-batch-v01 CSV label; capture manifest/log not present",
+      "source_ipv4": "192.168.10.20",
+      "destination_ipv4": "192.168.10.10",
+      "capture_metadata": null
+    },
+    {
+      "path": "lab-sessions/normal-independent-20261031-v01/normal-independent.pcap",
+      "sha256": "27fe3158b29568db084fbb9c06528fcc82192f1655561a4a15dd02446f3d3442",
+      "ground_truth_label": "NORMAL",
+      "ground_truth_source": "directory/documentation label; capture manifest/log not present",
+      "source_ipv4": "192.168.10.20",
+      "destination_ipv4": "192.168.10.10",
+      "capture_metadata": null
+    },
+    {
+      "path": "lab-sessions/normal-matched12-20261031-v01/normal-matched12.pcap",
+      "sha256": "00488e39e6be54c7e261373b17b5223ea8eff4ccae2c827ec3d9b6cae1dd683b",
+      "ground_truth_label": "NORMAL",
+      "ground_truth_source": "directory/documentation label; capture manifest/log not present",
+      "source_ipv4": "192.168.10.20",
+      "destination_ipv4": "192.168.10.10",
+      "capture_metadata": null
+    },
+    {
+      "path": "lab-sessions/normal-multiport-20261031-v01/normal-multiport.pcap",
+      "sha256": "494a100b1ad47f1d15f570f7940ab6e0abce02c0b86dda7eddc5ebd04d334736",
+      "ground_truth_label": "NORMAL",
+      "ground_truth_source": "directory/documentation label; capture manifest/log not present",
+      "source_ipv4": "192.168.10.20",
+      "destination_ipv4": "192.168.10.10",
+      "capture_metadata": null
+    }
+  ],
+  "threshold_provenance": {
+    "method": "max_complete_normal_reference_plus_one",
+    "final_holdout_used": false
+  },
+  "calibration_status": "rejected_unknown_capture_integrity"
+}

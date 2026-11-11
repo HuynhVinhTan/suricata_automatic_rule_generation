@@ -231,7 +231,10 @@ def test_pipeline_keeps_review_gate_closed(
     assert gate["tcp_completed_payload_veto"] is benign_like
 
     expected_gate = (
-        consensus > 0 and expected_trigger and not benign_like
+        consensus > 0
+        and expected_trigger
+        and not benign_like
+        and review["hybrid_review"]["classification"] == "reconnaissance_consistent"
     )
     assert gate["passed"] is expected_gate
     assert gate["rule_approval_authorized"] is False
@@ -274,6 +277,11 @@ def test_pipeline_keeps_review_gate_closed(
     assert review["approved"] is False
     assert review["deployable"] is False
     assert review["deployed"] is False
+
+    if not review["hybrid_review"].get("calibration_provenance", {}).get("status") == "accepted":
+        assert review["hybrid_review"]["classification"] == "unavailable_missing_calibration"
+        assert review["rule_generated_in_this_run"] is False
+        assert review["status"] == "no_candidate"
 
     assert not (output / "candidate.rules").exists()
     assert not (output / "ml-generated.rules").exists()
