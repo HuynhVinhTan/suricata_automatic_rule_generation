@@ -1,0 +1,236 @@
+"""Run real OFFLINE Suricata 8.0.3 PCAP replays before signing their results.
+
+This runs only --pcap-file (-r) with a dedicated isolated YAML and -S
+exclusive rule file. It never captures a live interface or changes a service.
+A trusted replay key is held separately on the VM1 operator account.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+from netids.lifecycle_ed25519 import sha256_file, sign_record
+from netids.rulegen import collect_sids
+
+SID = 9103003
+RULE_SHA = "7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df"
+MODEL_SHA = "206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d"
+CAL_SHA = "814e17006c5cfee433477128e9d29abf7e403e28948d78a968c46c800b67e060"
+DECISION_SHA = "c7dffd3021d0c0195789e45c369f30108186753076b95586a2d80c9c744b579a"
+EXPECTED_CASES = {
+    "worker-attack-holdout-01-20261111": ("attack", "7eb27fe774c8d889480662eaaea1e68b2336cc04c943ff06be399a24e4c0bbb5"),
+    "worker-attack-holdout-02-20261111": ("attack", "80b118068f89f0939d9a3c9ba72c977b08f95eff74a04e65b31cd548e0258f61"),
+    "worker-attack-holdout-03-20261111": ("attack", "837dd0b52f3472ce620baf9479f7f44da7515901455f54e2fe907277648a3343"),
+    "worker-normal-holdout-01-20261111": ("normal", "a4500b006908c26ffeed932244148c7372f2be2cb8abeb954cfe17ad3cda0fe7"),
+    "worker-normal-holdout-02-20261111": ("normal", "aad42d5710eb1006b76b744983744f47322137b2703126537b46787e34b01aaf"),
+    "worker-normal-holdout-03-20261111": ("normal", "5a61ae059d8f25a2aa6bf1672f82d66c36f3e64de8d9d01dde6afca5081a2468"),
+}
+_BAD_PATHS = ("/var/log/suricata", "/run/suricata", "/var/run/suricata")
+_HEX = re.compile(r"^[a-f0-9]{64}$")
+
+
+class ReplayGateError(ValueError):
+    pass
+
+
+def _under(path: Path, root: Path) -> Path:
+    path = Path(path)
+    if path.is_symlink() or any(part.is_symlink() for part in path.parents):
+        raise ReplayGateError("Symlink not allowed in isolated output path")
+    absolute = path.resolve()
+    if not absolute.is_relative_to(root) or absolute == root:
+        raise ReplayGateError("Output path escapes isolated root")
+    return absolute
+
+
+def _config_safe(config_path: Path, root: Path) -> str:
+    path = _under(config_path, root)
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError, UnicodeError) as exc:
+        raise ReplayGateError("Invalid isolated YAML configuration") from exc
+    if not isinstance(data, dict):
+        raise ReplayGateError("Isolated YAML is not an object")
+    outputs = data.get("outputs")
+    if not isinstance(outputs, list):
+        raise ReplayGateError("Isolated YAML must configure outputs")
+    eve_enabled = False
+    for item in outputs:
+        if not isinstance(item, dict):
+            raise ReplayGateError("Invalid YAML output")
+        for name, opts in item.items():
+            if not isinstance(opts, dict):
+                continue
+            for field in ("filename", "file"):
+                filename = opts.get(field)
+                if filename is not None and (
+                    not isinstance(filename, str)
+                    or Path(filename).is_absolute()
+                    or ".." in Path(filename).parts
+                    or any(bad in filename for bad in _BAD_PATHS)
+                ):
+                    raise ReplayGateError("Unsafe absolute or traversal output path")
+            if name == "eve-log" and opts.get("enabled", True) is not False:
+                eve_enabled = opts.get("filename") == "eve.json"
+    if not eve_enabled:
+        raise ReplayGateError("Require enabled eve-log with relative eve.json filename")
+    return sha256_file(path)
+
+
+def _run(command: list[str], *, timeout: int = 180) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReplayGateError("Suricata command unavailable or timed out") from exc
+    if result.returncode != 0:
+        raise ReplayGateError("Isolated Suricata command failed (see local operator logs)")
+    return result
+
+
+def _candidate_alerts(eve_path: Path) -> tuple[int, int]:
+    if eve_path.is_symlink() or not eve_path.is_file():
+        raise ReplayGateError("Suricata did not create a fresh EVE JSON file")
+    count = 0
+    total = 0
+    with eve_path.open(encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeError) as exc:
+                raise ReplayGateError("Malformed EVE event") from exc
+            total += 1
+            if event.get("event_type") == "alert":
+                sid = event.get("alert", {}).get("signature_id")
+                if sid != SID:
+                    raise ReplayGateError("Unexpected SID in exclusive rule replay")
+                count += 1
+    if total == 0:
+        raise ReplayGateError("Empty EVE output; cannot prove replay")
+    return count, total
+
+
+def attest_six_holdouts(
+    *,
+    manifest_path: Path,
+    expected_manifest_sha256: str,
+    rule_file: Path,
+    isolated_yaml: Path,
+    isolated_root: Path,
+    private_key_pem: bytes,
+    private_key_password: bytes,
+    suricata_binary: str = "/usr/bin/suricata",
+) -> dict:
+    """Sign only six immutable real-PCAP replays that passed all gates."""
+    root = Path(isolated_root).resolve()
+    if root.name != "isolated-lifecycle-9103003" or root.is_symlink():
+        raise ReplayGateError("Wrong isolated root")
+    if not root.exists() or not root.is_dir():
+        raise ReplayGateError("Isolated root missing")
+    if not _HEX.fullmatch(expected_manifest_sha256):
+        raise ReplayGateError("Owner-pinned manifest hash required")
+    if sha256_file(manifest_path) != expected_manifest_sha256:
+        raise ReplayGateError("Replay manifest hash mismatch")
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != "suricata_replay_manifest_v1":
+        raise ReplayGateError("Invalid replay manifest")
+    if (
+        manifest.get("sid") != SID
+        or manifest.get("rule_sha256") != RULE_SHA
+        or manifest.get("model_sha256") != MODEL_SHA
+        or manifest.get("calibration_sha256") != CAL_SHA
+        or manifest.get("decision_manifest_sha256") != DECISION_SHA
+    ):
+        raise ReplayGateError("Frozen provenance mismatch")
+    case_list = manifest.get("cases")
+    if not isinstance(case_list, list) or len(case_list) != 6:
+        raise ReplayGateError("Exactly six original holdouts required")
+    by_id = {}
+    for case in case_list:
+        if not isinstance(case, dict) or not isinstance(case.get("id"), str):
+            raise ReplayGateError("Invalid replay case")
+        identifier = case["id"]
+        if identifier in by_id or identifier not in EXPECTED_CASES:
+            raise ReplayGateError("Duplicate or unknown holdout")
+        label, digest = EXPECTED_CASES[identifier]
+        if case.get("scenario") != label or case.get("pcap_sha256") != digest:
+            raise ReplayGateError("Holdout label or pinned hash mismatch")
+        pcap_path = Path(case.get("pcap_path", ""))
+        if pcap_path.is_symlink() or not pcap_path.is_file():
+            raise ReplayGateError("Original holdout file missing or symlinked")
+        if sha256_file(pcap_path) != digest:
+            raise ReplayGateError("Original holdout bytes mismatch")
+        by_id[identifier] = pcap_path.resolve(strict=True)
+    if set(by_id) != set(EXPECTED_CASES):
+        raise ReplayGateError("Missing original holdout")
+    if Path(rule_file).is_symlink() or sha256_file(rule_file) != RULE_SHA:
+        raise ReplayGateError("SID 9103003 rule SHA256 mismatch")
+    rule_text = Path(rule_file).read_text(encoding="utf-8").strip()
+    if collect_sids([rule_text]) != {SID} or not rule_text.startswith("alert tcp "):
+        raise ReplayGateError("Rule is not the approved alert-only TCP signature")
+    config_sha = _config_safe(isolated_yaml, root)
+    version = _run([suricata_binary, "-V"], timeout=30).stdout.strip()
+    if "8.0.3" not in version:
+        raise ReplayGateError("Suricata 8.0.3 required")
+    run_root = _under(root / "replay-evidence", root)
+    if run_root.exists():
+        raise ReplayGateError("Replay evidence directory exists; never overwrite it")
+    run_root.mkdir(mode=0o700, parents=False)
+    syntax_dir = run_root / "syntax"
+    syntax_dir.mkdir(mode=0o700)
+    _run([
+        suricata_binary, "-T", "--init-errors-fatal",
+        "-c", str(isolated_yaml), "-S", str(rule_file), "-l", str(syntax_dir),
+    ], timeout=120)
+    observations = []
+    for identifier in sorted(by_id):
+        case_dir = run_root / identifier
+        case_dir.mkdir(mode=0o700)
+        _run([
+            suricata_binary, "-r", str(by_id[identifier]), "-k", "none",
+            "--init-errors-fatal", "-c", str(isolated_yaml),
+            "-S", str(rule_file), "-l", str(case_dir),
+        ], timeout=300)
+        count, events = _candidate_alerts(case_dir / "eve.json")
+        label, digest = EXPECTED_CASES[identifier]
+        if (label == "attack" and count == 0) or (label == "normal" and count != 0):
+            raise ReplayGateError("Replay false-negative or false-positive gate failed")
+        observations.append({
+            "run_id": identifier,
+            "scenario": label,
+            "pcap_sha256": digest,
+            "eve_sha256": sha256_file(case_dir / "eve.json"),
+            "events": events,
+            "candidate_sid_alerts": count,
+        })
+    result = {
+        "schema_version": "isolated_replay_attestation_v1",
+        "experiment_id": "suricata-isolated-9103003-20261112",
+        "candidate_id": manifest.get("candidate_id"),
+        "run_id": manifest.get("run_id"),
+        "pcap_sha256": manifest.get("pcap_sha256"),
+        "sid": SID,
+        "rule_sha256": RULE_SHA,
+        "model_sha256": MODEL_SHA,
+        "calibration_sha256": CAL_SHA,
+        "decision_manifest_sha256": DECISION_SHA,
+        "manifest_sha256": expected_manifest_sha256,
+        "isolated_config_sha256": config_sha,
+        "suricata_version": version,
+        "syntax_authenticated": True,
+        "attack_replay_passed": True,
+        "normal_replay_passed": True,
+        "normal_false_positive_count": 0,
+        "threshold": 3,
+        "cases": observations,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Only sign after all independent Suricata subprocesses and parsed EVE gates pass.
+    return sign_record(result, private_key_pem, private_key_password, domain="isolated-replay-v1")
