@@ -81,6 +81,17 @@ def build_owner_authorization(
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         raise ValueError("UTC time required")
+    try:
+        replay_time = datetime.fromisoformat(
+            replay_record["created_at"].replace("Z", "+00:00")
+        )
+    except (KeyError, AttributeError, ValueError) as exc:
+        raise ValueError("Replay attestation lacks a trusted UTC timestamp") from exc
+    if replay_time.tzinfo is None:
+        raise ValueError("Replay attestation timestamp is naive")
+    age = now.astimezone(timezone.utc) - replay_time.astimezone(timezone.utc)
+    if age < timedelta(minutes=-1) or age > timedelta(hours=1):
+        raise ValueError("Replay attestation is stale or from the future")
     approved = now.astimezone(timezone.utc)
     expires = approved + timedelta(minutes=15)
     replay_unsigned = json.dumps(
