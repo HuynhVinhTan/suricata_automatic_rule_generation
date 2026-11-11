@@ -1,0 +1,31 @@
+{
+  "schema_version": "final_runtime_acceptance_v1",
+  "status": "BLOCKED_PENDING_OWNER_APPROVAL",
+  "candidate": {
+    "sid": 9103003,
+    "rule_sha256": "7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df",
+    "suricata_version": "8.0.3 RELEASE",
+    "target_vm": "suricata-vm1",
+    "interface": "lo",
+    "runtime_id": "isolated-lifecycle-9103003"
+  },
+  "preflight": {
+    "vm1_reachable_read_only": true,
+    "production_suricata_active": true,
+    "production_filebeat_active": true,
+    "production_capture_interface": "ens33",
+    "tcpdump_process_present": false,
+    "tcpdump_capability_present": false,
+    "activation_attempted": false,
+    "rollback_attempted": false
+  },
+  "replay_attestation": "NOT_SIGNED_NO_TRUSTED_REPLAY_KEY",
+  "owner_approval": "NOT_SIGNED_NO_OWNER_AUTHORIZATION",
+  "activation": "NOT_PERFORMED",
+  "rollback": "NOT_PERFORMED",
+  "production_safety": "PRESERVED",
+  "limitations": [
+    "This record is a blocker record, not signed runtime evidence.",
+    "The user prompt does not constitute owner authorization."
+  ]
+}

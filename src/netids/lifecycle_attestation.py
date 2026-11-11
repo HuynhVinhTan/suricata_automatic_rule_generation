@@ -10,6 +10,10 @@ import hashlib
 import hmac
 import json
 import re
+import base64
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DOMAINS = frozenset({"isolated-replay-v1", "isolated-owner-approval-v1"})
@@ -30,6 +34,18 @@ def verify_attestation(record: dict, secret: bytes | None, *, domain: str) -> bo
     ):
         return False
     signature = record.get("attestation_hmac")
+    if signature is None and record.get("attestation_signature") and isinstance(secret, bytes) and len(secret) == 32:
+        try:
+            Ed25519PublicKey.from_public_bytes(secret).verify(
+                base64.b64decode(record["attestation_signature"], validate=True),
+                b"suricata-ai:" + domain.encode("ascii") + b"\0" + json.dumps(
+                    {key: value for key, value in record.items() if key != "attestation_signature"},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8"),
+            )
+            return True
+        except (ValueError, TypeError, UnicodeError, InvalidSignature):
+            return False
     if not isinstance(signature, str) or not _HEX_SHA256.fullmatch(signature):
         return False
     content = {key: value for key, value in record.items() if key != "attestation_hmac"}
