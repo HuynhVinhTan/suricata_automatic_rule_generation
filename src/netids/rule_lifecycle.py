@@ -77,10 +77,8 @@ class RuleLifecycle:
         if raw_root.is_symlink():
             raise LifecycleError("Isolated root must not be a symlink")
         self.isolated_root = raw_root.resolve()
-        if not any(
-            "isolated" in part.lower() or part.lower() == "lab"
-            for part in self.isolated_root.parts
-        ):
+        root_name = self.isolated_root.name.lower()
+        if not ("isolated" in root_name or root_name == "lab"):
             raise LifecycleError("Explicit isolated-lab directory is required")
         forbidden = (
             Path("/etc/suricata"), Path("/var/lib/suricata"),
