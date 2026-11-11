@@ -77,6 +77,7 @@ def send(*, artifact_dir: Path, run_id: str, execute: bool, approve: bool) -> di
     rule_path, metadata_path, rule_text, metadata = _read_artifacts(
         Path(artifact_dir), run_id
     )
+    rule_file_sha = _hash_bytes(rule_path.read_bytes())
     if execute and not approve:
         raise HandoffError("Explicit human approval is required for execution")
     if not execute:
@@ -116,7 +117,7 @@ def send(*, artifact_dir: Path, run_id: str, execute: bool, approve: bool) -> di
     )
     promote = "; ".join([
         "set -eu",
-        f"test \"$(sha256sum {shlex.quote(partial_rule)} | cut -d ' ' -f 1)\" = {metadata['rule_sha256']}",
+        f"test \"$(sha256sum {shlex.quote(partial_rule)} | cut -d ' ' -f 1)\" = {rule_file_sha}",
         f"test \"$(sha256sum {shlex.quote(partial_metadata)} | cut -d ' ' -f 1)\" = {hashlib.sha256(metadata_path.read_bytes()).hexdigest()}",
         f"mv --no-target-directory {shlex.quote(partial_dir)} {shlex.quote(remote_dir)}",
     ])
