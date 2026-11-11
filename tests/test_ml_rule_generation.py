@@ -167,7 +167,11 @@ def test_generates_rst_rule_only_with_all_independent_gates(tmp_path):
         attack_rst_counts=[3, 4],
         ml_consensus=True,
         port_diversity_triggered=True,
-        rst_evidence={"rst_count": 4, "rst_ratio": 1.0},
+        rst_evidence={
+            "rst_count": 4,
+            "rst_ratio": 1.0,
+            "capture_integrity": {"capture_complete": True},
+        },
         existing_sids=[9103000, 9103001, 9103002],
     )
     assert result["status"] == "needs_review"
@@ -188,9 +192,27 @@ def test_rst_rule_rejects_normal_validation_and_missing_ml():
         run_id="rst-v02", pcap_sha256="a" * 64, model_sha256="b" * 64,
         source_ip="192.168.10.10", destination_ip="192.168.10.20",
         normal_cal_rst_counts=[0, 1], attack_rst_counts=[3],
-        port_diversity_triggered=True, rst_evidence={"rst_count": 3},
+        port_diversity_triggered=True,
+        rst_evidence={"rst_count": 3, "capture_integrity": {"capture_complete": True}},
     )
     normal = rulegen.generate_rst_rule(**common, normal_validation_rst_counts=[2], ml_consensus=True)
     assert normal["rejection_reason"] == "normal_validation_false_positive"
     no_ml = rulegen.generate_rst_rule(**common, normal_validation_rst_counts=[0], ml_consensus=False)
     assert no_ml["rejection_reason"] == "missing_ml_consensus"
+
+
+def test_rst_rule_rejects_unknown_capture_completeness():
+    result = rulegen.generate_rst_rule(
+        run_id="rst-v03",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        source_ip="192.168.10.10",
+        destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[0],
+        normal_validation_rst_counts=[0],
+        attack_rst_counts=[3],
+        ml_consensus=True,
+        port_diversity_triggered=True,
+        rst_evidence={"rst_count": 3, "capture_integrity": {"capture_complete": None}},
+    )
+    assert result["rejection_reason"] == "incomplete_capture_evidence"

@@ -13,10 +13,12 @@ This experiment is **BLOCKED before traffic generation** because VM2 is not avai
 | VM1 capture interface | `ens33`, `192.168.10.10/24` |
 | VM3 alias | `suricata-vm3`, authenticated non-interactively |
 | VM3 capture interface | `ens33`, `192.168.10.30/24` |
-| VM2 alias | `suricata-vm2` does not resolve; no usable SSH alias exists |
+| VM2 alias | Initially unresolved; later verified as Kali `192.168.10.20/24` |
 | Production services | Suricata and Filebeat active; no restart/reload performed |
 
 The configured fallback SSH identities for the unresolved VM2 name use the local default username `asus-pro`. That username was not assumed or tried against an IP address. The owner action required is: provide a working SSH config alias for the Kali scanner VM, including its verified private-lab address, username, and existing SSH-agent key mapping. No password automation is required or requested.
+
+VM2 subsequently became reachable and was verified as Kali on `eth1` at `192.168.10.20/24`. VM1 port verification found a temporary HTTP service candidate on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. Capture then stopped at VM1 because the authenticated user lacks `CAP_NET_RAW`; `sudo -n tcpdump` requires interactive authentication, while production Suricata `pcap-log` is disabled. The owner action now required is to grant a narrowly scoped non-interactive capture capability for the lab interface, for example a dedicated capture service/account or a reviewed `tcpdump` capability, without changing production Suricata configuration. The temporary HTTP service was stopped without generating traffic.
 
 ## Experiment design held for execution
 
