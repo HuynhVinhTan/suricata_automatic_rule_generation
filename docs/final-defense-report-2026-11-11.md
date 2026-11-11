@@ -124,3 +124,8 @@ deterministic rules-directory manifest SHA-256 is
 | Baseline versus augmented Suricata comparison | Met for proxy gate: 3/3 Attack, 0/3 Normal |
 | Production safety | Preserved |
 | tcpdump capability cleanup | **Met: no capability reported** |
+
+PR #2 review-fix evidence is documented in
+`docs/pr2-review-fixes-evidence-2026-11-12.md`. The dataset audit is strict and
+disk-bounded; lifecycle approval and activation remain fail-closed and
+review-only.

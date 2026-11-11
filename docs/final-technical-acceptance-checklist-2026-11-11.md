@@ -25,3 +25,10 @@ Branch: `feat/pcap-ai-worker-integration`
 The six holdouts are controlled-lab evidence, not a production accuracy claim.
 The complete-hybrid-in-Suricata criterion is not met; the review-only RST proxy
 criterion is met and remains non-deployable.
+
+## PR #2 review-fix closeout
+
+Dataset and lifecycle review-fix evidence is recorded in
+`docs/pr2-review-fixes-evidence-2026-11-12.md`. The implementation is
+review-only; active isolated installation still requires explicit owner
+authorization.

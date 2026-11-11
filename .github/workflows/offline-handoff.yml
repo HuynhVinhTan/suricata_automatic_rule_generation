@@ -27,3 +27,17 @@ jobs:
         run: python -m compileall -q backend/pcap_handoff.py scripts/lab_http_96.py scripts/pcap_checksum_normalize.py tests/test_phase3_pcap_handoff.py tests/test_lab_http_96.py tests/test_pcap_checksum_normalize.py
       - name: Handoff tests (synthetic PCAPs, mocked SSH and worker)
         run: python -m pytest -q tests/test_phase3_pcap_handoff.py tests/test_lab_http_96.py tests/test_pcap_checksum_normalize.py
+
+  dataset-and-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - name: Dataset and rule lifecycle gates
+        run: python -m pytest -q tests/test_dataset_audit.py tests/test_rule_lifecycle.py tests/test_worker.py
+      - name: Compile and diff hygiene
+        run: python -m compileall -q backend src scripts tests && git diff --check
