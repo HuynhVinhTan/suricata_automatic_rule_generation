@@ -40,6 +40,7 @@ def register_generated_candidate(
     expected_baseline_sha256: str,
     audit_path: Path,
     isolated_root: Path,
+    return_private_candidate: bool = False,
 ) -> dict:
     """Create an immutable-PROPOSED review record from a real generated artifact.
 
@@ -91,7 +92,7 @@ def register_generated_candidate(
         "baseline_rules_sha256": baseline_sha,
     }
     result = lifecycle.create_candidate(source)
-    return {
+    summary = {
         "status": result["state"],
         "candidate_id": result["candidate_id"],
         "run_id": result["run_id"],
@@ -107,3 +108,6 @@ def register_generated_candidate(
         "deployable": False,
         "deployed": False,
     }
+    if return_private_candidate is True:
+        return {"summary": summary, "candidate": result}
+    return summary
