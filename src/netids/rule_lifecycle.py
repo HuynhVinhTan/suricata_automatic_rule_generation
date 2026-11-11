@@ -77,6 +77,24 @@ class RuleLifecycle:
         if raw_root.is_symlink():
             raise LifecycleError("Isolated root must not be a symlink")
         self.isolated_root = raw_root.resolve()
+        if not any(
+            "isolated" in part.lower() or part.lower() == "lab"
+            for part in self.isolated_root.parts
+        ):
+            raise LifecycleError("Explicit isolated-lab directory is required")
+        forbidden = (
+            Path("/etc/suricata"), Path("/var/lib/suricata"),
+            Path("/var/log/suricata"), Path("/usr/share/suricata"),
+            Path("/usr/local/etc/suricata"),
+        )
+        if (
+            self.isolated_root == Path(self.isolated_root.anchor)
+            or any(
+                self.isolated_root == unsafe or unsafe in self.isolated_root.parents
+                for unsafe in forbidden
+            )
+        ):
+            raise LifecycleError("Isolated root overlaps protected Suricata paths")
         self.isolated_root.mkdir(parents=True, exist_ok=True)
         self.existing_sids = set(existing_sids)
         self.replay_verification_key = replay_verification_key
