@@ -12,6 +12,7 @@ dependencies = [
     "pandas",
     "scikit-learn",
     "joblib",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
