@@ -111,21 +111,35 @@ Production Suricata and Filebeat remained active throughout. The owner verified 
 | Criterion | Status |
 |---|---|
 | Hybrid integrated into PCAP/ML worker | Achieved; review-only, provenance-checked, and fail-closed |
-| Independent Attack/Normal validation | Not achieved; v02/v03 are exploratory holdouts |
+| Independent Attack/Normal validation | Achieved for six fresh bounded-lab holdouts; v02/v03 remain exploratory |
 | Safe candidate Suricata rule generated | No; evidence gates correctly rejected it |
 | Suricata Attack replay of candidate | Not run; no candidate existed |
 | Suricata Normal replay of candidate | Not run; no candidate existed |
 | Baseline versus augmented improvement | Not demonstrated |
 
-The smallest scientifically defensible next step is for the capture owner to provide authentic manifests/logs for the Normal calibration PCAPs containing packet-record completeness, snaplen/truncation, capture-drop status, ground-truth label, endpoints, and the recorded PCAP SHA256. Until those are independently bound, the Python hybrid cannot claim calibrated classification and no executable Suricata approximation should be generated.
+The fresh calibration and holdout record supersedes the earlier recovery blocker. The calibrated result is still bounded to this VM1/VM2 lab and does not establish production generalization.
 
-## Ready-to-execute fresh calibration plan — not authorized
+## Historical fresh-calibration plan and resulting evidence
 
-Owner authorization is required before any VM action. The owner must authorize the exact run IDs, VM1 interface `ens33`, source `192.168.10.20`, target `192.168.10.10`, bounded duration, and output paths. The plan is:
+The following was the pre-capture authorization plan. Its named calibration
+and holdout runs are now complete; the plan remains here to preserve scope:
 
 1. Capture independent Normal calibration sessions with a full-snaplen classic Ethernet PCAP and a separate immutable session manifest. Include one ordinary single-service session, one multiport benign service-check session, and one challenging benign session containing expected closed-port RSTs/failed connections.
 2. Record generator ground truth, source/target allowlists, UTC start/end times, interface, tcpdump command/options, declared snaplen, clean exit status, and `pcap_stats`/kernel drop counters in the capture-time log. A readable PCAP alone is insufficient.
 3. Seal each PCAP with its SHA256 and independently verify packet counts, endpoint direction, snaplen/truncation, and zero drops. Reject any incomplete or ambiguous session.
 4. Freeze the hybrid thresholds from only the accepted Normal calibration set, then evaluate fresh independent Attack and challenging Normal holdouts with new run IDs. Do not use either holdout to tune thresholds.
 
-No capture, VM privilege change, model change, rule generation, or production reload is authorized by this plan.
+The authorized fresh calibration and holdout sessions are complete. The final
+two-service calibration PCAP has SHA256
+`1195656c8c53bf01f07bb7d6277210ba0fef4b7cfa6dca394f11f13ce4f0ce54`; three
+earlier incomplete attempts were retained and rejected. Frozen thresholds are
+ports `4`, RST/window `3`, and handshake failures `2`.
+
+The six fresh sessions passed integrity. Standalone IF/AE flagged every window
+in both classes. The Python hybrid classified all three fresh Attack sessions
+as `reconnaissance_consistent` and all three fresh Normal sessions as
+`anomalous_not_reconnaissance`. No executable Suricata rule was generated or
+approved: the hybrid conditions are not expressible by one safe signature, and
+the existing SYN-burst candidates remain rejected for Normal false positives.
+Production Suricata, Filebeat, EVE-to-ELK, the frozen model and official
+benchmarks were unchanged.
