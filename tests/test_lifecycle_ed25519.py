@@ -70,6 +70,7 @@ def _signed_replay_and_candidate(private):
         "normal_false_positive_count": 0,
         "threshold": 3,
         "experiment_id": "synthetic-offline-test",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "cases": cases,
     }
     return sign_record(record, private, PASSWORD, domain="isolated-replay-v1"), candidate_id, run_id
