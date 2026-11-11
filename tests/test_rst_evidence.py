@@ -26,6 +26,21 @@ def test_retransmitted_syn_and_rst_are_counted_once():
     assert result["rst_count"] == 1
 
 
+def test_repeated_legitimate_closed_port_responses_remain_distinct_flows():
+    events = []
+    for index in range(3):
+        port = 18100 + index
+        events.extend([
+            (float(index), (40000 + index, port), "client", 100 + index, 0, 0x02, 0),
+            (float(index) + 0.01, (40000 + index, port), "server", 200 + index, 101 + index, 0x14, 0),
+        ])
+    result = correlate_rst_events(events)
+    assert result["initial_syn_packets"] == 3
+    assert result["rst_count"] == 3
+    assert result["rst_flows"] == 3
+    assert result["handshake_success_count"] == 0
+
+
 def test_incomplete_capture_is_not_called_closed():
     result = correlate_rst_events([(1.0, (40000, 18100), "client", 100, 0, 0x02, 0)])
     assert result["rst_count"] == 0

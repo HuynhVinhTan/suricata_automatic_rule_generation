@@ -17,10 +17,78 @@ from netids.rulegen import (
     write_ml_rule_artifacts,
 )
 from netids.port_diversity import analyze_port_diversity, read_pcap_syn
+from netids.hybrid_review import calibrate_hybrid_thresholds, evaluate_hybrid
+from netids.rst_evidence import analyze_rst_evidence
 from netids.tcp_handshake import summarize_tcp_handshake
 
 
-def run(pcap, expected_sha, src, dst, private_root, output_dir):
+_AUDITED_NORMAL_PCAPS = (
+    ("normal-batch-v01/normal-train.pcap", "192.168.10.20", "192.168.10.10"),
+    ("normal-batch-v01/normal-cal.pcap", "192.168.10.20", "192.168.10.10"),
+    ("normal-independent-20261031-v01/normal-independent.pcap", "192.168.10.20", "192.168.10.10"),
+    ("normal-matched12-20261031-v01/normal-matched12.pcap", "192.168.10.20", "192.168.10.10"),
+    ("normal-multiport-20261031-v01/normal-multiport.pcap", "192.168.10.20", "192.168.10.10"),
+)
+
+
+def _complete_capture_metadata(metadata):
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        key: metadata[key]
+        for key in ("packet_records_complete", "snaplen_truncated", "capture_drops")
+        if key in metadata
+    }
+
+
+def _hybrid_reference_evidence(private_root):
+    """Build calibration evidence only from explicitly audited Normal PCAPs.
+
+    The similarly named tcp-connect-recon reference is intentionally absent:
+    its packet behavior is Normal-like, but no explicit ground-truth manifest
+    exists, so it is not safe calibration data.
+    """
+    evidence = []
+    complete_metadata = {
+        "packet_records_complete": True,
+        "snaplen_truncated": False,
+        "capture_drops": False,
+    }
+    for relative, source_ip, destination_ip in _AUDITED_NORMAL_PCAPS:
+        path = private_root / "lab-sessions" / relative
+        if not path.is_file():
+            return []
+        rst = analyze_rst_evidence(
+            path,
+            source_ip=source_ip,
+            destination_ip=destination_ip,
+            window_seconds=60,
+            capture_metadata=complete_metadata,
+        )
+        syn_events = [
+            event for event in read_pcap_syn(path)
+            if event.src_ip == source_ip and event.dst_ip == destination_ip
+        ]
+        findings = analyze_port_diversity(
+            syn_events, window_seconds=60, min_distinct_ports=1
+        )
+        handshake = summarize_tcp_handshake(
+            path, source_ip=source_ip, destination_ip=destination_ip
+        )
+        finding = findings[0] if findings else None
+        evidence.append({
+            "capture_integrity": rst["capture_integrity"],
+            "initial_syn_packets": handshake["initial_syn_packets"],
+            "handshake_success_count": handshake["flows_with_confirmed_handshake"],
+            "unique_destination_ports": (
+                finding.max_window_distinct_ports if finding else 0
+            ),
+            "max_rst_count_per_window": rst["max_rst_count_per_window"],
+        })
+    return evidence
+
+
+def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata=None):
     src = str(ipaddress.IPv4Address(src))
     dst = str(ipaddress.IPv4Address(dst))
 
@@ -283,6 +351,50 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
             "Incomplete captures can bias this evidence."
         ),
     }
+
+    hybrid_references = _hybrid_reference_evidence(private_root)
+    hybrid_result = None
+    hybrid_thresholds = None
+    if hybrid_references:
+        hybrid_thresholds = calibrate_hybrid_thresholds(hybrid_references)
+        rst_evidence = analyze_rst_evidence(
+            pcap,
+            source_ip=src,
+            destination_ip=dst,
+            window_seconds=60,
+            capture_metadata=_complete_capture_metadata(capture_metadata),
+        )
+        hybrid_result = evaluate_hybrid(
+            ml_consensus=flagged > 0,
+            rst_evidence=rst_evidence,
+            port_evidence=review["port_diversity_evidence"],
+            handshake_evidence=tcp_summary,
+            thresholds=hybrid_thresholds,
+        )
+        review["hybrid_review"] = {
+            **hybrid_result,
+            "calibration_reference_count": len(hybrid_references),
+            "calibration_reference_pcap_sha256": [
+                sha256(private_root / "lab-sessions" / relative)
+                for relative, _src, _dst in _AUDITED_NORMAL_PCAPS
+            ],
+            "excluded_ambiguous_references": [
+                "tcp-connect-recon-20261031-v01/tcp-connect-recon.pcap"
+            ],
+            "python_only": True,
+            "suricata_signature_equivalent": False,
+        }
+    else:
+        review["hybrid_review"] = {
+            "schema_version": "hybrid_review_v1",
+            "classification": "unavailable_missing_calibration",
+            "requires_manual_review": True,
+            "approved": False,
+            "deployable": False,
+            "deployed": False,
+            "python_only": True,
+            "suricata_signature_equivalent": False,
+        }
 
     # AI and Port-Diversity must pass; TCP may veto.
     # Passing this gate never approves a Suricata rule.

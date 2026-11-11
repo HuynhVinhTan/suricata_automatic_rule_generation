@@ -75,6 +75,16 @@ def test_attack_like_and_normal_like():
     assert not normal_finding.triggered
 
 
+def test_whole_capture_distinct_ports_are_not_used_as_window_peak():
+    finding, = analyze_port_diversity(
+        [syn(0, 1000), syn(1, 1001), syn(61, 1002), syn(62, 1003)],
+        min_distinct_ports=2,
+    )
+    assert finding.total_distinct_ports == 4
+    assert finding.max_window_distinct_ports == 2
+    assert finding.triggered is True
+
+
 def test_invalid_threshold_rejected():
     with pytest.raises(ValueError):
         analyze_port_diversity([], min_distinct_ports=0)

@@ -928,14 +928,25 @@ def run_worker(
     try:
         try:
             artifacts = preflight_artifacts(private_root)
-            processor_fn(
-                pcap,
-                expected_sha,
-                src,
-                dst,
-                private_root,
-                output_dir,
-            )
+            if processor is None:
+                run_pipeline(
+                    pcap,
+                    expected_sha,
+                    src,
+                    dst,
+                    private_root,
+                    output_dir,
+                    capture_metadata=(manifest or {}).get("capture_metadata", {}),
+                )
+            else:
+                processor_fn(
+                    pcap,
+                    expected_sha,
+                    src,
+                    dst,
+                    private_root,
+                    output_dir,
+                )
         except Exception as exc:
             failure = _failure_payload(
                 run_id=run_id, pcap_sha256=expected_sha, exc=exc

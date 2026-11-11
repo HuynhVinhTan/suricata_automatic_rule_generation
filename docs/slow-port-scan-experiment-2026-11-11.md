@@ -8,7 +8,7 @@ This experiment completed controlled Attack and Normal holdouts, but the final r
 
 | Check | Result |
 |---|---|
-| Local branch/HEAD | `feat/pcap-ai-worker-integration` / `c7df7d4d768f506c0ab27b73ae002277d88d8569` |
+| Local branch/HEAD | `feat/pcap-ai-worker-integration` / updated by this work |
 | VM1 alias | `suricata-vm1`, authenticated non-interactively |
 | VM1 capture interface | `ens33`, `192.168.10.10/24` |
 | VM3 alias | `suricata-vm3`, authenticated non-interactively |
@@ -16,7 +16,7 @@ This experiment completed controlled Attack and Normal holdouts, but the final r
 | VM2 alias | `suricata-vm2`, verified as Kali `192.168.10.20/24` |
 | Production services | Suricata and Filebeat active; no restart/reload performed |
 
-VM2 was verified on `eth1` at `192.168.10.20/24`. VM1 port verification found the temporary HTTP service on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. A temporary `cap_net_raw` capability was used only for the bounded captures and remains pending owner-side revocation because VM1 sudo requires interactive authentication.
+VM2 was verified on `eth1` at `192.168.10.20/24`. VM1 port verification found the temporary HTTP service on `192.168.10.10:18080` and confirmed ports `18100` through `18123` returned `ECONNREFUSED` from VM2. The owner has verified that `/usr/bin/tcpdump` has no file capability after capture completion; no capability or sudoers change was performed in this continuation.
 
 ## Experiment design held for execution
 
@@ -63,7 +63,7 @@ Frozen IF/AE inference used model SHA256 `206dadafc8d6cd96e21d838a52211d9b06d4a6
 
 ## Hybrid review layer
 
-`src/netids/hybrid_review.py` adds a separate review-only decision layer. It does not alter the five-feature contract, model files, or IF/AE thresholds. It calibrates from complete pre-existing Normal references only: `normal-train`, `normal-cal`, `normal-independent-20261031-v01`, `normal-matched12-20261031-v01`, `normal-multiport-20261031-v01`, and `tcp-connect-recon-20261031-v01`. Their observed ceiling was 12 distinct ports in a 60-second window, zero correlated server RSTs, and zero incomplete handshakes, producing thresholds of 13 ports, 1 RST, and zero allowed Normal handshake failures.
+`src/netids/hybrid_review.py` adds a separate review-only decision layer. It does not alter the five-feature contract, model files, or IF/AE thresholds. The worker now carries the validated manifest capture-integrity metadata into this layer. Calibration uses only five explicitly audited, Normal-labeled PCAP references: `normal-train`, `normal-cal`, `normal-independent-20261031-v01`, `normal-matched12-20261031-v01`, and `normal-multiport-20261031-v01`. `tcp-connect-recon-20261031-v01` is excluded: packet behavior is Normal-like, but no explicit ground-truth manifest was found and its name is ambiguous. The accepted references observed a ceiling of 12 distinct ports in a 60-second window, zero correlated server RSTs, and zero incomplete handshakes, producing thresholds of 13 ports, 1 RST, and zero allowed Normal handshake failures. Whole-PCAP distinct-port totals are retained for reporting only; classification uses the 60-second sliding-window maximum.
 
 The final holdouts were evaluated once with those frozen hybrid thresholds:
 
@@ -73,6 +73,8 @@ The final holdouts were evaluated once with those frozen hybrid thresholds:
 | Normal v03 | 5/5 | `anomalous_not_reconnaissance` | Port diversity and successful-handshake conditions failed |
 
 The distinction is hybrid protocol evidence, not improved standalone IF/AE accuracy. The layer always returns condition-level explanations and keeps `approved=false`, `deployable=false`, and `deployed=false`. Incomplete capture evidence is classified as ambiguous and cannot pass.
+
+Attack v02 and Normal v03 remain exploratory examples, not final independent validation. No fresh, independently generated Attack and challenging Normal sessions were authorized or captured in this continuation, so final independent-validation success and baseline-versus-augmented improvement are not claimed.
 
 ## Isolated baseline replay for final holdouts
 
@@ -88,4 +90,15 @@ Attack produced 24 flows and zero baseline alerts. Normal produced 24 flows, 22 
 
 The hybrid review result is not convertible to a safe single RST Suricata rule: an RST-only candidate calibrated at one response would also match Normal v03's two legitimate closed-port controls, while Suricata rule syntax cannot express the required unique-port and completed-handshake conditions together. Candidate generation therefore remains correctly blocked.
 
-Production Suricata and Filebeat remained active throughout. The temporary tcpdump capability revocation was attempted after captures, but VM1's `sudo` requires interactive authentication; `cap_net_raw=ep` therefore remains and needs an operator to run `sudo setcap -r /usr/bin/tcpdump`, followed by `getcap /usr/bin/tcpdump` returning no capability.
+Production Suricata and Filebeat remained active throughout. The owner verified after capture completion that `/usr/bin/tcpdump` has no file capability. No production service, sudoers configuration, or capability was changed in this continuation.
+
+## Acceptance status
+
+| Criterion | Status |
+|---|---|
+| Hybrid integrated into PCAP/ML worker | Achieved; review-only and provenance-checked |
+| Independent Attack/Normal validation | Not achieved; v02/v03 are exploratory holdouts |
+| Safe candidate Suricata rule generated | No; evidence gates correctly rejected it |
+| Suricata Attack replay of candidate | Not run; no candidate existed |
+| Suricata Normal replay of candidate | Not run; no candidate existed |
+| Baseline versus augmented improvement | Not demonstrated |

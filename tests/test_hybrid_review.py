@@ -73,6 +73,48 @@ def test_normal_with_some_failed_connections_does_not_pass():
     assert result["conditions"]["no_successful_handshake"] is False
 
 
+def test_mixed_successful_and_failed_connections_stay_non_reconnaissance():
+    thresholds = calibrate_hybrid_thresholds([_normal(unique_ports=12)])
+    result = evaluate_hybrid(
+        ml_consensus=True,
+        rst_evidence={
+            "capture_integrity": {"capture_complete": True},
+            "max_rst_count_per_window": 2,
+        },
+        port_evidence={"max_window_distinct_ports": 13},
+        handshake_evidence={
+            "initial_syn_packets": 13,
+            "flows_with_confirmed_handshake": 12,
+            "flows_with_bidirectional_payload": 12,
+        },
+        thresholds=thresholds,
+    )
+    assert result["classification"] == "anomalous_not_reconnaissance"
+    assert result["conditions"]["handshake_failure_exceeds_normal"] is True
+    assert result["conditions"]["no_successful_handshake"] is False
+
+
+def test_high_port_diversity_benign_service_checks_are_not_reconnaissance():
+    thresholds = calibrate_hybrid_thresholds([_normal(unique_ports=12)])
+    result = evaluate_hybrid(
+        ml_consensus=True,
+        rst_evidence={
+            "capture_integrity": {"capture_complete": True},
+            "max_rst_count_per_window": 0,
+        },
+        port_evidence={"max_window_distinct_ports": 13},
+        handshake_evidence={
+            "initial_syn_packets": 13,
+            "flows_with_confirmed_handshake": 13,
+            "flows_with_bidirectional_payload": 13,
+        },
+        thresholds=thresholds,
+    )
+    assert result["classification"] == "anomalous_not_reconnaissance"
+    assert result["conditions"]["port_diversity"] is True
+    assert result["conditions"]["no_successful_handshake"] is False
+
+
 def test_incomplete_capture_is_ambiguous_and_never_passes():
     thresholds = calibrate_hybrid_thresholds([_normal()])
     result = evaluate_hybrid(
