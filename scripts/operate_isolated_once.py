@@ -125,6 +125,8 @@ def _verify_inputs(
         or authorization.get("isolated_root") != str(ROOT)
         or candidate.get("sid") != SID
         or candidate.get("rule_sha256") != RULE_SHA
+        or candidate.get("model_sha256") != MODEL_SHA
+        or candidate.get("calibration_sha256") != CAL_SHA
         or authorization.get("run_id") != candidate.get("run_id")
     ):
         raise OperationError("Candidate, replay or exact owner scope mismatch")
@@ -141,6 +143,8 @@ def execute_one_time(
 ) -> dict:
     if socket.gethostname() != VM1_HOST:
         raise OperationError("Owner authorization is only for VM1")
+    if Path(audit_path).resolve() != ROOT / "audit" / "owner-once.jsonl":
+        raise OperationError("Activation audit must use the fixed one-time VM1 ledger")
     candidate = _read_json(candidate_file)
     replay = _read_json(replay_attestation_file)
     approval = _read_json(owner_approval_file)
@@ -186,11 +190,12 @@ def execute_one_time(
         staged = lifecycle.stage(proposed, ROOT / "rules", activate=True, runtime=runtime)
         if staged.get("status") != "active_in_isolated_lab":
             raise OperationError("Isolated runtime did not verify active state")
-        if (datetime.now(timezone.utc) - started).total_seconds() > 300:
-            raise OperationError("Owner-authorized operation exceeded 300 seconds")
+        # Always attempt rollback after ACTIVE, even if the time budget is exhausted.
         lifecycle.rollback(proposed, runtime=runtime)
         if proposed["state"] != "ROLLED_BACK":
             raise OperationError("Real runtime rollback not verified")
+        if (datetime.now(timezone.utc) - started).total_seconds() > 300:
+            raise OperationError("Owner-authorized operation exceeded 300 seconds")
         outcome = "VERIFIED_ISOLATED_ACTIVATION_AND_ROLLBACK"
     finally:
         runtime.shutdown()
