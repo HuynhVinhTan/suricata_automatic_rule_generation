@@ -80,17 +80,14 @@ class RuleLifecycle:
         root_name = self.isolated_root.name.lower()
         if not ("isolated" in root_name or root_name == "lab"):
             raise LifecycleError("Explicit isolated-lab directory is required")
+        normalized_root = str(self.isolated_root).replace("\\", "/").lower()
         forbidden = (
-            Path("/etc/suricata"), Path("/var/lib/suricata"),
-            Path("/var/log/suricata"), Path("/usr/share/suricata"),
-            Path("/usr/local/etc/suricata"),
+            "/etc/suricata", "/var/lib/suricata", "/var/log/suricata",
+            "/usr/share/suricata", "/usr/local/etc/suricata",
         )
         if (
             self.isolated_root == Path(self.isolated_root.anchor)
-            or any(
-                self.isolated_root == unsafe or unsafe in self.isolated_root.parents
-                for unsafe in forbidden
-            )
+            or any(marker in normalized_root for marker in forbidden)
         ):
             raise LifecycleError("Isolated root overlaps protected Suricata paths")
         self.isolated_root.mkdir(parents=True, exist_ok=True)

@@ -40,7 +40,8 @@ def main(argv=None):
             results.append({"dataset": name, "status": "MISSING"})
             continue
         for path in paths:
-            relative = path.relative_to(root).as_posix().replace("/", "_")
+            relative_path = path.relative_to(root).as_posix()
+            relative = relative_path.replace("/", "_")
             try:
                 report = profile_csv(
                     path,
@@ -49,11 +50,23 @@ def main(argv=None):
                     label_columns=spec["labels"],
                     timestamp_columns=spec.get("timestamps", ()),
                 )
-                results.append({"dataset": name, "status": "COMPLETE", **report})
+                result = dict(report)
+                result.update({"dataset": name, "status": report["audit_status"], "path": relative_path})
+                results.append(result)
             except (OSError, ValueError) as exc:
-                results.append({"dataset": name, "status": "BLOCKED", "path": str(path), "error": str(exc)})
+                results.append({"dataset": name, "status": "BLOCKED", "path": relative_path, "error": str(exc)})
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "quality_summary.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    summary = {
+        "audit": "streaming_read_only_dataset_quality_v2",
+        "source_files_unchanged": True,
+        "temporary_root": str(Path(args.output_dir).resolve()),
+        "datasets": results,
+        "limitations": [
+            "Exact feature equality does not prove shared sessions or host/time leakage.",
+            "CIC suitability remains conditional/fail for new model training because non-finite rate values and duplicate headers require an explicit adapter policy.",
+        ],
+    }
+    (args.output_dir / "quality_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     lines = ["# Dataset quality audit", "", "| Dataset | Status | Path | Records | SHA256 |", "|---|---|---|---:|---|"]
     for item in results:
         lines.append(f"| {item['dataset']} | {item['status']} | `{item.get('path', '')}` | {item.get('record_count', '')} | `{item.get('sha256', '')}` |")
