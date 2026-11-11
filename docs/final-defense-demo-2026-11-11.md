@@ -13,17 +13,18 @@
    separate the classes.
 6. Show the exact safety booleans: `approved=false`, `deployable=false`,
    `deployed=false`.
-7. Show the prior isolated Suricata rejection evidence and explain why the
-   executable signature cannot count unique ports or correlate the full hybrid
-   verdict.
+7. Show the isolated Suricata 8.0.3 replay for SID 9103003: 3/3 Attack
+   sessions and 0/3 Normal sessions. Explain that it is a telemetry proxy and
+   cannot count unique ports or implement the full hybrid verdict.
 8. Show production service status and configuration hashes. Do not reload or
    deploy rules during the demonstration.
 
 ## Evidence screenshots still needed
 
-- VM1 `getcap -v /usr/bin/tcpdump` after owner cleanup. The current audit still
-  shows `cap_net_raw=ep`; this screenshot is a required owner-controlled
-  cleanup gate and must be marked FAILED until it shows no capability.
+- VM1 `getcap -v /usr/bin/tcpdump`, showing `/usr/bin/tcpdump` with no
+  capability text.
+- VM3 Elasticsearch health, `suricata-eve-*` indices, `suricata-ai-summary`,
+  the two data views, and `Suricata AI IDS Lab Dashboard`.
 - VM1 `systemctl is-active suricata` and `systemctl is-active filebeat`.
 - VM1 production `suricata.yaml` and ruleset hash output.
 - The frozen calibration decision with timestamp and threshold fields.
@@ -31,5 +32,5 @@
   zero-drop evidence and SHA-256.
 - Worker review artifacts showing source PCAP, feature CSV and model hashes.
 - A side-by-side metric table showing IF/AE versus Python hybrid results.
-- The rejected isolated Suricata baseline/augmented replay evidence.
+- The isolated Suricata SID 9103003 baseline/augmented replay evidence.
 - A final negative screenshot showing no production rule reload or deployment.
