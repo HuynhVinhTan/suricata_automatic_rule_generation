@@ -89,6 +89,14 @@ Mandatory rollback restores the empty isolated ruleset, issues another blocking 
 
 If real EVE proof is missing, any reload fails, or any hash/VM/interface differs: STOP and report FAILED/UNVERIFIED. Never relax tests to force acceptance. If a rollback fails, preserve logs and report FAILED; do not claim cleanup success.
 
+Additional fail-closed requirements for the one-time VM1 command:
+
+- --audit-path must be exactly /home/tanhv/suricata-rule-review/isolated-lifecycle-9103003/audit/owner-once.jsonl. This is a persistent nonce-replay ledger; never rotate or delete it to reuse an approval.
+- --production-yaml must be the actual /etc/suricata/suricata.yaml on VM1, with last verified SHA256 6224bc7d0bc04d97c4282f54a71e0736341341aa82c530fe22aed3da28814d72. If it differs, stop and re-establish a read-only reviewed baseline before attempting this operation.
+- --production-rules must be an actual production rules file under /var/lib/suricata/rules or /etc/suricata/rules. The existing production rules must NOT already contain SID 9103003.
+- Activation cannot rely on merely writing the rule file: the runtime requires exactly one successfully loaded rule and actual SID-alerting EVE. Rollback requires exactly zero loaded rules plus new EVE events proving an Attack replay occurred with no SID 9103003 alert.
+- No operator may run this command a second time with the same signed nonce, even on a different audit path.
+
 ## G. Acceptance and evidence handling
 
 The success report must include exact run/candidate IDs, pinned public-key fingerprints, signed replay and owner records, production before/after SHA/PID/status, isolated daemon PID/socket, Suricata version, activation EVE hash and SID counts, verified zero rules/SID after rollback, and confirmed isolated process shutdown.
