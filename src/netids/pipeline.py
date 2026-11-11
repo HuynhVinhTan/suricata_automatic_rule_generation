@@ -10,7 +10,12 @@ from pathlib import Path
 from netids.app import run as run_inference
 from netids.lab_runtime import sha256
 import csv
-from netids.rulegen import build_syn_burst_review_rule
+from netids.rulegen import (
+    build_syn_burst_review_rule,
+    collect_sids,
+    generate_ml_rule,
+    write_ml_rule_artifacts,
+)
 from netids.port_diversity import analyze_port_diversity, read_pcap_syn
 from netids.tcp_handshake import summarize_tcp_handshake
 
@@ -156,7 +161,7 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
     reference = json.loads(
         model_report.read_text(encoding="utf-8")
     )
-    normal_counts = []
+    normal_counts_by_partition = {}
 
     for partition in ("normal-train", "normal-cal"):
         reference_csv = (
@@ -175,6 +180,7 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
         if not reference_rows:
             raise ValueError("Empty Normal reference")
 
+        partition_counts = []
         for row in reference_rows:
             count = int(row["syn_count"])
 
@@ -185,8 +191,13 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
             ):
                 raise ValueError("Invalid Normal reference")
 
-            normal_counts.append(count)
+            partition_counts.append(count)
+        normal_counts_by_partition[partition] = partition_counts
 
+    normal_counts = (
+        normal_counts_by_partition["normal-train"]
+        + normal_counts_by_partition["normal-cal"]
+    )
     normal_max = max(normal_counts)
 
     # Port-diversity is independent heuristic evidence.
@@ -316,38 +327,78 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir):
         "rule_approval_authorized": False,
     }
 
-    generated_rule = (
-        build_syn_burst_review_rule(
+    normal_validation = (
+        private_root / "lab-sessions" / "normal-batch-v01"
+        / "syn_windows_10s_normal-test.csv"
+    )
+    normal_test_counts = []
+    if normal_validation.is_file():
+        with normal_validation.open(
+            "r", encoding="utf-8", newline=""
+        ) as stream:
+            for row in csv.DictReader(stream):
+                if row.get("label") != "NORMAL":
+                    raise ValueError("Normal validation contains non-NORMAL data")
+                count = int(row["syn_count"])
+                if count < 0:
+                    raise ValueError("Normal validation contains invalid SYN count")
+                normal_test_counts.append(count)
+
+    attack_counts = [
+        int(prediction["syn_count"])
+        for prediction in result.get("predictions", [])
+        if prediction.get("both_anomaly") is True
+    ]
+    existing_sids = collect_sids(
+        path.read_text(encoding="utf-8")
+        for path in private_root.rglob("*.rules")
+        if path.is_file()
+    )
+
+    generated = None
+    generation_rejection = None
+    if candidate_gate_passed and not normal_test_counts:
+        generation_rejection = "missing_normal_validation"
+    elif candidate_gate_passed and not attack_counts:
+        generation_rejection = "missing_attack_inference_evidence"
+    elif candidate_gate_passed:
+        generated = generate_ml_rule(
+            run_id=output_dir.name,
+            pcap_sha256=expected_sha,
+            model_sha256=result["model_sha256"],
             destination_ip=dst,
-            normal_max_syn=normal_max,
+            normal_train_syn_counts=normal_counts_by_partition["normal-train"],
+            normal_cal_syn_counts=normal_counts_by_partition["normal-cal"],
+            normal_test_syn_counts=normal_test_counts,
+            attack_syn_counts=attack_counts,
+            existing_sids=existing_sids,
         )
-        if candidate_gate_passed
-        else None
-    )
-
-    matches_failed = (
-        generated_rule is not None
-        and generated_rule == candidate_text
-    )
-
-    if generated_rule is not None:
-        (output_dir / "candidate.rules").write_text(
-            generated_rule + "\n", encoding="utf-8"
-        )
+        if generated["rule"] is not None:
+            write_ml_rule_artifacts(output_dir, generated)
 
     review.update({
         "schema_version": "lab_rule_review_v0_2",
-        "generation_method": "normal_train_cal_syn_count_proxy",
+        "generation_method": "normal_train_cal_syn_count_packet_filter",
         "normal_train_cal_max_syn": normal_max,
         "proposed_syn_threshold": max(3, normal_max + 1),
-        "rule_generated_in_this_run": generated_rule is not None,
-        "generated_rule": generated_rule,
-        "matches_previous_failed_candidate": matches_failed,
+        "normal_validation_csv_sha256": (
+            sha256(normal_validation) if normal_validation.is_file() else None
+        ),
+        "normal_validation_max_syn": (
+            max(normal_test_counts) if normal_test_counts else None
+        ),
+        "rule_generated_in_this_run": bool(generated and generated["rule"]),
+        "generated_rule": generated["rule"] if generated else None,
+        "generated_rule_sid": generated["sid"] if generated else None,
+        "generated_rule_metadata": generated["metadata"] if generated else None,
+        "matches_previous_failed_candidate": False,
+        "generation_rejection": generation_rejection or (
+            generated.get("rejection_reason") if generated else None
+        ),
         "status": (
-            "rejected_known_false_positive"
-            if matches_failed
-            else "needs_review"
-            if generated_rule is not None
+            "needs_review" if generated and generated["rule"]
+            else "rejected_validation_failure"
+            if generation_rejection or generated
             else "no_candidate"
         ),
         "syntax_tested_in_this_run": False,

@@ -258,9 +258,10 @@ def test_pipeline_keeps_review_gate_closed(
 
 
     if expected_gate:
-        assert review["status"] == "rejected_known_false_positive"
-        assert review["matches_previous_failed_candidate"] is True
-        assert review["rule_generated_in_this_run"] is True
+        assert review["status"] == "rejected_validation_failure"
+        assert review["generation_rejection"] == "missing_normal_validation"
+        assert review["matches_previous_failed_candidate"] is False
+        assert review["rule_generated_in_this_run"] is False
     else:
         assert review["status"] == "no_candidate"
         assert review["matches_previous_failed_candidate"] is False
@@ -274,10 +275,5 @@ def test_pipeline_keeps_review_gate_closed(
     assert review["deployable"] is False
     assert review["deployed"] is False
 
-    candidate_path = output / "candidate.rules"
-    assert candidate_path.exists() is expected_gate
-
-    if expected_gate:
-        assert "sid:9102001;" in candidate_path.read_text(
-            encoding="utf-8"
-        )
+    assert not (output / "candidate.rules").exists()
+    assert not (output / "ml-generated.rules").exists()
