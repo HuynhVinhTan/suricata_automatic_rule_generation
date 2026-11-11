@@ -78,6 +78,7 @@ def test_worker_validates_generated_artifact_provenance(tmp_path):
     rulegen.write_ml_rule_artifacts(tmp_path, result)
     review = {
         "rule_generated_in_this_run": True,
+        "status": "needs_review",
         "generated_rule": result["rule"],
         "generated_rule_sid": result["sid"],
         "generated_rule_metadata": result["metadata"],
@@ -106,6 +107,32 @@ def test_worker_validates_generated_artifact_provenance(tmp_path):
             pcap_sha256="a" * 64,
             model_sha256="b" * 64,
         )
+
+
+def test_replay_validation_rejects_normal_false_positive(tmp_path):
+    result = rulegen.generate_ml_rule(
+        run_id="recon-005",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        destination_ip="192.0.2.10",
+        normal_train_syn_counts=[1],
+        normal_cal_syn_counts=[1],
+        normal_test_syn_counts=[1],
+        attack_syn_counts=[3],
+    )
+    rulegen.write_ml_rule_artifacts(tmp_path, result)
+
+    rejected = rulegen.apply_replay_validation(
+        tmp_path,
+        attack_alerts=4,
+        normal_alerts=1,
+    )
+
+    assert rejected["status"] == "rejected_validation_failure"
+    assert rejected["rejection_reason"] == "normal_replay_false_positive"
+    assert rejected["normal_replay_alerts"] == 1
+    assert rejected["attack_replay_alerts"] == 4
+    assert rejected["deployable"] is False
 
 
 @pytest.mark.parametrize(

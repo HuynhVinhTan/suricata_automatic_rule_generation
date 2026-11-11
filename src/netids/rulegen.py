@@ -1,6 +1,7 @@
 """Safe, review-only Suricata rule proposal generation."""
 
 import hashlib
+import json
 import re
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -207,8 +208,6 @@ def write_ml_rule_artifacts(output_dir, result):
     with (output_dir / "ml-generated.metadata.json").open(
         "x", encoding="utf-8"
     ) as stream:
-        import json
-
         json.dump(metadata, stream, indent=2, ensure_ascii=False)
         stream.write("\n")
     if result["rule"] is not None:
@@ -216,6 +215,41 @@ def write_ml_rule_artifacts(output_dir, result):
             "x", encoding="utf-8"
         ) as stream:
             stream.write(result["rule"] + "\n")
+
+
+def apply_replay_validation(output_dir, *, attack_alerts, normal_alerts):
+    """Record isolated Suricata replay evidence and close false positives."""
+    if (
+        type(attack_alerts) is not int
+        or attack_alerts < 0
+        or type(normal_alerts) is not int
+        or normal_alerts < 0
+    ):
+        raise ValueError("Replay alert counts must be non-negative integers")
+
+    output_dir = Path(output_dir)
+    metadata_path = output_dir / "ml-generated.metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if not isinstance(metadata, dict) or metadata.get("schema_version") != "ml_rule_metadata_v1":
+        raise ValueError("Invalid generated rule metadata")
+
+    metadata["attack_replay_alerts"] = attack_alerts
+    metadata["normal_replay_alerts"] = normal_alerts
+    metadata["normal_replay_passed"] = normal_alerts == 0
+    if normal_alerts:
+        metadata["status"] = "rejected_validation_failure"
+        metadata["rejection_reason"] = "normal_replay_false_positive"
+    else:
+        metadata["status"] = "needs_review"
+        metadata["rejection_reason"] = None
+    metadata["approved"] = False
+    metadata["deployable"] = False
+    metadata["deployed"] = False
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return metadata
 
 
 def build_test_alert_rule(
