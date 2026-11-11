@@ -9,7 +9,7 @@ from backend import worker
 
 def test_allocates_fresh_sid_away_from_rejected_and_existing_sids():
     assert hasattr(rulegen, "allocate_sid")
-    assert rulegen.allocate_sid({9103000, 9103001, 9102001, 9102002}) == 9103002
+    assert rulegen.allocate_sid({9103000, 9103001, 9103002, 9102001, 9102002}) == 9103003
 
 
 def test_generates_rule_and_provenance_metadata_from_evidence(tmp_path):
@@ -22,11 +22,11 @@ def test_generates_rule_and_provenance_metadata_from_evidence(tmp_path):
         normal_cal_syn_counts=[2, 2],
         normal_test_syn_counts=[1, 2],
         attack_syn_counts=[4, 5],
-        existing_sids={9103000},
+        existing_sids={9103000, 9103001, 9103002},
     )
 
     assert result["status"] == "needs_review"
-    assert result["sid"] == 9103001
+    assert result["sid"] == 9103003
     assert result["threshold"] == 3
     assert "sid:9102001;" not in result["rule"]
     assert "sid:9102002;" not in result["rule"]
@@ -153,3 +153,44 @@ def test_rejects_invalid_provenance(field, value):
     arguments[field] = value
     with pytest.raises(ValueError):
         rulegen.generate_ml_rule(**arguments)
+
+
+def test_generates_rst_rule_only_with_all_independent_gates(tmp_path):
+    result = rulegen.generate_rst_rule(
+        run_id="rst-v01",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        source_ip="192.168.10.10",
+        destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[0, 1],
+        normal_validation_rst_counts=[0],
+        attack_rst_counts=[3, 4],
+        ml_consensus=True,
+        port_diversity_triggered=True,
+        rst_evidence={"rst_count": 4, "rst_ratio": 1.0},
+        existing_sids=[9103000, 9103001, 9103002],
+    )
+    assert result["status"] == "needs_review"
+    assert result["sid"] == 9103003
+    assert 'flags:R;' in result["rule"]
+    assert "track by_dst" in result["rule"]
+    assert result["metadata"]["rule_sha256"]
+    assert result["metadata"]["approved"] is False
+
+    rulegen.write_rst_rule_artifacts(tmp_path, result)
+    assert (tmp_path / "ml-generated-rst.rules").read_text(encoding="utf-8").strip() == result["rule"]
+    rst_metadata = json.loads((tmp_path / "ml-generated-rst.metadata.json").read_text(encoding="utf-8"))
+    assert rst_metadata["pcap_sha256"] == "a" * 64
+
+
+def test_rst_rule_rejects_normal_validation_and_missing_ml():
+    common = dict(
+        run_id="rst-v02", pcap_sha256="a" * 64, model_sha256="b" * 64,
+        source_ip="192.168.10.10", destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[0, 1], attack_rst_counts=[3],
+        port_diversity_triggered=True, rst_evidence={"rst_count": 3},
+    )
+    normal = rulegen.generate_rst_rule(**common, normal_validation_rst_counts=[2], ml_consensus=True)
+    assert normal["rejection_reason"] == "normal_validation_false_positive"
+    no_ml = rulegen.generate_rst_rule(**common, normal_validation_rst_counts=[0], ml_consensus=False)
+    assert no_ml["rejection_reason"] == "missing_ml_consensus"
