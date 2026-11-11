@@ -73,3 +73,31 @@ documented proxy comparison: baseline 0/6 sessions and augmented 3/3 Attack,
 0/3 Normal for SID 9103003. The candidate-specific result alone is not claimed
 as baseline improvement without the full comparison. Novel attack coverage,
 operational latency and production deployment remain unproven.
+
+
+## Executable review-only registration from real worker artifacts
+
+The existing worker already produces ml-generated.rules and
+ml-generated.metadata.json. The new src/netids/lifecycle_integration.py
+reads them through the established backend.rule_handoff._read_artifacts()
+validator, and binds the proposal to the SHA256 of an owner-pinned
+calibration file and an owner-pinned baseline rules snapshot.
+Blocked and conflicting SIDs are rejected. Only a PROPOSED candidate
+is recorded in the private local audit ledger.
+
+PowerShell example (replace paths and hashes with independently verified
+values; keep private artifacts and the audit outside Git):
+
+    python -m scripts.register_generated_rule_review --artifact-dir "data/private/verified-worker-artifacts/RUN_ID" --run-id "RUN_ID" --calibration-manifest "configs/hybrid_normal_calibration.json" --expected-calibration-sha256 "YOUR_VERIFIED_64_HEX_SHA" --baseline-rules "data/private/verified-baseline.rules" --expected-baseline-sha256 "YOUR_VERIFIED_64_HEX_SHA" --audit-path "data/private/lifecycle/RUN_ID-audit.jsonl" --isolated-root "data/private/isolated-lab"
+
+This command does NOT write into the Suricata rules directory, transfer
+candidate files to VM1, sign replay evidence, approve a rule, or reload
+Suricata. A separate trusted replay attester must verify actual Suricata
+8.0.3 syntax and independent Attack/Normal replay before signing an
+attestation. Separately, a human owner must authorize an exact,
+short-lived isolated-lab action using a protected signing service.
+
+No trusted real Suricata runtime adapter or private signing services
+have been installed by this PR. Mocked runtime tests are NOT real
+Suricata activation evidence. The remaining gate is explicit owner
+approval plus real isolated activation and verified rollback, with CI.
