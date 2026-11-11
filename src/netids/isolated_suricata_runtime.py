@@ -119,6 +119,18 @@ class IsolatedSuricataRuntime:
             raise IsolatedRuntimeError("Suricata UNIX command failed")
         return output.get("message")
 
+    def _rules_loaded(self, exact: int) -> bool:
+        """Require authoritative runtime counts, not merely a rule file on disk."""
+        stats = self._command("ruleset-stats")
+        return (
+            isinstance(stats, list)
+            and len(stats) == 1
+            and isinstance(stats[0], dict)
+            and stats[0].get("rules_loaded") == exact
+            and stats[0].get("rules_failed") == 0
+            and stats[0].get("rules_skipped") == 0
+        )
+
     def _start(self) -> None:
         if self.process is not None:
             raise IsolatedRuntimeError("Isolated daemon already owned")
@@ -144,6 +156,8 @@ class IsolatedSuricataRuntime:
                         mode = self._command("capture-mode")
                         if "AF_PACKET" not in str(mode):
                             raise IsolatedRuntimeError("Wrong isolated capture mode")
+                        if not self._rules_loaded(0):
+                            raise IsolatedRuntimeError("Isolated baseline is not an empty ruleset")
                         return
                 except IsolatedRuntimeError:
                     pass
@@ -175,6 +189,8 @@ class IsolatedSuricataRuntime:
                 and data.get("alert", {}).get("signature_id") == SID
             ):
                 found += 1
+        if not events:
+            return False  # No new EVE events cannot prove the probe reached Suricata.
         if expect_alert:
             self._last_attack_eve = sha256_file(eve)
             return found > 0
@@ -212,6 +228,8 @@ class IsolatedSuricataRuntime:
             self._start()
             _atomic(self.active_rules, source.read_bytes())
             self._command("ruleset-reload-rules")
+            if not self._rules_loaded(1):
+                raise IsolatedRuntimeError("Exact candidate rule not confirmed loaded")
             self._activated = True
             return True
         except (IsolatedRuntimeError, OSError):
@@ -225,7 +243,8 @@ class IsolatedSuricataRuntime:
         ):
             return False
         try:
-            self._command("ruleset-stats")
+            if not self._rules_loaded(1):
+                return False
             return (
                 self._pcap_probe(self.attack_pcap, expect_alert=True)
                 and self._pcap_probe(self.normal_pcap, expect_alert=False)
@@ -239,7 +258,7 @@ class IsolatedSuricataRuntime:
         try:
             _atomic(self.active_rules, self._old_rules)
             self._command("ruleset-reload-rules")
-            return True
+            return self._rules_loaded(0)
         except (IsolatedRuntimeError, OSError, TypeError):
             return False
 
@@ -249,7 +268,8 @@ class IsolatedSuricataRuntime:
         try:
             if self.process.poll() is not None:
                 return False
-            self._command("ruleset-stats")
+            if not self._rules_loaded(0):
+                return False
             no_sid = self._pcap_probe(self.attack_pcap, expect_alert=False)
             self.shutdown()
             return no_sid and self.process.poll() is not None
