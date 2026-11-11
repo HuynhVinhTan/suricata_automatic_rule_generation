@@ -47,3 +47,4 @@ suricata.rules
 
 /data/private/
 .github/
+reports/rendered/
