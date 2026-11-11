@@ -49,9 +49,41 @@ classification values are in
 Those records are event-verified, preserve native EVE JSON, and remain
 review-only (`approved=false`, `deployable=false`, `deployed=false`).
 
-## Acceptance
+## Reviewer security hardening — new PR #2 follow-up
 
-The review fixes are implemented and tested. Milestone 6 remains **partially
-accepted** overall because isolated active installation still requires a human
-owner authorization and the existing AI-summary evidence was not re-indexed by
-this offline review-fix change. No deployment or approval is claimed.
+Subsequent to commit `c4aca26`, the lifecycle now verifies domain-separated
+HMAC-SHA256 attestations before accepting replay evidence or owner approval.
+The replay signer and owner signer use independent keys supplied by private,
+trusted operator processes, not by rule artifacts or committed files.
+Caller-supplied verification callbacks and unsigned replay booleans cannot
+authorize progression. A signed authorization binds candidate identity, run,
+SID, rule SHA256, isolated root, exact operation, nonce and UTC expiration.
+Nonce reuse is rejected in the audit ledger.
+
+Sensitive lifecycle transitions can no longer be performed with a generic
+`transition()` call. Audit writes verify the existing hash chain, use an
+exclusive local lock and call `fsync`. A local hash chain is not a trusted
+external audit anchor and does not prove resilience against administrative
+tampering.
+
+The isolated activation interface now requires a runtime adapter to validate
+syntax, activate the exact rule, and verify the running ruleset before assigning
+`ACTIVE_IN_ISOLATED_LAB`. Failed activation must verify rollback; an
+unverified runtime rollback is reported FAILED rather than successful.
+Unit tests use synthetic keys and a mocked runtime. **No trusted owner-signing
+service, authenticated replay signer or real isolated Suricata runtime adapter
+has yet been demonstrated.** These production-like gates remain open.
+Do not treat mock runtime tests as actual isolated Suricata activation.
+
+## Acceptance correction
+
+**Milestone 6 remains FULLY ACCEPTED for the six bounded lab experiments**, as
+documented in `docs/milestone-6-correlation-evidence-2026-11-12.md`.
+The six derived worker summaries were already indexed and verified in the
+existing `suricata-ai-summary` index by commit `c86b3d6`.
+This PR does not re-index them, nor does it undo that acceptance.
+
+**Phase 3 active isolated-lab installation remains NOT ACCEPTED / PENDING
+EXPLICIT OWNER APPROVAL and independently verified runtime evidence.**
+No production or lab rule was activated by the reviewer.
+Full CI and Word visual QA remain separate acceptance gates.
