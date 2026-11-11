@@ -11,11 +11,17 @@ It does not implement the complete Python hybrid decision. The Python worker
 remains authoritative for unique destination ports, correlated RST/RST-ACK
 evidence, handshake evidence and frozen IF/AE consensus.
 
-Milestone 6 is not fully accepted. The VM2 to VM1 EVE path and the independent
-VM3 AI-summary indexing path are operational, but the production EVE documents
-and AI summary documents do not contain a verified shared run identifier or
-hash. Therefore this evidence does not claim event-level correlation between
-those two document families.
+Milestone 6 is partially accepted. A derived, versioned correlation envelope
+now verifies each original PCAP against its isolated Suricata EVE replay and
+validated worker review artifact at event/flow level. The six worker summaries
+are not present in the existing `suricata-ai-summary` index, so this evidence
+does not claim that the existing production AI-summary index contains these six
+runs.
+
+The dedicated index `suricata-ai-correlated-lab` contains six stable documents.
+Exact run IDs, hashes, event counts and flow counts are recorded in
+`docs/milestone-6-correlation-evidence-2026-11-12.md` and the committed
+correlation envelope artifact.
 
 ## Live pipeline evidence
 

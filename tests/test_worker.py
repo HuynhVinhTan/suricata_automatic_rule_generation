@@ -840,6 +840,23 @@ def test_elasticsearch_http_success_uses_stable_id_and_safe_document(monkeypatch
     assert timeout > 0
 
 
+def test_safe_summary_preserves_validated_hybrid_classification():
+    summary = _elasticsearch_summary(
+        hybrid_classification="reconnaissance_consistent"
+    )
+
+    safe = worker._safe_summary_fields(summary)
+
+    assert safe["hybrid_classification"] == "reconnaissance_consistent"
+
+
+def test_safe_summary_rejects_unknown_hybrid_classification():
+    with pytest.raises(ValueError, match="hybrid_classification"):
+        worker._safe_summary_fields(
+            _elasticsearch_summary(hybrid_classification="made_up")
+        )
+
+
 def test_elasticsearch_rejects_non_boolean_rule_generation_metadata(monkeypatch):
     monkeypatch.setattr(
         worker.urllib.request,

@@ -17,7 +17,7 @@ Branch: `feat/pcap-ai-worker-integration`
 | Review-only RST proxy | PASS | SID `9103003`, threshold 3/60s, rule SHA-256 `7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df`; 3/3 Attack and 0/3 Normal sessions |
 | Complete hybrid logic in Suricata | NOT MET | Python remains authoritative for unique ports, correlated RST, handshake and frozen ML consensus |
 | Baseline versus augmented improvement | PASS for proxy gate | Baseline candidate 0/6 sessions; augmented candidate 3/3 Attack and 0/3 Normal |
-| Milestone 6 event-level correlation | NOT MET | Existing EVE and AI summary documents lack a verified shared run ID or hash |
+| Milestone 6 PCAP/EVE/worker correlation | PARTIAL | Six event/flow-verified envelopes; 303 matching EVE events and 144 matching flows; worker summaries are not in the existing AI summary index |
 | tcpdump capability cleanup | PASS | VM1 `getcap -v /usr/bin/tcpdump` returned `/usr/bin/tcpdump` only |
 
 The six holdouts are controlled-lab evidence, not a production accuracy claim.

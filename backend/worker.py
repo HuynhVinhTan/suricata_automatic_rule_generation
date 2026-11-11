@@ -40,6 +40,11 @@ REVIEW_STATUS_COMPATIBILITY = {
     "REJECTED_VALIDATION_FAILURE": "rejected_validation_failure",
     "VALIDATED_FOR_REVIEW": "validated_for_review",
 }
+HYBRID_CLASSIFICATIONS = frozenset({
+    "reconnaissance_consistent",
+    "anomalous_not_reconnaissance",
+    "unavailable_missing_calibration",
+})
 
 
 class WorkerProcessingError(RuntimeError):
@@ -84,6 +89,12 @@ def normalize_review_status(value: Any) -> str:
     if status is None:
         raise ValueError(f"Unsupported review status: {value}")
     return status
+
+
+def normalize_hybrid_classification(value: Any) -> str:
+    if value not in HYBRID_CLASSIFICATIONS:
+        raise ValueError(f"Unsupported hybrid_classification: {value}")
+    return value
 
 
 def load_manifest(path: Path) -> Dict[str, Any]:
@@ -503,6 +514,8 @@ def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
             f"Elasticsearch summary is missing required fields: {sorted(missing)}"
         )
     normalize_review_status(summary["review_status"])
+    if "hybrid_classification" in summary:
+        normalize_hybrid_classification(summary["hybrid_classification"])
     for key in ("pcap_sha256", "model_sha256"):
         if not isinstance(summary[key], str) or not SHA256_PATTERN.fullmatch(
             summary[key]
@@ -564,10 +577,15 @@ def _safe_summary_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
         "rule_generated_in_this_run",
         "deployable",
         "deployed",
+        "hybrid_classification",
     )
     safe = {key: summary[key] for key in allowed if key in summary}
     if "review_status" in safe:
         safe["review_status"] = normalize_review_status(safe["review_status"])
+    if "hybrid_classification" in safe:
+        safe["hybrid_classification"] = normalize_hybrid_classification(
+            safe["hybrid_classification"]
+        )
     return safe
 
 
@@ -1155,6 +1173,18 @@ def run_worker(
             "deployable": False,
             "deployed": False,
         }
+        hybrid = review.get("hybrid_review")
+        if isinstance(hybrid, Mapping) and "classification" in hybrid:
+            try:
+                result["hybrid_classification"] = normalize_hybrid_classification(
+                    hybrid["classification"]
+                )
+            except ValueError as exc:
+                failure = WorkerProcessingError(
+                    "Review hybrid classification is not allowed"
+                )
+                _record_output_failure(output_dir, run_id, expected_sha, failure)
+                raise failure from exc
         _write_json_exclusive(output_dir / "worker_summary.json", result)
         return result
     finally:

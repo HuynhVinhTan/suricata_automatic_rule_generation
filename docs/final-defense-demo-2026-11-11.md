@@ -16,6 +16,10 @@
 7. Show the isolated Suricata 8.0.3 replay for SID 9103003: 3/3 Attack
    sessions and 0/3 Normal sessions. Explain that it is a telemetry proxy and
    cannot count unique ports or implement the full hybrid verdict.
+8. Show the six correlation envelopes, exact PCAP/EVE/summary hashes, 303
+   matching EVE events and 144 matching flows in
+   `suricata-ai-correlated-lab`. State that the six worker summaries are local
+   artifacts and are not present in the existing `suricata-ai-summary` index.
 8. Show production service status and configuration hashes. Do not reload or
    deploy rules during the demonstration.
 
@@ -33,4 +37,6 @@
 - Worker review artifacts showing source PCAP, feature CSV and model hashes.
 - A side-by-side metric table showing IF/AE versus Python hybrid results.
 - The isolated Suricata SID 9103003 baseline/augmented replay evidence.
+- The dedicated `suricata-ai-correlated-lab` index, its data view and six
+  stable documents.
 - A final negative screenshot showing no production rule reload or deployment.
