@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import stat
 from pathlib import Path
 
 from netids.lifecycle_ed25519 import generate_encrypted_keypair, public_key_fingerprint
@@ -19,7 +20,11 @@ def _exclusive(path: Path, payload: bytes) -> None:
     path = Path(path)
     if path.is_symlink() or path.exists():
         raise FileExistsError("Refusing to overwrite existing key material")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.parent.is_symlink():
+        raise PermissionError("Private-key directory must not be a symlink")
+    if os.name == "posix" and (stat.S_IMODE(path.parent.stat().st_mode) & 0o077):
+        raise PermissionError("Key directory is accessible to group/other users")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "wb") as stream:
