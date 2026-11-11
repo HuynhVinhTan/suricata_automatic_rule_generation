@@ -24,4 +24,3 @@ def test_normal_plan_rejects_more_than_two_negative_controls():
             closed_ports=[18100, 18101, 18102],
             interval_seconds=0.001,
         )
-
