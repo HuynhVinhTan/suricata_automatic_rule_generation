@@ -1,10 +1,14 @@
 # Fresh hybrid calibration and holdout plan
 
-Status: **pre-registered; capture authorization required**
+Status: **Phase 3 partially complete; holdouts not authorized**
 
 This plan preserves the frozen IF/AE model, five-feature contract, review-only
-safety, and production Suricata/EVE-to-ELK path. No capture or traffic
-generation has started under these run IDs.
+safety, and production Suricata/EVE-to-ELK path. Normal calibration runs
+`normal-cal-http-01` and `normal-cal-rst-03` completed;
+`normal-cal-services-02` was blocked because no additional authorized synthetic
+services were listening. The completed runs are integrity-accepted but
+coverage-insufficient, so thresholds are not frozen. No holdout traffic has
+started under these run IDs.
 
 ## Fixed scope
 
