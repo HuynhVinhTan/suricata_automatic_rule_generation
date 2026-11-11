@@ -65,16 +65,30 @@ Frozen IF/AE inference used model SHA256 `206dadafc8d6cd96e21d838a52211d9b06d4a6
 
 `src/netids/hybrid_review.py` adds a separate review-only decision layer. It does not alter the five-feature contract, model files, or IF/AE thresholds. Calibration now requires `configs/hybrid_normal_calibration.json`, exact PCAP SHA256 values, explicit Normal ground truth, source/destination endpoints, and authentic capture metadata proving packet completeness, full snaplen, and zero capture drops. The five existing lab-session PCAPs have no authentic per-capture manifest or log with those integrity facts, so the persistent manifest records their hashes and labels but deliberately marks capture metadata unknown. Calibration therefore fails closed and no hybrid threshold is accepted. `tcp-connect-recon-20261031-v01` remains excluded because its name is ambiguous and no explicit ground-truth manifest was found. Whole-PCAP distinct-port totals remain reporting-only; any calibrated classification uses the 60-second sliding-window maximum.
 
-The final holdouts were evaluated once with those frozen hybrid thresholds:
+An earlier private derived file, `data/private/lab-runs/slow-port-independent-20261111/hybrid-evaluation.json`, recorded hybrid-looking classifications using retrospective completeness values. Those classifications are exploratory only and are not current validated results because the calibration references lack authentic capture manifests/logs. Its SHA256 was `a090437b3b0f549c76f36d6b6eb6c7a43d469314856a2a7f32023fa56f6debf2`.
+
+The current worker does not accept those historical classifications. Its fresh runs fail closed until calibration provenance is recovered:
 
 | Session | ML consensus | Hybrid classification | Result |
 |---|---:|---|---|
-| Attack v02 | 5/5 | `reconnaissance_consistent` | All calibrated conditions passed |
-| Normal v03 | 5/5 | `anomalous_not_reconnaissance` | Port diversity and successful-handshake conditions failed |
+| Attack v02 | 5/5 | `unavailable_missing_calibration` | Capture-integrity provenance unknown |
+| Normal v03 | 5/5 | `unavailable_missing_calibration` | Capture-integrity provenance unknown |
 
 The distinction is hybrid protocol evidence, not improved standalone IF/AE accuracy. The layer always returns condition-level explanations and keeps `approved=false`, `deployable=false`, and `deployed=false`. Incomplete capture evidence is classified as ambiguous and cannot pass.
 
 Fresh worker runs `hybrid-worker-attack-v02-20261111-r3` and `hybrid-worker-normal-v03-20261111-r3` used the existing PCAPs without overwriting earlier evidence. Both had standalone IF=5, AE=5, consensus=5; both hybrid classifications were `unavailable_missing_calibration`, with calibration status `rejected` and reason `Hybrid calibration capture metadata is unknown`. Source PCAP, feature CSV, and frozen model SHA256 links verified, and `approved=false`, `deployable=false`, `deployed=false` were exact booleans. Attack v02 and Normal v03 remain exploratory examples, not final independent validation; one Attack and one Normal PCAP are not statistically meaningful independent evaluation.
+
+## Historical calibration recovery matrix
+
+The matrix below is read-only evidence. A readable PCAP does not prove zero capture drops or complete capture records.
+
+| Reference | PCAP SHA256 / declared snaplen | Ground truth | Endpoints / interface / times | Completeness / drops | Decision |
+|---|---|---|---|---|---|
+| `normal-train.pcap` | `b79b45a8c62394a1fbb7284b4c3beead4139f51ab30438db5ea4df1bea46036a` / 262144 | `NORMAL` rows in `syn_windows_10s_normal-train.csv` (SHA `0674f57db0bf77b4411a93d0b27f46dc31558acf3450c2d8aab7c2ec7a477841`); original generator label unknown | Packet endpoints observable; original allowlist, interface, and start/end unknown | Unknown; no original manifest/log; zero drops not proven | **UNKNOWN — reject** |
+| `normal-cal.pcap` | `3920256b68ac424b2296c62554d89637f32fba18ffa9fac4c3a62cb6d2cec5a0` / 262144 | `NORMAL` rows in `syn_windows_10s_normal-cal.csv` (SHA `bec7eb0253a944a4b435611d6af26cb9987f39fea456684b95cce1e0fd80671d`); original generator label unknown | Packet endpoints observable; original allowlist, interface, and start/end unknown | Unknown; no original manifest/log; zero drops not proven | **UNKNOWN — reject** |
+| `normal-independent.pcap` | `27fe3158b29568db084fbb9c06528fcc82192f1655561a4a15dd02446f3d3442` / 96 | Directory/documentation label only; no original ground-truth log found | Packet endpoints observable; original allowlist, interface, and start/end unknown | Full snaplen **CONTRADICTED** by declared 96-byte snaplen and the V01 note in `docs/PHASE2_PHASE3_ACCEPTANCE_20261107.md` (SHA `64a3900f2495242d23d55786cfcb84e636d79e8c0355090f1bae8d42a403aff8`) | **CONTRADICTED — reject** |
+| `normal-matched12.pcap` | `00488e39e6be54c7e261373b17b5223ea8eff4ccae2c827ec3d9b6cae1dd683b` / 96 | Directory/documentation label only; no original ground-truth log found | Packet endpoints observable; original allowlist, interface, and start/end unknown | Full snaplen **CONTRADICTED** by declared 96-byte snaplen and the V01 note above | **CONTRADICTED — reject** |
+| `normal-multiport.pcap` | `494a100b1ad47f1d15f570f7940ab6e0abce02c0b86dda7eddc5ebd04d334736` / 96 | Directory/documentation label only; no original ground-truth log found | Packet endpoints observable; original allowlist, interface, and start/end unknown | Full snaplen **CONTRADICTED** by declared 96-byte snaplen and the V01 note above | **CONTRADICTED — reject** |
 
 ## Isolated baseline replay for final holdouts
 
@@ -104,3 +118,14 @@ Production Suricata and Filebeat remained active throughout. The owner verified 
 | Baseline versus augmented improvement | Not demonstrated |
 
 The smallest scientifically defensible next step is for the capture owner to provide authentic manifests/logs for the Normal calibration PCAPs containing packet-record completeness, snaplen/truncation, capture-drop status, ground-truth label, endpoints, and the recorded PCAP SHA256. Until those are independently bound, the Python hybrid cannot claim calibrated classification and no executable Suricata approximation should be generated.
+
+## Ready-to-execute fresh calibration plan — not authorized
+
+Owner authorization is required before any VM action. The owner must authorize the exact run IDs, VM1 interface `ens33`, source `192.168.10.20`, target `192.168.10.10`, bounded duration, and output paths. The plan is:
+
+1. Capture independent Normal calibration sessions with a full-snaplen classic Ethernet PCAP and a separate immutable session manifest. Include one ordinary single-service session, one multiport benign service-check session, and one challenging benign session containing expected closed-port RSTs/failed connections.
+2. Record generator ground truth, source/target allowlists, UTC start/end times, interface, tcpdump command/options, declared snaplen, clean exit status, and `pcap_stats`/kernel drop counters in the capture-time log. A readable PCAP alone is insufficient.
+3. Seal each PCAP with its SHA256 and independently verify packet counts, endpoint direction, snaplen/truncation, and zero drops. Reject any incomplete or ambiguous session.
+4. Freeze the hybrid thresholds from only the accepted Normal calibration set, then evaluate fresh independent Attack and challenging Normal holdouts with new run IDs. Do not use either holdout to tune thresholds.
+
+No capture, VM privilege change, model change, rule generation, or production reload is authorized by this plan.

@@ -122,6 +122,17 @@ def _valid_review(status="needs_review", **overrides):
         "deployed": False,
         "triage": {"auto_approve": False, "auto_deploy": False},
         "candidate_gate": {"rule_approval_authorized": False},
+        "hybrid_review": {
+            "schema_version": "hybrid_review_v1",
+            "classification": "unavailable_missing_calibration",
+            "requires_manual_review": True,
+            "approved": False,
+            "deployable": False,
+            "deployed": False,
+            "python_only": True,
+            "suricata_signature_equivalent": False,
+            "calibration_provenance": {"status": "rejected"},
+        },
         "model_sha256": worker.EXPECTED_MODEL_SHA256,
     }
     review.update(overrides)
@@ -373,6 +384,13 @@ def test_valid_v0_2_review_is_accepted():
     assert worker._review_is_safe(_valid_review()) == "needs_review"
 
 
+def test_v0_2_review_requires_explicit_hybrid_result():
+    review = _valid_review()
+    review.pop("hybrid_review", None)
+    with pytest.raises(worker.WorkerProcessingError, match="hybrid"):
+        worker._review_is_safe(review)
+
+
 def test_hybrid_review_tampering_is_rejected():
     review = _valid_review()
     review["hybrid_review"] = {
@@ -394,6 +412,14 @@ def test_supported_v0_1_review_uses_legacy_schema_contract():
     review["schema_version"] = "lab_rule_review_v0_1"
     review.pop("approved")
 
+    assert worker._review_is_safe(review) == "needs_review"
+
+
+def test_historical_v0_1_review_can_omit_hybrid_result():
+    review = _valid_review()
+    review["schema_version"] = "lab_rule_review_v0_1"
+    review.pop("approved")
+    review.pop("hybrid_review")
     assert worker._review_is_safe(review) == "needs_review"
 
 

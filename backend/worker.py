@@ -329,6 +329,10 @@ def _review_is_safe(review: Mapping[str, Any]) -> str:
         )
 
     hybrid = review.get("hybrid_review")
+    if schema_version == "lab_rule_review_v0_2" and hybrid is None:
+        raise WorkerProcessingError(
+            "Review artifact hybrid result is mandatory for v0_2"
+        )
     if hybrid is not None:
         if not isinstance(hybrid, dict) or hybrid.get("schema_version") != "hybrid_review_v1":
             raise WorkerProcessingError("Review artifact hybrid review is malformed")
