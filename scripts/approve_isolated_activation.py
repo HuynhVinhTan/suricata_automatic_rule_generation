@@ -54,6 +54,26 @@ def build_owner_authorization(
         or replay_record.get("run_id") != run_id
     ):
         raise ValueError("Replay acceptance or candidate provenance mismatch")
+    from netids.trusted_replay import EXPECTED_CASES
+    cases = replay_record.get("cases")
+    if not isinstance(cases, list) or len(cases) != len(EXPECTED_CASES):
+        raise ValueError("Original six-holdout evidence is incomplete")
+    encountered = set()
+    for case in cases:
+        if not isinstance(case, dict):
+            raise ValueError("Malformed signed replay case")
+        case_id = case.get("run_id")
+        if case_id not in EXPECTED_CASES or case_id in encountered:
+            raise ValueError("Unknown or repeated replay run")
+        scenario, sha = EXPECTED_CASES[case_id]
+        if case.get("scenario") != scenario or case.get("pcap_sha256") != sha:
+            raise ValueError("Replay case provenance mismatch")
+        alert_count = case.get("candidate_sid_alerts")
+        if type(alert_count) is not int or (alert_count <= 0 if scenario == "attack" else alert_count != 0):
+            raise ValueError("Attack/Normal replay acceptance failed")
+        encountered.add(case_id)
+    if encountered != set(EXPECTED_CASES):
+        raise ValueError("Missing original replay cases")
     if not isinstance(approver_identity, str) or not approver_identity.strip():
         raise ValueError("Approver identity is required")
     if len(nonce) != 32 or any(x not in "0123456789abcdef" for x in nonce):
