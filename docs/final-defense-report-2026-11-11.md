@@ -11,6 +11,13 @@ worker-artifact joins at event/flow level, and six derived worker summaries
 passed exact read-back in the existing `suricata-ai-summary` index. Live
 production EVE correlation by run ID is not claimed.
 
+The dataset audit found the local UNSW, CIC-IDS2017 and CTU-13 files and
+recorded their hashes and streaming quality findings. CIC has non-finite rate
+values and no verified adapter/model; UNSW has identical selected feature
+vectors with contradictory labels; CTU labels retain Background separately
+from Normal and Botnet. The review-only rule lifecycle now requires explicit
+provenance-bound approval and defaults to dry-run isolated staging.
+
 This result is not a production-accuracy claim. Only three independent Attack
 sessions and three independent Normal sessions were tested in one controlled
 lab environment.

@@ -9,6 +9,12 @@
 2. The validated SID 9103003 is a review-only RST telemetry proxy. The Python
    hybrid remains authoritative and is not equivalent to a single Suricata
    signature.
+3. CIC-IDS2017 remains unsuitable for model training until duplicate headers,
+   non-finite rates and label policy receive a separately reviewed adapter
+   experiment. CTU's largest duplicate/contradiction audit needs more
+   temporary disk; no result is inferred.
+4. Active isolated-lab rule installation remains pending explicit owner
+   approval. The lifecycle implementation is dry-run and fail-closed.
 
 ## Scientific scope
 
