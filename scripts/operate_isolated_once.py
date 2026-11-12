@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import socket
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +22,7 @@ import yaml
 from netids.key_pins import require_pinned_role_keys
 from netids.lifecycle_ed25519 import sign_record, verify_record, sha256_file
 from netids.isolated_suricata_runtime import (
-    ROOT, VM1_HOST, IsolatedSuricataRuntime,
+    ROOT, VM1_HOST, IsolatedSuricataRuntime, is_verified_vm1_host,
 )
 from netids.rule_lifecycle import RuleLifecycle, LifecycleError
 from netids.trusted_replay import SID, RULE_SHA, MODEL_SHA, CAL_SHA, EXPECTED_CASES
@@ -62,8 +61,8 @@ def _systemd(service: str) -> tuple[str, str]:
 
 def production_snapshot(production_yaml: Path, production_rules: Path) -> dict:
     """Read-only production proof; never reopen or modify service files."""
-    if socket.gethostname() != VM1_HOST:
-        raise OperationError("Target is not VM1")
+    if not is_verified_vm1_host():
+        raise OperationError("Target is not verified VM1 (hostname and ens33)")
     production_yaml = Path(production_yaml)
     production_rules = Path(production_rules)
     if production_yaml.resolve() != Path("/etc/suricata/suricata.yaml"):
@@ -157,8 +156,8 @@ def execute_one_time(
     audit_path: Path, replay_private_pem: bytes,
     replay_private_password: bytes,
 ) -> dict:
-    if socket.gethostname() != VM1_HOST:
-        raise OperationError("Owner authorization is only for VM1")
+    if not is_verified_vm1_host():
+        raise OperationError("Owner authorization is only for verified VM1")
     if Path(audit_path).resolve() != ROOT / "audit" / "owner-once.jsonl":
         raise OperationError("Activation audit must use the fixed one-time VM1 ledger")
     candidate = _read_json(candidate_file)
