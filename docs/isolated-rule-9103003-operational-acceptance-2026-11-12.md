@@ -4,7 +4,7 @@
 
 User consent is limited to one Suricata 8.0.3 activation followed by mandatory rollback on suricata-vm1 loopback lo, alert-only SID 9103003. The consent does not authorize modifications to production Suricata, Filebeat, EVE-to-ELK, firewall, sudoers, file capabilities or interfaces.
 
-No real SSH/VM1 session or key provisioning has yet occurred in this PR. No activation/rollback may be marked PASS solely from CI or synthetic tests.
+Real VM1 SSH inspection and six-PCAP replay signing have occurred. No activation/rollback may be marked PASS solely from CI or replay evidence; owner authorization and live runtime proof remain separate gates.
 
 Immutable identity:
 - SID: 9103003
@@ -24,7 +24,7 @@ Immutable identity:
 3. Confirm production does not capture lo, tcpdump capabilities remain revoked and production processes are active. Do not change privileges or production configuration to make this pass.
 4. Discover the ORIGINAL SID 9103003 rule from reviewed lab artifacts. Independently verify SHA256 **of the canonical one-line rule text excluding its required terminal LF** equals `7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df`, exactly as `backend/rule_handoff._read_artifacts()` defines `metadata.rule_sha256`. Also record SHA256 of the complete original file bytes (including LF) separately in the replay attestation; do not confuse the two hashes. Do not reconstruct or modify an original rule to force a match.
 5. Locate the six original PCAPs, three Attack and three Normal, and verify their hashes against the hard-pinned mapping in src/netids/trusted_replay.py.
-6. Confirm the existing VM1 account has adequate disk space and can run already-installed suricata, suricatasc and tcpreplay on lo without installing tools, changing privileges or touching ens33/ens37. If missing, STOP.
+6. Confirm the existing VM1 account has adequate disk space and can run already-installed suricata, suricatasc and tcpreplay on lo without installing tools, changing privileges or touching ens33/ens37. The current read-only check found `tcpreplay` missing; classify activation as BLOCKED and do not install or elevate.
 7. Prepare an isolated YAML inside the exact root using the previously proven isolated configuration only after reviewing all YAML paths: no output to production, eve-log filename eve.json, af-packet and pcap references only lo, no syslog, separate socket/PID/logs/rules.
 
 ## B. Generate TWO private, independent encrypted Ed25519 keys
@@ -102,7 +102,7 @@ Additional fail-closed requirements for the one-time VM1 command:
 
 ## G. Acceptance and evidence handling
 
-The success report must include exact run/candidate IDs, pinned public-key fingerprints, signed replay and owner records, production before/after SHA/PID/status, isolated daemon PID/socket, Suricata version, activation EVE hash and SID counts, verified zero rules/SID after rollback, and confirmed isolated process shutdown.
+The replay closeout includes candidate `d1020f83f684675e0547a76b467162fc1371bbf3c3005ec72e9951f1026c4f0a`, replay run `documented-frozen-rule-signing-20261112-01`, attestation SHA-256 `aaab81a187dc0640cc73bb05fe4ce2feda93b1be9af21922bcf532d15573c5ce`, and independent Ed25519 verification. A successful activation report would additionally require exact run/candidate IDs, pinned public-key fingerprints, owner record, production before/after SHA/PID/status, isolated daemon PID/socket, Suricata version, activation EVE hash and SID counts, verified zero rules/SID after rollback, and confirmed isolated process shutdown.
 
 Do not upload original PCAPs, private keys or credential-containing logs to Git. Commit only scrubbed SHA/status evidence after a human review.
 

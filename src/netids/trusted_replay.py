@@ -107,6 +107,21 @@ def _config_safe(config_path: Path, root: Path) -> str:
     return sha256_file(path)
 
 
+def _create_exclusive_run_root(root: Path, replay_run_id: str) -> Path:
+    """Claim one new signing directory without touching prior evidence."""
+    evidence_root = _under(root / "replay-evidence", root)
+    if evidence_root.exists() and evidence_root.is_symlink():
+        raise ReplayGateError("Replay evidence root may not be a symlink")
+    if not evidence_root.exists():
+        evidence_root.mkdir(mode=0o700, parents=False)
+    run_root = _under(evidence_root / f"signed-{replay_run_id}", root)
+    try:
+        run_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise ReplayGateError("Signing replay run already exists; never overwrite or reuse it") from exc
+    return run_root
+
+
 def _run(command: list[str], *, timeout: int = 180) -> subprocess.CompletedProcess:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
@@ -205,6 +220,7 @@ def attest_six_holdouts(
         raise ReplayGateError("Frozen provenance mismatch")
     candidate_id = manifest.get("candidate_id")
     candidate_run_id = manifest.get("run_id")
+    replay_run_id = manifest.get("replay_run_id")
     candidate_pcap = manifest.get("pcap_sha256")
     if (
         not isinstance(candidate_run_id, str)
@@ -218,6 +234,9 @@ def attest_six_holdouts(
             digest for scenario, digest in EXPECTED_CASES.values()
             if scenario == "attack"
         }
+        or not isinstance(replay_run_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", replay_run_id)
+        or replay_run_id == "documented-frozen-rule-signing-20261112-unsigned"
     ):
         raise ReplayGateError("Candidate identity or source PCAP is not pinned to an original attack holdout")
     case_list = manifest.get("cases")
@@ -249,10 +268,7 @@ def attest_six_holdouts(
     version = _run([suricata_binary, "-V"], timeout=30).stdout.strip()
     if "8.0.3" not in version:
         raise ReplayGateError("Suricata 8.0.3 required")
-    run_root = _under(root / "replay-evidence", root)
-    if run_root.exists():
-        raise ReplayGateError("Replay evidence directory exists; never overwrite it")
-    run_root.mkdir(mode=0o700, parents=False)
+    run_root = _create_exclusive_run_root(root, replay_run_id)
     syntax_dir = run_root / "syntax"
     syntax_dir.mkdir(mode=0o700)
     _run([
@@ -285,6 +301,8 @@ def attest_six_holdouts(
         "experiment_id": "suricata-isolated-9103003-20261112",
         "candidate_id": manifest.get("candidate_id"),
         "run_id": manifest.get("run_id"),
+        "replay_run_id": replay_run_id,
+        "replay_evidence_relpath": str(run_root.relative_to(root)).replace("\\", "/"),
         "pcap_sha256": manifest.get("pcap_sha256"),
         "sid": SID,
         "rule_sha256": RULE_SHA,
@@ -304,5 +322,17 @@ def attest_six_holdouts(
         "cases": observations,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    index = {
+        "replay_run_id": replay_run_id,
+        "syntax_eve_sha256": sha256_file(syntax_dir / "eve.json")
+        if (syntax_dir / "eve.json").is_file() else None,
+        "cases": [
+            {"run_id": item["run_id"], "eve_sha256": item["eve_sha256"]}
+            for item in observations
+        ],
+    }
+    result["replay_evidence_index_sha256"] = hashlib.sha256(
+        json.dumps(index, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     # Only sign after all independent Suricata subprocesses and parsed EVE gates pass.
     return sign_record(result, private_key_pem, private_key_password, domain="isolated-replay-v1")

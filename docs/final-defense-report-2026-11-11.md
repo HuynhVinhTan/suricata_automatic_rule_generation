@@ -100,9 +100,13 @@ unchanged pinned Git evidence blob and is explicitly labelled
 `documented_frozen_rule_recovery`; this does not claim historical generator
 provenance. A fresh VM1 Suricata 8.0.3 offline replay of the six immutable
 holdouts produced 8/8/8 candidate SID alerts for Attack 01/02/03 and 0/0/0 for
-Normal 01/02/03, with nonempty EVE output. Ed25519 signing remains blocked at
-the VM1 replay-key passphrase gate, and live loopback activation remains
-blocked because `tcpreplay` is unavailable and no owner approval exists.
+Normal 01/02/03, with nonempty EVE output. The replay was independently signed
+with the VM1 replay Ed25519 key and verified on Windows. The signed attestation
+SHA-256 is `aaab81a187dc0640cc73bb05fe4ce2feda93b1be9af21922bcf532d15573c5ce`;
+its replay run is `documented-frozen-rule-signing-20261112-01` and its signed
+evidence directory is `replay-evidence/signed-documented-frozen-rule-signing-20261112-01`.
+Owner approval and live loopback activation remain blocked: `tcpreplay` is
+unavailable on VM1 and no owner authorization was requested or generated.
 
 ## Safety and reproducibility
 
@@ -134,6 +138,8 @@ deterministic rules-directory manifest SHA-256 is
 | Baseline versus augmented Suricata comparison | Met for proxy gate: 3/3 Attack, 0/3 Normal |
 | Production safety | Preserved |
 | tcpdump capability cleanup | **Met: no capability reported** |
+| Real replay Ed25519 attestation | **Met with real evidence** | Attestation SHA-256 recorded above; independent pinned-key verification passed |
+| Owner approval and isolated activation/rollback | **Blocked by explicit gate** | No owner approval generated; `tcpreplay` missing and live loopback injection prerequisites remain unproven |
 
 PR #2 review-fix evidence is documented in
 `docs/pr2-review-fixes-evidence-2026-11-12.md`. The dataset audit is strict and

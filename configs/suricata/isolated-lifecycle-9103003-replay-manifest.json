@@ -2,6 +2,7 @@
   "schema_version": "suricata_replay_manifest_v1",
   "candidate_id": "d1020f83f684675e0547a76b467162fc1371bbf3c3005ec72e9951f1026c4f0a",
   "run_id": "documented-frozen-rule-recovery-20261112",
+  "replay_run_id": "documented-frozen-rule-signing-20261112-01",
   "pcap_sha256": "7eb27fe774c8d889480662eaaea1e68b2336cc04c943ff06be399a24e4c0bbb5",
   "sid": 9103003,
   "rule_sha256": "7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df",

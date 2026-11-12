@@ -23,8 +23,9 @@ Branch: `feat/isolated-rule-runtime-signing`
 | Rule lifecycle safety | PASS for review-only code | Explicit provenance-bound state machine, approval gate, dry-run staging and rollback audit; active isolated-lab installation remains pending owner approval |
 | Original RST metadata provenance | BLOCKED | Read-only searches found no genuine accepted RST metadata; documented-frozen recovery is explicit and does not claim historical metadata recovery |
 | Real six-PCAP offline replay | PASSED WITH REAL EVIDENCE | VM1 Suricata 8.0.3: Attack 01/02/03 each 8 SID alerts; Normal 01/02/03 each 0; all EVE files nonempty |
-| Replay Ed25519 attestation | BLOCKED AT PASSPHRASE GATE | Replay private key is present only on VM1; signing requires its human-held passphrase and must bind the verified replay evidence |
-| Isolated activation and rollback | BLOCKED | `tcpreplay` is unavailable and no owner approval exists; no daemon activation was attempted |
+| Replay Ed25519 attestation | PASS WITH REAL EVIDENCE | Attestation SHA-256 `aaab81a187dc0640cc73bb05fe4ce2feda93b1be9af21922bcf532d15573c5ce`; independent Windows verification passed; Attack 8/8/8 and Normal 0/0/0 |
+| Recovery candidate registration | PASS WITH VERIFIED IDENTITY | Candidate `d1020f83f684675e0547a76b467162fc1371bbf3c3005ec72e9951f1026c4f0a`; documented-frozen provenance; all safety flags false |
+| Isolated activation and rollback | BLOCKED | `tcpreplay` is unavailable, packet-injection privileges were not established, and no owner approval was generated; no daemon activation was attempted |
 
 The six holdouts are controlled-lab evidence, not a production accuracy claim.
 The complete-hybrid-in-Suricata criterion is not met; the review-only RST proxy

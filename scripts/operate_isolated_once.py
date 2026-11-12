@@ -25,7 +25,10 @@ from netids.isolated_suricata_runtime import (
     ROOT, VM1_HOST, IsolatedSuricataRuntime, is_verified_vm1_host,
 )
 from netids.rule_lifecycle import RuleLifecycle, LifecycleError
-from netids.trusted_replay import SID, RULE_SHA, MODEL_SHA, CAL_SHA, EXPECTED_CASES
+from netids.trusted_replay import (
+    SID, RULE_SHA, MODEL_SHA, CAL_SHA, EXPECTED_CASES,
+    validate_documented_rule_provenance,
+)
 
 _HEX = re.compile(r"^[a-f0-9]{64}$")
 PINNED_PRODUCTION_YAML_SHA256 = "6224bc7d0bc04d97c4282f54a71e0736341341aa82c530fe22aed3da28814d72"
@@ -145,6 +148,26 @@ def _verify_inputs(
         or authorization.get("run_id") != candidate.get("run_id")
     ):
         raise OperationError("Candidate, replay or exact owner scope mismatch")
+    if candidate.get("evidence_class") == "documented_frozen_rule_recovery":
+        provenance = candidate.get("rule_provenance") or {
+            key: candidate.get(key) for key in (
+                "evidence_class", "historical_generated_metadata",
+                "source_document_path", "source_document_git_blob_sha256",
+                "source_document_sha256",
+            )
+        }
+        try:
+            validate_documented_rule_provenance(provenance)
+        except ValueError as exc:
+            raise OperationError("Candidate documented-recovery provenance is invalid") from exc
+        if (
+            replay.get("rule_provenance") != provenance
+            or authorization.get("rule_provenance") != provenance
+            or candidate.get("replay_run_id") != replay.get("replay_run_id")
+            or authorization.get("replay_run_id") != replay.get("replay_run_id")
+            or candidate.get("replay_manifest_sha256") != replay.get("manifest_sha256")
+        ):
+            raise OperationError("Documented-recovery evidence binding mismatch")
 
 
 def execute_one_time(

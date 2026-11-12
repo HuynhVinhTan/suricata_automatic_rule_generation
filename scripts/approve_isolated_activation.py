@@ -22,7 +22,10 @@ from netids.lifecycle_ed25519 import (
     verify_record,
     public_key_fingerprint,
 )
-from netids.trusted_replay import SID, RULE_SHA, MODEL_SHA, CAL_SHA, DECISION_SHA
+from netids.trusted_replay import (
+    SID, RULE_SHA, MODEL_SHA, CAL_SHA, DECISION_SHA,
+    validate_documented_rule_provenance,
+)
 
 PROMPT = "AUTHORIZE ISOLATED SID 9103003 ONE TIME AND ROLLBACK"
 ISOLATED_ROOT = "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103003"
@@ -55,6 +58,19 @@ def build_owner_authorization(
         or replay_record.get("run_id") != run_id
     ):
         raise ValueError("Replay acceptance or candidate provenance mismatch")
+    recovery_provenance = replay_record.get("rule_provenance")
+    if recovery_provenance is not None:
+        try:
+            validate_documented_rule_provenance(recovery_provenance)
+        except ValueError as exc:
+            raise ValueError("Replay documented-recovery provenance mismatch") from exc
+        if (
+            not isinstance(replay_record.get("replay_run_id"), str)
+            or not isinstance(replay_record.get("replay_evidence_relpath"), str)
+            or not isinstance(replay_record.get("replay_evidence_index_sha256"), str)
+            or len(replay_record["replay_evidence_index_sha256"]) != 64
+        ):
+            raise ValueError("Replay evidence directory binding is incomplete")
     from netids.trusted_replay import EXPECTED_CASES
     cases = replay_record.get("cases")
     if not isinstance(cases, list) or len(cases) != len(EXPECTED_CASES):
@@ -108,7 +124,12 @@ def build_owner_authorization(
         "pcap_sha256": replay_record["pcap_sha256"],
         "model_sha256": MODEL_SHA,
         "calibration_sha256": CAL_SHA,
+        "decision_manifest_sha256": DECISION_SHA,
         "replay_evidence_sha256": hashlib.sha256(replay_unsigned).hexdigest(),
+        "rule_provenance": recovery_provenance,
+        "replay_run_id": replay_record.get("replay_run_id"),
+        "replay_evidence_relpath": replay_record.get("replay_evidence_relpath"),
+        "replay_evidence_index_sha256": replay_record.get("replay_evidence_index_sha256"),
         "environment": "isolated-lab",
         "isolated_root": ISOLATED_ROOT,
         "target_vm": "suricata-vm1",

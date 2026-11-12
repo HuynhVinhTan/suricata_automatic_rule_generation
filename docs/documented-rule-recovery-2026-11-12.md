@@ -43,7 +43,10 @@ isolated YAML SHA-256 was
 | Normal 02 | `2b749b401870dc7307b1ccaac4a24dcd7ae709b7fcd2d9b728445f70b3a7ce3d` | 25 | 0 |
 | Normal 03 | `330c5f1eb3b96c325d8e400c7f50f111fa35335c201ae72ec236d2e7c86e3b51` | 25 | 0 |
 
-These observations are real unsigned replay evidence. No replay attestation
-was generated, no owner approval was generated, and no live activation was
-attempted. `tcpreplay` is absent on VM1, so the loopback activation gate is
-blocked independently of the successful offline `-r` replays.
+These observations were followed by a real VM1 Ed25519 replay attestation.
+The attestation SHA-256 is
+`aaab81a187dc0640cc73bb05fe4ce2feda93b1be9af21922bcf532d15573c5ce` and
+independent verification with the pinned replay public key passed. No owner
+approval was generated and no live activation was attempted. `tcpreplay` is
+absent on VM1, so the loopback activation gate is blocked independently of the
+successful offline `-r` replays.

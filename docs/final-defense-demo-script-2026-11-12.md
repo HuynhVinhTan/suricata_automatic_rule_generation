@@ -15,11 +15,12 @@
 6. Run the generated-artifact registration CLI in a synthetic or existing
    review-only fixture. Show `PROPOSED` and the three exact false safety flags.
 7. Show [documented-rule-recovery-2026-11-12.md](./documented-rule-recovery-2026-11-12.md) and explain that accepted rule text was recovered from a pinned Git evidence blob, while historical RST metadata remains unavailable.
-8. Show the real VM1 offline replay counts: 8/8/8 SID alerts for Attack 01/02/03 and zero for all three Normal holdouts. Do not call this a signed attestation until the replay-key passphrase gate completes.
+8. Show the real VM1 offline replay counts: 8/8/8 SID alerts for Attack 01/02/03 and zero for all three Normal holdouts. Show the independently verified signed attestation hash `aaab81a187dc0640cc73bb05fe4ce2feda93b1be9af21922bcf532d15573c5ce` and candidate ID `d1020f83f684675e0547a76b467162fc1371bbf3c3005ec72e9951f1026c4f0a`.
 9. Show dry-run staging below the isolated root. Do not activate without an
    authenticated owner authorization, `tcpreplay`/loopback prerequisites and an available isolated runtime.
-10. Close with the scoped decision: the six offline replays passed with real
-   EVE evidence; replay signing and live activation/rollback remain blocked.
+10. Close with the scoped decision: the six offline replays and replay signing
+   passed with real EVE evidence; owner approval and live activation/rollback
+   remain blocked because `tcpreplay` is unavailable and no owner approval was generated.
 
 ## Questions to answer
 
