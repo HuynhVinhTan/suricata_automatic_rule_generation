@@ -16,7 +16,7 @@ from netids.rule_lifecycle import RuleLifecycle
 def _fixture(tmp_path):
     artifact = tmp_path / "lineage"
     artifact.mkdir()
-    rule = 'alert tcp any any -> 192.168.10.10 any (sid:9103012; rev:1;)\n'
+    rule = 'alert tcp any any -> 192.168.10.10 any (detection_filter:track by_src,count 3,seconds 10; sid:9103012; rev:1;)\n'
     (artifact / "ml-generated.rules").write_text(rule, encoding="utf-8", newline="\n")
     model = "b" * 64
     pcap = "a" * 64

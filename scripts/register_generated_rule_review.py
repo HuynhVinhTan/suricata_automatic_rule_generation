@@ -26,6 +26,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-path", type=Path, required=True)
     parser.add_argument("--isolated-root", type=Path, required=True)
     parser.add_argument(
+        "--require-candidate-record", action="store_true",
+        help="Require candidate_record_v1 provenance; no legacy identity fallback",
+    )
+    parser.add_argument(
         "--private-candidate-output", type=Path,
         help="Write exact validated candidate for later owner-signed isolated operation",
     )
@@ -46,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
             audit_path=args.audit_path,
             isolated_root=args.isolated_root,
             return_private_candidate=bool(args.private_candidate_output),
+            require_candidate_record=args.require_candidate_record,
         )
     except (LifecycleError, OSError, ValueError) as exc:
         print(json.dumps({"status": "REJECTED", "reason": str(exc)}, sort_keys=True))

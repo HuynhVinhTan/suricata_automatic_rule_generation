@@ -50,6 +50,7 @@ def register_generated_candidate(
     audit_path: Path,
     isolated_root: Path,
     return_private_candidate: bool = False,
+    require_candidate_record: bool = False,
 ) -> dict:
     """Create an immutable-PROPOSED review record from a real generated artifact.
 
@@ -101,6 +102,8 @@ def register_generated_candidate(
         "baseline_rules_sha256": baseline_sha,
     }
     review_path = Path(artifact_dir) / "review.json"
+    if require_candidate_record and not review_path.is_file():
+        raise LifecycleError("candidate_record_v1 evidence is required for this acceptance path")
     if review_path.is_file():
         try:
             review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -117,8 +120,12 @@ def register_generated_candidate(
                     "baseline_rules_sha256": baseline_sha,
                 })
                 source = verified
+            if require_candidate_record is True and source.get("candidate_record_schema") != "candidate_record_v1":
+                raise LifecycleError("Candidate record provenance is incomplete")
         except (CandidateRecordError, OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise LifecycleError("Candidate record provenance failed") from exc
+    elif require_candidate_record:
+        raise LifecycleError("candidate_record_v1 evidence is required for this acceptance path")
     result = lifecycle.create_candidate(source)
     summary = {
         "status": result["state"],

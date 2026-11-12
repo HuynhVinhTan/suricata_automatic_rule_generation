@@ -25,6 +25,7 @@ from netids.isolated_suricata_runtime import (
     ROOT, VM1_HOST, IsolatedSuricataRuntime, is_verified_vm1_host,
 )
 from netids.rule_lifecycle import RuleLifecycle, LifecycleError
+from netids.candidate_record import verify_candidate_record, verify_signed_replay_evidence
 from netids.trusted_replay import (
     SID, RULE_SHA, MODEL_SHA, CAL_SHA, EXPECTED_CASES,
     validate_documented_rule_provenance,
@@ -62,7 +63,7 @@ def _systemd(service: str) -> tuple[str, str]:
     return lines["ActiveState"], lines["MainPID"]
 
 
-def production_snapshot(production_yaml: Path, production_rules: Path) -> dict:
+def production_snapshot(production_yaml: Path, production_rules: Path, *, forbidden_sid: int = SID) -> dict:
     """Read-only production proof; never reopen or modify service files."""
     if not is_verified_vm1_host():
         raise OperationError("Target is not verified VM1 (hostname and ens33)")
@@ -80,8 +81,8 @@ def production_snapshot(production_yaml: Path, production_rules: Path) -> dict:
             raise OperationError("Production snapshot source is missing or a symlink")
     if sha256_file(production_yaml) != PINNED_PRODUCTION_YAML_SHA256:
         raise OperationError("Production YAML differs from the last verified lab baseline; stop")
-    if re.search(rb"\bsid\s*:\s*9103003\s*;", production_rules.read_bytes()):
-        raise OperationError("SID 9103003 is already present in production rules; stop")
+    if re.search(rb"\bsid\s*:\s*" + str(forbidden_sid).encode() + rb"\s*;", production_rules.read_bytes()):
+        raise OperationError("Candidate SID is already present in production rules; stop")
     with production_yaml.open(encoding="utf-8") as source:
         config = yaml.safe_load(source)
     if not isinstance(config, dict):
@@ -168,6 +169,40 @@ def _verify_inputs(
             or candidate.get("replay_manifest_sha256") != replay.get("manifest_sha256")
         ):
             raise OperationError("Documented-recovery evidence binding mismatch")
+
+
+def _verify_candidate_inputs(
+    candidate: dict, replay: dict, approval: dict, *, candidate_file: Path,
+    replay_public: bytes, owner_public: bytes, isolated_root: Path,
+    runtime_id: str, target_vm: str, interface: str,
+) -> None:
+    if not verify_candidate_record(candidate) or candidate.get("state") not in (None, "PROPOSED"):
+        raise OperationError("Candidate record is not valid candidate_record_v1")
+    if not verify_signed_replay_evidence(candidate, replay, replay_public):
+        raise OperationError("Candidate replay attestation is not trusted or complete")
+    if not verify_record(approval, owner_public, domain="isolated-owner-approval-v1"):
+        raise OperationError("Untrusted owner authorization")
+    if sha256_file(candidate_file) != approval.get("candidate_record_sha256"):
+        raise OperationError("Owner approval does not bind candidate record bytes")
+    replay_digest = _digest(replay)
+    if (
+        approval.get("replay_evidence_sha256") != replay_digest
+        or any(approval.get(key) != candidate.get(key) for key in (
+            "candidate_id", "run_id", "sid", "rule_sha256", "pcap_sha256",
+            "model_sha256", "calibration_sha256", "decision_manifest_sha256",
+        ))
+        or approval.get("candidate_record_schema") != "candidate_record_v1"
+        or approval.get("runtime_id") != runtime_id
+        or approval.get("target_vm") != target_vm
+        or approval.get("interface") != interface
+        or approval.get("isolated_root") != str(isolated_root)
+        or approval.get("operation") != "activate"
+        or approval.get("rollback_required") is not True
+        or approval.get("max_activation_seconds") != 300
+    ):
+        raise OperationError("Candidate, replay or exact owner scope mismatch")
+    if interface != "lo" or target_vm != VM1_HOST:
+        raise OperationError("Candidate operation is restricted to VM1 loopback")
 
 
 def execute_one_time(
@@ -264,6 +299,86 @@ def execute_one_time(
     return sign_record(
         record, replay_private_pem, replay_private_password, domain="isolated-runtime-v1"
     )
+
+
+def execute_candidate_one_time(
+    *, candidate_file: Path, replay_attestation_file: Path,
+    owner_approval_file: Path, replay_public_file: Path, owner_public_file: Path,
+    production_yaml: Path, production_rules: Path, isolated_yaml: Path,
+    isolated_root: Path, attack_pcap: Path, attack_sha256: str,
+    normal_pcap: Path, normal_sha256: str, audit_path: Path,
+    replay_private_pem: bytes, replay_private_password: bytes,
+) -> dict:
+    """Candidate-specific one-shot operator; no historical SID constants are used."""
+    if not is_verified_vm1_host():
+        raise OperationError("Owner authorization is only for verified VM1")
+    root = Path(isolated_root).resolve()
+    if Path(audit_path).resolve() != root / "audit" / "owner-once.jsonl":
+        raise OperationError("Activation audit must use the candidate isolated ledger")
+    candidate = _read_json(candidate_file)
+    replay = _read_json(replay_attestation_file)
+    approval = _read_json(owner_approval_file)
+    replay_public = Path(replay_public_file).read_bytes()
+    owner_public = Path(owner_public_file).read_bytes()
+    require_pinned_role_keys(replay_public, owner_public)
+    runtime_id = approval.get("runtime_id")
+    target_vm = approval.get("target_vm")
+    interface = approval.get("interface")
+    _verify_candidate_inputs(
+        candidate, replay, approval, candidate_file=Path(candidate_file),
+        replay_public=replay_public, owner_public=owner_public,
+        isolated_root=root, runtime_id=runtime_id, target_vm=target_vm,
+        interface=interface,
+    )
+    if any(candidate.get(flag) is not False for flag in ("approved", "deployable", "deployed")):
+        raise OperationError("Candidate must remain review-only")
+    before = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+    lifecycle = RuleLifecycle(
+        audit_path, isolated_root=root, replay_verification_key=replay_public,
+        owner_verification_key=owner_public, attestation_mode="ed25519",
+    )
+    proposed = lifecycle.create_candidate(candidate)
+    lifecycle.transition(proposed, "VALIDATING")
+    lifecycle.record_validation(proposed, replay)
+    lifecycle.transition(proposed, "AWAITING_APPROVAL")
+    lifecycle.approve(proposed, approval)
+    runtime = IsolatedSuricataRuntime(
+        config=isolated_yaml, attack_pcap=attack_pcap, attack_sha256=attack_sha256,
+        normal_pcap=normal_pcap, normal_sha256=normal_sha256,
+        candidate_sid=candidate["sid"], candidate_rule_sha256=candidate["rule_sha256"],
+        root=root,
+    )
+    started = datetime.now(timezone.utc)
+    try:
+        staged = lifecycle.stage(proposed, root / "rules", activate=True, runtime=runtime)
+        if staged.get("status") != "active_in_isolated_lab":
+            raise OperationError("Candidate runtime did not verify active state")
+        lifecycle.rollback(proposed, runtime=runtime)
+        if proposed["state"] != "ROLLED_BACK":
+            raise OperationError("Candidate runtime rollback was not verified")
+        if (datetime.now(timezone.utc) - started).total_seconds() > 300:
+            raise OperationError("Candidate operation exceeded 300 seconds")
+    finally:
+        runtime.shutdown()
+    after = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+    if before != after:
+        raise OperationError("Production before/after evidence differs; fail acceptance")
+    record = {
+        "schema_version": "isolated_runtime_acceptance_v1",
+        "candidate_record_schema": "candidate_record_v1",
+        "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
+        "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
+        "replay_evidence_sha256": _digest(replay),
+        "owner_approval_sha256": _digest(approval), "suricata_version": "8.0.3",
+        "runtime_id": approval["runtime_id"], "interface": approval["interface"],
+        "outcome": "VERIFIED_ISOLATED_ACTIVATION_AND_ROLLBACK",
+        "started_at": started.isoformat(),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "production_before": before, "production_after": after,
+        "lifecycle_audit_records": lifecycle.verify_audit(),
+        "approved": False, "deployable": False, "deployed": False,
+    }
+    return sign_record(record, replay_private_pem, replay_private_password, domain="isolated-runtime-v1")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -26,10 +26,68 @@ from netids.trusted_replay import (
     SID, RULE_SHA, MODEL_SHA, CAL_SHA, DECISION_SHA,
     validate_documented_rule_provenance,
 )
+from netids.candidate_record import verify_candidate_record, verify_signed_replay_evidence
 
 PROMPT = "AUTHORIZE ISOLATED SID 9103003 ONE TIME AND ROLLBACK"
 ISOLATED_ROOT = "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103003"
 RUNTIME_ID = "suricata-vm1:isolated-lifecycle-9103003:lo"
+
+
+def build_candidate_owner_authorization(
+    candidate: dict, replay_record: dict, *, replay_public_pem: bytes,
+    owner_private_pem: bytes, owner_private_password: bytes, owner_public_pem: bytes,
+    approver_identity: str, candidate_record_sha256: str, runtime_id: str,
+    target_vm: str, interface: str, isolated_root: str, nonce: str,
+    now: datetime | None = None,
+) -> dict:
+    """Sign only a fully verified candidate-specific activation scope."""
+    if not verify_candidate_record(candidate):
+        raise ValueError("Candidate record is invalid or not candidate_record_v1")
+    if not verify_signed_replay_evidence(candidate, replay_record, replay_public_pem):
+        raise ValueError("Candidate replay attestation is not trusted or complete")
+    if not isinstance(candidate_record_sha256, str) or len(candidate_record_sha256) != 64:
+        raise ValueError("Candidate record SHA256 is required")
+    if not all(isinstance(value, str) and value.strip() for value in (runtime_id, target_vm, interface, isolated_root)):
+        raise ValueError("Runtime identity and authorization scope are required")
+    if interface != "lo":
+        raise ValueError("Candidate activation is restricted to loopback")
+    if not isinstance(approver_identity, str) or not approver_identity.strip():
+        raise ValueError("Approver identity is required")
+    if len(nonce) != 32 or any(char not in "0123456789abcdef" for char in nonce):
+        raise ValueError("Invalid nonce")
+    now = now or datetime.now(timezone.utc)
+    approved = now.astimezone(timezone.utc)
+    expires = approved + timedelta(minutes=15)
+    replay_unsigned = json.dumps(
+        replay_record, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    record = {
+        "schema_version": "isolated_owner_approval_v1",
+        "candidate_record_schema": "candidate_record_v1",
+        "candidate_record_sha256": candidate_record_sha256,
+        "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
+        "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
+        "pcap_sha256": candidate["pcap_sha256"], "model_sha256": candidate["model_sha256"],
+        "calibration_sha256": candidate["calibration_sha256"],
+        "decision_manifest_sha256": candidate["decision_manifest_sha256"],
+        "replay_evidence_sha256": hashlib.sha256(replay_unsigned).hexdigest(),
+        "runtime_id": runtime_id, "target_vm": target_vm, "interface": interface,
+        "isolated_root": isolated_root, "environment": "isolated-lab",
+        "operation": "activate", "rollback_required": True,
+        "max_activation_seconds": 300, "approver_identity": approver_identity.strip(),
+        "approved_at": approved.isoformat(), "expires_at": expires.isoformat(),
+        "nonce": nonce,
+    }
+    signed = sign_record(
+        record, owner_private_pem, owner_private_password,
+        domain="isolated-owner-approval-v1",
+    )
+    if not verify_record(signed, owner_public_pem, domain="isolated-owner-approval-v1"):
+        raise ValueError("Owner private key does not match pinned owner public key")
+    if public_key_fingerprint(owner_public_pem) == public_key_fingerprint(replay_public_pem):
+        raise ValueError("Owner and replay keys must be independent")
+    return signed
 
 
 def build_owner_authorization(
