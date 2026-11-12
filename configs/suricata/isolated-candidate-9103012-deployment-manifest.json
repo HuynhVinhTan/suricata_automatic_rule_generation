@@ -1,0 +1,37 @@
+{
+  "schema_version": "candidate_deployment_manifest_v1",
+  "candidate_id": "84ad314c885d821fb69713353134671cb355662a6effec1b890d59f38cada7e4",
+  "run_id": "lineage-new-generated-20261112-04",
+  "sid": 9103012,
+  "candidate_generation_source_commit": "65a197e0df95f0f96e3cb41b4870d96c1d53659a",
+  "signer_runtime_deployment_commit": "e278b50369c3947dcbacc5e324faba3276cc48d9",
+  "pcap_root_resolver_introduced_by_commit": "c8a6f50683f7f08b74dfe3c2c811cfac6252bd0a",
+  "candidate_record": {
+    "path": "data/private/isolated-candidate-9103012-20261112/candidate.json",
+    "sha256": "2bb34edcf09ee1474b3a4f1568b6b49273a37ed325674272ac49dd2c5d5114dd"
+  },
+  "rule": {
+    "path": "data/private/lineage-new-generated-20261112-04/ml-generated.rules",
+    "sha256": "d86c9222744bcf4aa88d2995354116a1149b772e3a5fe653d2d0ce3112af0e14"
+  },
+  "metadata": {
+    "path": "data/private/lineage-new-generated-20261112-04/ml-generated.metadata.json",
+    "sha256": "3e8633330ff7080f0dc491b56c2cb9a144598082235c9e323d4b2ee2bc6a4704"
+  },
+  "review": {
+    "path": "data/private/lineage-new-generated-20261112-04/review.json",
+    "sha256": "fde09a7a71c995f375cf7951f0d6762c20a6330a5df894c8a5c6ce77208d8f96"
+  },
+  "calibration": {
+    "path": "configs/hybrid_normal_calibration.json",
+    "sha256": "814e17006c5cfee433477128e9d29abf7e403e28948d78a968c46c800b67e060"
+  },
+  "calibration_decision": {
+    "source": "configs/hybrid_normal_calibration.json#/threshold_provenance/calibration_decision_sha256",
+    "sha256": "c7dffd3021d0c0195789e45c369f30108186753076b95586a2d80c9c744b579a"
+  },
+  "independent_case_manifest": {
+    "path": "configs/suricata/isolated-candidate-9103012-independent-cases.json",
+    "sha256": "57aa92f0a63bd2f8fe037904d0aecb2e2414031d5b9af8f08e5c9bbf73eddeba"
+  }
+}

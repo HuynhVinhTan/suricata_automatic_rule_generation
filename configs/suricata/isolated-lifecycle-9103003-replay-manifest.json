@@ -1,0 +1,20 @@
+{
+  "schema_version": "suricata_replay_manifest_v1",
+  "candidate_id": "d1020f83f684675e0547a76b467162fc1371bbf3c3005ec72e9951f1026c4f0a",
+  "run_id": "documented-frozen-rule-recovery-20261112",
+  "replay_run_id": "documented-frozen-rule-signing-20261112-01",
+  "pcap_sha256": "7eb27fe774c8d889480662eaaea1e68b2336cc04c943ff06be399a24e4c0bbb5",
+  "sid": 9103003,
+  "rule_sha256": "7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df",
+  "model_sha256": "206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d",
+  "calibration_sha256": "814e17006c5cfee433477128e9d29abf7e403e28948d78a968c46c800b67e060",
+  "decision_manifest_sha256": "c7dffd3021d0c0195789e45c369f30108186753076b95586a2d80c9c744b579a",
+  "cases": [
+    {"id": "worker-attack-holdout-01-20261111", "scenario": "attack", "pcap_path": "/home/tanhv/suricata-rule-review/fresh-holdouts-20261111/attack-holdout-01/traffic.pcap", "pcap_sha256": "7eb27fe774c8d889480662eaaea1e68b2336cc04c943ff06be399a24e4c0bbb5"},
+    {"id": "worker-attack-holdout-02-20261111", "scenario": "attack", "pcap_path": "/home/tanhv/suricata-rule-review/fresh-holdouts-20261111/attack-holdout-02/traffic.pcap", "pcap_sha256": "80b118068f89f0939d9a3c9ba72c977b08f95eff74a04e65b31cd548e0258f61"},
+    {"id": "worker-attack-holdout-03-20261111", "scenario": "attack", "pcap_path": "/home/tanhv/suricata-rule-review/fresh-holdouts-20261111/attack-holdout-03/traffic.pcap", "pcap_sha256": "837dd0b52f3472ce620baf9479f7f44da7515901455f54e2fe907277648a3343"},
+    {"id": "worker-normal-holdout-01-20261111", "scenario": "normal", "pcap_path": "/home/tanhv/suricata-rule-review/fresh-holdouts-20261111/normal-holdout-01/traffic.pcap", "pcap_sha256": "a4500b006908c26ffeed932244148c7372f2be2cb8abeb954cfe17ad3cda0fe7"},
+    {"id": "worker-normal-holdout-02-20261111", "scenario": "normal", "pcap_path": "/home/tanhv/suricata-rule-review/fresh-holdouts-20261111/normal-holdout-02/traffic.pcap", "pcap_sha256": "aad42d5710eb1006b76b744983744f47322137b2703126537b46787e34b01aaf"},
+    {"id": "worker-normal-holdout-03-20261111", "scenario": "normal", "pcap_path": "/home/tanhv/suricata-rule-review/fresh-holdouts-20261111/normal-holdout-03/traffic.pcap", "pcap_sha256": "5a61ae059d8f25a2aa6bf1672f82d66c36f3e64de8d9d01dde6afca5081a2468"}
+  ]
+}

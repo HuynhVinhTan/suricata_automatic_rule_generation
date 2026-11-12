@@ -78,6 +78,12 @@ def test_registration_rejects_sid_collision_and_unsafe_metadata(tmp_path):
     args = _sources(tmp_path, sid=900001)
     with pytest.raises(LifecycleError, match="conflicting SID"):
         register_generated_candidate(**args)
+
+
+def test_acceptance_path_rejects_legacy_identity_without_candidate_record(tmp_path):
+    args = _sources(tmp_path)
+    with pytest.raises(LifecycleError, match="candidate_record_v1"):
+        register_generated_candidate(**args, require_candidate_record=True)
     args = _sources(tmp_path / "separate", sid=9103998)
     metadata_path = args["artifact_dir"] / "ml-generated.metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))

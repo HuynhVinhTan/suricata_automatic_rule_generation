@@ -1,6 +1,7 @@
 """One-command PCAP -> SYN features -> ML/DL -> review pipeline."""
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import subprocess
@@ -21,6 +22,7 @@ from netids.hybrid_review import calibrate_hybrid_thresholds, evaluate_hybrid
 from netids.hybrid_provenance import load_calibration_provenance
 from netids.rst_evidence import analyze_rst_evidence
 from netids.tcp_handshake import summarize_tcp_handshake
+from netids.latency import LatencyTrace
 
 
 def _complete_capture_metadata(metadata):
@@ -100,6 +102,7 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         )
 
     output_dir.mkdir(parents=True, exist_ok=False)
+    latency = LatencyTrace(run_id=output_dir.name)
 
     features = output_dir / "syn_windows.csv"
     predictions = output_dir / "predictions.json"
@@ -107,29 +110,31 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
 
     print("=== STEP 1: PCAP TO SYN FEATURES ===", flush=True)
 
-    subprocess.run(
-        [
-            sys.executable,
-            str(extractor),
-            "--pcap", str(pcap),
-            "--expected-sha256", expected_sha.lower(),
-            "--src", src,
-            "--dst", dst,
-            "--label", "UNLABELED",
-            "--window-seconds", "10",
-            "--out", str(features),
-        ],
-        check=True,
-    )
+    with latency.stage("feature_extraction"):
+        subprocess.run(
+            [
+                sys.executable,
+                str(extractor),
+                "--pcap", str(pcap),
+                "--expected-sha256", expected_sha.lower(),
+                "--src", src,
+                "--dst", dst,
+                "--label", "UNLABELED",
+                "--window-seconds", "10",
+                "--out", str(features),
+            ],
+            check=True,
+        )
 
     print("=== STEP 2: ML AND DL INFERENCE ===", flush=True)
 
-    run_inference(
-        private_root,
-        features,
-        sha256(features),
-        predictions,
-    )
+    with latency.stage("model_inference"):
+        run_inference(
+            private_root,
+            features,
+            sha256(features),
+            predictions,
+        )
 
     result = json.loads(
         predictions.read_text(encoding="utf-8")
@@ -258,11 +263,12 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         if event.src_ip == src and event.dst_ip == dst
     ]
 
-    findings = analyze_port_diversity(
-        syn_events,
-        window_seconds=60,
-        min_distinct_ports=8,
-    )
+    with latency.stage("port_diversity_extraction"):
+        findings = analyze_port_diversity(
+            syn_events,
+            window_seconds=60,
+            min_distinct_ports=8,
+        )
 
     finding = findings[0] if findings else None
 
@@ -302,11 +308,12 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
     # Protocol evidence is separate from ML and Port-Diversity.
     # A complete bidirectional TCP exchange is a benign-like
     # pattern, NOT proof that traffic is benign.
-    tcp_summary = summarize_tcp_handshake(
-        pcap,
-        source_ip=src,
-        destination_ip=dst,
-    )
+    with latency.stage("tcp_handshake_extraction"):
+        tcp_summary = summarize_tcp_handshake(
+            pcap,
+            source_ip=src,
+            destination_ip=dst,
+        )
 
     if tcp_summary["initial_syn_packets"] != len(syn_events):
         raise ValueError(
@@ -359,20 +366,23 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
 
     if hybrid_references:
         hybrid_thresholds = calibrate_hybrid_thresholds(hybrid_references)
-        rst_evidence = analyze_rst_evidence(
-            pcap,
-            source_ip=src,
-            destination_ip=dst,
-            window_seconds=60,
-            capture_metadata=_complete_capture_metadata(capture_metadata),
-        )
-        hybrid_result = evaluate_hybrid(
-            ml_consensus=flagged > 0,
-            rst_evidence=rst_evidence,
-            port_evidence=review["port_diversity_evidence"],
-            handshake_evidence=tcp_summary,
-            thresholds=hybrid_thresholds,
-        )
+        with latency.stage("hybrid_evidence_extraction"):
+            with latency.stage("rst_evidence_extraction"):
+                rst_evidence = analyze_rst_evidence(
+                    pcap,
+                    source_ip=src,
+                    destination_ip=dst,
+                    window_seconds=60,
+                    capture_metadata=_complete_capture_metadata(capture_metadata),
+                )
+        with latency.stage("hybrid_decision_only"):
+            hybrid_result = evaluate_hybrid(
+                ml_consensus=flagged > 0,
+                rst_evidence=rst_evidence,
+                port_evidence=review["port_diversity_evidence"],
+                handshake_evidence=tcp_summary,
+                thresholds=hybrid_thresholds,
+            )
         review["hybrid_review"] = {
             **hybrid_result,
             "calibration_reference_count": len(hybrid_references),
@@ -382,6 +392,9 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
             "calibration_provenance": calibration_provenance,
         }
     else:
+        latency.record("hybrid_evidence_extraction", status="not_measured")
+        latency.record("rst_evidence_extraction", status="not_measured")
+        latency.record("hybrid_decision_only", status="not_measured")
         review["hybrid_review"] = {
             "schema_version": "hybrid_review_v1",
             "classification": "unavailable_missing_calibration",
@@ -472,24 +485,35 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
 
     generated = None
     generation_rejection = None
-    if candidate_gate_passed and not normal_test_counts:
-        generation_rejection = "missing_normal_validation"
-    elif candidate_gate_passed and not attack_counts:
-        generation_rejection = "missing_attack_inference_evidence"
-    elif candidate_gate_passed:
-        generated = generate_ml_rule(
-            run_id=output_dir.name,
-            pcap_sha256=expected_sha,
-            model_sha256=result["model_sha256"],
-            destination_ip=dst,
-            normal_train_syn_counts=normal_counts_by_partition["normal-train"],
-            normal_cal_syn_counts=normal_counts_by_partition["normal-cal"],
-            normal_test_syn_counts=normal_test_counts,
-            attack_syn_counts=attack_counts,
-            existing_sids=existing_sids,
-        )
-        if generated["rule"] is not None:
-            write_ml_rule_artifacts(output_dir, generated)
+    with latency.stage("rule_generation"):
+        if candidate_gate_passed and not normal_test_counts:
+            generation_rejection = "missing_normal_validation"
+        elif candidate_gate_passed and not attack_counts:
+            generation_rejection = "missing_attack_inference_evidence"
+        elif candidate_gate_passed:
+            generated = generate_ml_rule(
+                run_id=output_dir.name,
+                pcap_sha256=expected_sha,
+                model_sha256=result["model_sha256"],
+                destination_ip=dst,
+                normal_train_syn_counts=normal_counts_by_partition["normal-train"],
+                normal_cal_syn_counts=normal_counts_by_partition["normal-cal"],
+                normal_test_syn_counts=normal_test_counts,
+                attack_syn_counts=attack_counts,
+                existing_sids=existing_sids,
+            )
+            if generated["rule"] is not None:
+                write_ml_rule_artifacts(output_dir, generated)
+
+    if generated and generated.get("rule"):
+        with latency.stage("local_artifact_validation"):
+            if len(collect_sids([generated["rule"]])) != 1:
+                raise ValueError("Generated rule did not contain exactly one SID")
+            rule_bytes = (output_dir / "ml-generated.rules").read_bytes()
+            if generated["metadata"].get("rule_sha256") != hashlib.sha256(rule_bytes[:-1]).hexdigest():
+                raise ValueError("Generated rule artifact SHA256 mismatch")
+    else:
+        latency.record("local_artifact_validation", status="not_measured")
 
     review.update({
         "schema_version": "lab_rule_review_v0_2",
@@ -521,6 +545,17 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         "deployable": False,
         "deployed": False,
     })
+
+    latency.record("owner_approval", status="not_measured")
+    latency.record("rule_load", status="not_measured")
+    latency.record("first_alert", status="not_measured")
+    latency.record("rollback", status="not_measured")
+    latency_path = output_dir / "latency-trace.json"
+    with latency_path.open("x", encoding="utf-8") as stream:
+        json.dump(latency.as_dict(), stream, indent=2)
+        stream.write("\n")
+    review["latency_trace_path"] = latency_path.name
+    review["latency_trace_sha256"] = sha256(latency_path)
 
     with review_path.open("x", encoding="utf-8") as stream:
         json.dump(review, stream, indent=2)

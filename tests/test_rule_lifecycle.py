@@ -36,6 +36,7 @@ def _lifecycle(tmp_path, *, existing_sids=()):
         existing_sids=existing_sids,
         replay_verification_key=REPLAY_TEST_KEY,
         owner_verification_key=OWNER_TEST_KEY,
+        attestation_mode="legacy-hmac",
     )
 
 

@@ -194,6 +194,19 @@ def test_pipeline_keeps_review_gate_closed(
         )
     )
 
+    latency = json.loads(
+        (output / "latency-trace.json").read_text(encoding="utf-8")
+    )
+    latency_names = {stage["name"] for stage in latency["stages"]}
+    assert {
+        "rst_evidence_extraction",
+        "port_diversity_extraction",
+        "tcp_handshake_extraction",
+        "hybrid_evidence_extraction",
+        "hybrid_decision_only",
+        "local_artifact_validation",
+    } <= latency_names
+
     evidence = review["port_diversity_evidence"]
 
     assert review["model_consensus_flagged_windows"] == consensus

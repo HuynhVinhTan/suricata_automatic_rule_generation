@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG ! tag:yaml.org,2002:
+---
+vars:
+  address-groups:
+    HOME_NET: "[192.168.10.0/24]"
+    EXTERNAL_NET: "any"
+  port-groups:
+    HTTP_PORTS: "80"
+default-rule-path: .
+rule-files:
+  - recovered.rules
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert
+        - flow
+        - stats
+logging:
+  default-log-level: notice
+  outputs:
+    - console:
+        enabled: no
+    - file:
+        enabled: yes
+        filename: suricata.log
