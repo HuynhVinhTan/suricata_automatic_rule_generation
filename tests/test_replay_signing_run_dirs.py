@@ -32,6 +32,7 @@ def test_existing_unsigned_replay_evidence_is_preserved_and_new_run_is_unique(
 
 def test_signing_run_never_reuses_existing_random_id(tmp_path, monkeypatch):
     root = tmp_path / "isolated-lifecycle-9103003"
+    root.mkdir()
     monkeypatch.setattr(trusted_replay.secrets, "token_hex", lambda n: "c" * 32)
     _, first = trusted_replay.create_exclusive_replay_run_dir(root)
     with pytest.raises(trusted_replay.ReplayGateError, match="collision"):
