@@ -11,7 +11,7 @@ does not convert unit-test evidence into runtime acceptance.
 | EVE-03 | Bounded processing and graceful shutdown | `StreamingInferenceWorker` bounded synchronous processing, committed reader acknowledgements, SQLite crash ledger, stop event, window expiry/capacity | oversized-input, bounded-cycle, slow-consumer/restart, time-budget, retention, eviction and active-shutdown tests | IMPLEMENTED / INTEGRATION_TESTED | No live long-running Suricata load test |
 | LEDGER-01 | Durable replay/audit state | Indexed SQLite event/replay tables, `(capture_run_id, sequence)` query index, compact SQL lookups, source cursor, immutable audit rows; output projection is archival-only; configurable free-space preflight/monitoring, safe low-space stop, expected-hash/schema/integrity-checked SQLite backup and no-overwrite recovery helpers | 2,000 ordinary-event ledger stress; 256 signed-Hybrid replay stress; query-plan/restart tests; free-space, backup, new-destination, wrong-hash, corrupt-backup, interrupted-publish and replay-preservation tests | CODED / INTEGRATION_TESTED | Total disk-capacity acceptance is BLOCKED; no live long-run backup/restore drill has been exercised |
 | OUT-01 | Bounded output projection and recovery | Incremental append, bounded `.1` rotation, startup rebuild from ledger | retention, restart and projection-write/rotation tests | IMPLEMENTED / INTEGRATION_TESTED | Projection is not the authoritative audit store; SQLite ledger is authoritative |
-| EVE-04 | Compatible EVE model inference | `FlowModelAdapter`, `suricata_eve_to_features`, `validate_feature_matrix` | test-only RandomForest integration tests | BLOCKED | No verified CTU artifact with SHA/schema/preprocessing/threshold provenance is available; synthetic model is test-only |
+| EVE-04 | Compatible EVE model inference | `FlowModelAdapter`, `suricata_eve_to_features`, `validate_feature_matrix`; VM1 read-only audit found 894 complete and 57 incomplete/non-TCP/UDP flow records | test-only RandomForest integration tests; VM1 EVE contract counts | BLOCKED | No verified CTU artifact with SHA/schema/preprocessing/threshold provenance is available; the VM3 SYN model has a different five-feature contract and the available UNSW bundles are development/calibration artifacts |
 | HYB-01 | Hybrid protocol verification | `src/netids/hybrid_provenance.py` Ed25519 envelope verifier with event ID, strict integer sequence watermark, nested schema validation and persisted replay ledger; production trust anchor intentionally unprovisioned | missing-anchor, two-events-per-capture, 256 signed events, malformed nested payload, modified-payload, signature, replay, fingerprint, timestamp, boolean/invalid-sequence and restart tests | BLOCKED | No independently pinned producer key is provisioned; all ordinary/untrusted EVE telemetry remains unavailable |
 | MODEL-01 | Provenance-bound decision threshold | `FlowModelAdapter.decision_threshold`, strict typed structured artifact threshold provenance | threshold default/non-default/missing/invalid/mismatch, bool/NaN/infinity, empty-field and calibration-digest tests | IMPLEMENTED / UNIT_TESTED | No verified production CTU artifact is available to execute this gate |
 | EVID-01 | Structured anomaly provenance | `netids_stream_anomaly_v1` output with event/model/run hashes | output provenance assertions | IMPLEMENTED / INTEGRATION_TESTED | No live EVE evidence hash recorded |
@@ -21,9 +21,9 @@ does not convert unit-test evidence into runtime acceptance.
 | LIFE-01 | Owner-gated isolated lifecycle | Existing `RuleLifecycle` and isolated runtime code | existing lifecycle/security suite | IMPLEMENTED / UNIT_TESTED | VM identity, real load/reload, SID alert and rollback remain BLOCKED without authorization |
 | DATA-01 | UNSW/CTU frozen evidence preserved | Existing artifacts and manifests | existing dataset tests | ACCEPTED for preserved evidence | No new claim beyond existing limitations |
 | DATA-02 | CIC-IDS2017 adapter/model/evaluation | `src/netids/adapters/cic.py` remains empty; audit report references `data/raw/cic-ids2017/Friday-WorkingHours-Afternoon-{DDos,PortScan}.pcap_ISCX.csv` | audit tests only | BLOCKED | The referenced raw files are absent from the authorized checkout; no adapter/training/lineage claim is made |
-| REG-01 | Windows pinned-document verification | `documented_rule_recovery._git_blob` and lifecycle text hash normalize CRLF | `tests/test_recovery_signing_boundaries.py`; GitHub exact-head CI run `43309761774` | IMPLEMENTED / VERIFIED | Exact-head CI passed on `3c27b615042a214ef7a62045fc15ebdf2808c3e5` |
-| REG-02 | Full regression suite | fresh local Windows pytest on this implementation | 434 passed, 7 skipped; GitHub `dataset-and-lifecycle` 440 passed, 1 skipped, 16 subtests; `unit-handoff` 24 passed | IMPLEMENTED / VERIFIED LOCALLY AND IN CI | No remaining CI gate for the verified baseline |
-| VM-01 | Actual isolated Suricata activation | `src/netids/isolated_suricata_runtime.py` | negative-path tests | BLOCKED | Requires exact VM/interface, `tcpreplay`, owner signing and write/reload authorization |
+| REG-01 | Windows pinned-document verification | `documented_rule_recovery._git_blob` and lifecycle text hash normalize CRLF | `tests/test_recovery_signing_boundaries.py`; GitHub exact-head CI run `43319501945` | IMPLEMENTED / VERIFIED | Exact-head CI passed on `7e16f133932d03b939f49b0c5e97e20fadd8bd6a` |
+| REG-02 | Full regression suite | fresh local Windows pytest on this implementation | 442 passed, 7 skipped; GitHub `dataset-and-lifecycle` 440 passed, 1 skipped, 16 subtests; `unit-handoff` 24 passed | IMPLEMENTED / VERIFIED LOCALLY AND IN CI | No remaining CI gate for the verified baseline; no test rerun was needed for this read-only audit |
+| VM-01 | Actual isolated Suricata activation | `src/netids/isolated_suricata_runtime.py`; VM1 read-only preflight confirmed Suricata 8.0.3 and `tcpreplay` absent | negative-path tests; VM1 `suricata -T` passed with a temporary non-production log directory | BLOCKED | Requires an approved replay mechanism, exact candidate-specific owner signing, and isolated write/reload authorization; production services remain untouched |
 | VM-02 | Actual rollback and post-rollback SID proof | existing runtime rollback gates | negative-path tests | BLOCKED | No live activation was performed; tests cannot substitute for runtime evidence |
 
 ## Authoritative ledger storage policy — Option B
@@ -75,9 +75,25 @@ or relabel that holdout.
 3. Authorize the exact isolated VM operation: SSH/file transfer, isolated
    directory writes, Suricata syntax/load/reload, packet replay, EVE capture,
    owner signing and rollback verification.
-4. Exact-head CI is complete for `3c27b615042a214ef7a62045fc15ebdf2808c3e5`; preserve run `43309761774` and its conclusion in the acceptance ledger.
+4. Exact-head CI is complete for `7e16f133932d03b939f49b0c5e97e20fadd8bd6a`; preserve successful run `43319501945` and its conclusion in the acceptance ledger.
 5. Provision an independently pinned Hybrid producer Ed25519 public key and
    fingerprint, or keep Hybrid unavailable; no private key is requested or
    stored by this project.
 
 Overall status for this matrix: **BLOCKED**, not complete.
+
+## Read-only three-VM audit — 2026-11-13
+
+All three aliases passed strict-host-key, BatchMode login with the expected
+identities after Windows OpenSSH Authentication Agent recovery.
+
+| VM | Evidence | Result |
+|---|---|---|
+| VM1 `192.168.10.10` | Suricata 8.0.3 and Filebeat active; production YAML SHA256 `6224bc7d0bc04d97c4282f54a71e0736341341aa82c530fe22aed3da28814d72`; active rules SHA256 `30d7a02cd85f7f7544231a91008a20dedbb15ff0e11ca388ac07aa8d564bf36b`; EVE SHA256 `276f1c469f6c8707f438134040db3c99dceef5383e6257186ae78ce871cf9d8f`; 894 complete flow records, 57 incomplete/non-TCP/UDP; `/` 57% used, 24% inodes | Read-only preflight passed; no production process or file changed |
+| VM2 `192.168.10.20` | `eth1` `192.168.10.20/24`; ping VM1 2/2, 0% loss; fresh three-Attack/three-Normal holdout manifests and calibration generator manifests present; `/` 23% used, 10% inodes | Dataset inventory available; new traffic remains owner-gated |
+| VM3 `192.168.10.30` | Elasticsearch HTTP 200 and Kibana HTTP 302; historical `suricata-eve-*` and `suricata-ai-summary` indices present; no active AI worker; Python 3.14.4 with no pip; `/` 16% used, 7% inodes | ELK reachable; sustained inference is blocked by missing trusted compatible runtime artifact/environment |
+
+The VM1 syntax check initially encountered the expected unprivileged log-dir
+permission error. Re-running `suricata -T` with a temporary non-production log
+directory returned `syntax_rc=0` and reported that the configuration loaded
+successfully. `tcpreplay` is absent on VM1 and was not installed.
