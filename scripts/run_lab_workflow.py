@@ -30,7 +30,6 @@ def main() -> None:
     inference = report["stages"]["continuous_inference"]
     print(f"processed_events={inference['processed_events']}")
     print(f"rejected_events={inference['rejected_events']}")
-    print(f"dropped_events={inference['dropped_events']}")
     print(f"evidence={args.evidence}")
 
 

@@ -20,7 +20,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--window-seconds", type=int, default=10)
-    parser.add_argument("--max-queue-size", type=int, default=1024)
+    parser.add_argument("--max-records-per-cycle", type=int, default=1024)
+    parser.add_argument("--max-bytes-per-cycle", type=int, default=4 * 1024 * 1024)
+    parser.add_argument("--processing-time-budget-seconds", type=float)
     parser.add_argument("--max-chunk-bytes", type=int, default=64 * 1024)
     parser.add_argument("--max-line-bytes", type=int, default=1_000_000)
     parser.add_argument("--window-retention-seconds", type=int)
@@ -36,7 +38,9 @@ def main() -> None:
         output_path=args.output,
         run_id=args.run_id,
         window_seconds=args.window_seconds,
-        max_queue_size=args.max_queue_size,
+        max_records_per_cycle=args.max_records_per_cycle,
+        max_bytes_per_cycle=args.max_bytes_per_cycle,
+        processing_time_budget_seconds=args.processing_time_budget_seconds,
         window_retention_seconds=args.window_retention_seconds,
         max_active_windows=args.max_active_windows,
     )

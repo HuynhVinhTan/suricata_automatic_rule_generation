@@ -28,14 +28,12 @@ def run_streaming_lab_workflow(worker, evidence_path: str | Path) -> dict:
             "status": "TESTED" if result.processed_events or result.rejected_events else "FAILED",
             "processed_events": result.processed_events,
             "rejected_events": result.rejected_events,
-            "dropped_events": result.dropped_events,
         },
         "continuous_inference": {
             "status": "TESTED" if result.processed_events else "FAILED",
             "mode": "one_shot_smoke_test",
             "processed_events": result.processed_events,
             "rejected_events": result.rejected_events,
-            "dropped_events": result.dropped_events,
             "model_contract": "flow_features_v0.1",
         },
         "hybrid_verification": {

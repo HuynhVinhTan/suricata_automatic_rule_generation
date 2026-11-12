@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import queue
 import re
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,6 +24,7 @@ import pandas as pd
 from netids.adapters.suricata import suricata_eve_to_features
 from netids.features.schema import SCHEMA_VERSION, validate_feature_matrix
 from netids.hybrid_review import evaluate_hybrid
+from netids import hybrid_provenance
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -55,8 +56,19 @@ class ReaderStats:
     incomplete_lines: int = 0
 
 
+@dataclass
+class _PendingRecord:
+    event: dict | None
+    end_offset: int
+
+
 class JsonlEveReader:
-    """Incrementally read complete JSONL records and survive rotation."""
+    """Incrementally read JSONL with bounded buffering and explicit acknowledgements.
+
+    ``offset`` is the committed cursor.  Bytes may be read ahead into the
+    bounded pending deque, but a valid record advances ``offset`` only after
+    :meth:`acknowledge` succeeds.
+    """
 
     def __init__(self, path: str | Path, *, max_chunk_bytes: int = 64 * 1024,
                  max_line_bytes: int = 1_000_000, dedupe_limit: int = 10_000):
@@ -73,10 +85,13 @@ class JsonlEveReader:
         self._seen: set[str] = set()
         self._partial_counted = False
         self._discarding_oversize_line = False
+        self._pending: deque[_PendingRecord] = deque()
+        self._read_offset = 0
         self.stats = ReaderStats()
 
     def _reset_for_rotation(self, identity: tuple[int, int]) -> None:
         self.offset = 0
+        self._read_offset = 0
         self._partial = b""
         self._partial_counted = False
         self._discarding_oversize_line = False
@@ -107,7 +122,15 @@ class JsonlEveReader:
         self._seen.add(identity)
         return True
 
-    def read_available(self) -> list[dict]:
+    def read_available(self, *, max_records: int = 1024, max_bytes: int | None = None) -> list[dict]:
+        if max_records < 1:
+            raise ValueError("max_records must be positive")
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
+        while self._pending and self._pending[0].event is None:
+            self.offset = self._pending.popleft().end_offset
+        if self._pending:
+            return [item.event for item in list(self._pending)[:max_records] if item.event is not None]
         try:
             stat = self.path.stat()
         except FileNotFoundError:
@@ -116,17 +139,31 @@ class JsonlEveReader:
         identity = (int(stat.st_dev), int(stat.st_ino))
         if self._identity is None:
             self._identity = identity
-        elif identity != self._identity or stat.st_size < self.offset:
+        elif identity != self._identity or stat.st_size < self._read_offset:
             self._reset_for_rotation(identity)
 
         with self.path.open("rb") as stream:
-            stream.seek(self.offset)
-            chunk = stream.read(self.max_chunk_bytes)
-            self.offset = stream.tell()
+            stream.seek(self._read_offset)
+            chunk = stream.read(min(self.max_chunk_bytes, max_bytes) if max_bytes is not None else self.max_chunk_bytes)
+            self._read_offset = stream.tell()
 
         if not chunk:
             return []
+        if self._discarding_oversize_line:
+            newline = chunk.find(b"\n")
+            if newline < 0:
+                self.offset = self._read_offset
+                return []
+            discarded = newline + 1
+            self.offset = self._read_offset - len(chunk) + discarded
+            chunk = chunk[discarded:]
+            self._discarding_oversize_line = False
+            self._partial_counted = False
+            if not chunk:
+                return []
+        discarding_before = self._discarding_oversize_line
         data = self._partial + chunk
+        base_offset = self._read_offset - len(data)
         lines = data.split(b"\n")
         self._partial = lines.pop()
         if b"\n" in data:
@@ -139,42 +176,60 @@ class JsonlEveReader:
             self._partial_counted = False
             self._discarding_oversize_line = True
             self.stats.malformed_lines += 1
+            self.offset = self._read_offset
 
-        records = []
+        position = base_offset
         for raw in lines:
-            if self._discarding_oversize_line:
+            end_offset = position + len(raw) + 1
+            position = end_offset
+            if discarding_before:
                 self._discarding_oversize_line = False
                 self._partial_counted = False
                 self._partial = b""
-                self.stats.malformed_lines += 1
                 continue
             if not raw.strip():
                 self._partial_counted = False
+                self._pending.append(_PendingRecord(None, end_offset))
                 continue
             if len(raw) > self.max_line_bytes:
                 self.stats.malformed_lines += 1
+                self._pending.append(_PendingRecord(None, end_offset))
                 continue
             try:
                 event = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 self.stats.malformed_lines += 1
+                self._pending.append(_PendingRecord(None, end_offset))
                 continue
             if not isinstance(event, dict) or not self._remember(self._event_identity(event)):
                 if not isinstance(event, dict):
                     self.stats.malformed_lines += 1
+                self._pending.append(_PendingRecord(None, end_offset))
                 continue
-            records.append(event)
+            self._pending.append(_PendingRecord(event, end_offset))
         if not self._partial:
             self._partial_counted = False
-        return records
+        while self._pending and self._pending[0].event is None:
+            self.offset = self._pending.popleft().end_offset
+        return [item.event for item in list(self._pending)[:max_records] if item.event is not None]
+
+    def acknowledge(self, event: dict) -> None:
+        if not self._pending or self._pending[0].event is None:
+            raise RuntimeError("No pending event is available to acknowledge")
+        if self._event_identity(self._pending[0].event) != self._event_identity(event):
+            raise RuntimeError("Events must be acknowledged in file order")
+        self.offset = self._pending.popleft().end_offset
 
 
 @dataclass
 class WorkerResult:
     processed_events: int = 0
     rejected_events: int = 0
-    dropped_events: int = 0
     evicted_windows: int = 0
+
+
+class TransientProcessingError(RuntimeError):
+    """Processing failed transiently; leave the event unacknowledged for retry."""
 
 
 class FlowModelAdapter:
@@ -274,15 +329,19 @@ class StreamingInferenceWorker:
     """Read, infer and emit review-only anomaly evidence with bounded memory."""
 
     def __init__(self, *, reader: JsonlEveReader, model: FlowModelAdapter, output_path: str | Path,
-                 run_id: str, window_seconds: int = 10, max_queue_size: int = 1024,
+                 run_id: str, window_seconds: int = 10, max_bytes_per_cycle: int = 4 * 1024 * 1024,
+                 max_records_per_cycle: int = 1024, processing_time_budget_seconds: float | None = None,
                  window_retention_seconds: int | None = None, max_active_windows: int = 10_000):
-        if not run_id.strip() or max_queue_size < 1:
-            raise ValueError("run_id and queue bound are required")
+        if (not run_id.strip() or max_bytes_per_cycle < 1 or max_records_per_cycle < 1 or
+                (processing_time_budget_seconds is not None and processing_time_budget_seconds <= 0)):
+            raise ValueError("run_id and cycle bounds are required")
         self.reader = reader
         self.model = model
         self.output_path = Path(output_path)
         self.run_id = run_id
-        self._queue: queue.Queue[dict] = queue.Queue(maxsize=max_queue_size)
+        self.max_bytes_per_cycle = max_bytes_per_cycle
+        self.max_records_per_cycle = max_records_per_cycle
+        self.processing_time_budget_seconds = processing_time_budget_seconds
         self._windows = _WindowAggregator(
             window_seconds,
             window_seconds if window_retention_seconds is None else window_retention_seconds,
@@ -291,10 +350,8 @@ class StreamingInferenceWorker:
         self._stop = threading.Event()
         self._output_lock = threading.Lock()
         self._rejected = 0
-
-    @property
-    def queue_size(self) -> int:
-        return self._queue.qsize()
+        self._seen_capture_ids: set[str] = set()
+        self._emitted_detection_ids = self._load_emitted_detection_ids()
 
     @property
     def active_window_count(self) -> int:
@@ -313,24 +370,35 @@ class StreamingInferenceWorker:
                 "approved": False,
                 "deployable": False,
             }
-        required = {"rst_evidence", "port_evidence", "handshake_evidence", "thresholds"}
-        envelope = {"producer_identity", "schema_version", "capture_run_id", "source_pcap_sha256",
-                    "timestamp_provenance", "adapter_verified", "feature_completeness"}
-        if not required.issubset(telemetry) or not envelope.issubset(telemetry):
-            return {"schema_version": "hybrid_review_v1", "classification": "unavailable_invalid_telemetry_provenance",
-                    "requires_manual_review": True, "approved": False, "deployable": False}
-        if (not telemetry["adapter_verified"] or not telemetry["producer_identity"] or
-                not re.fullmatch(r"[0-9a-f]{64}", str(telemetry["source_pcap_sha256"])) or
-                set(telemetry["feature_completeness"]) != required - {"thresholds"}):
+        try:
+            evidence = hybrid_provenance.verify_envelope(
+                telemetry, expected_run_id=self.run_id, event_time=_event_time(event),
+                seen_capture_ids=self._seen_capture_ids,
+            )
+        except ValueError:
             return {"schema_version": "hybrid_review_v1", "classification": "unavailable_invalid_telemetry_provenance",
                     "requires_manual_review": True, "approved": False, "deployable": False}
         return evaluate_hybrid(
             ml_consensus=anomalous,
-            rst_evidence=telemetry["rst_evidence"],
-            port_evidence=telemetry["port_evidence"],
-            handshake_evidence=telemetry["handshake_evidence"],
-            thresholds=telemetry["thresholds"],
+            rst_evidence=evidence["rst_evidence"],
+            port_evidence=evidence["port_evidence"],
+            handshake_evidence=evidence["handshake_evidence"],
+            thresholds=evidence["thresholds"],
         )
+
+    def _load_emitted_detection_ids(self) -> set[str]:
+        if not self.output_path.exists():
+            return set()
+        ids = set()
+        with self.output_path.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    value = json.loads(line).get("detection_id")
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, str):
+                    ids.add(value)
+        return ids
 
     def _emit(self, event: dict) -> None:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -366,37 +434,47 @@ class StreamingInferenceWorker:
             },
         }
         self._emit(record)
+        self._emitted_detection_ids.add(record["detection_id"])
+
+    def _detection_id(self, event: dict) -> str:
+        return hashlib.sha256(f"{self.run_id}:{_canonical_sha256(event)}".encode()).hexdigest()
 
     def run_once(self) -> WorkerResult:
         result = WorkerResult()
-        while True:
-            try:
-                event = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                self._process(event)
-                result.processed_events += 1
-            except (KeyError, TypeError, ValueError, OverflowError):
-                self._rejected += 1
-                result.rejected_events += 1
-            finally:
-                self._queue.task_done()
-        while True:
-            batch = self.reader.read_available()
+        started = time.monotonic()
+        cycle_start = self.reader._read_offset
+        while (not self._stop.is_set() and
+               result.processed_events + result.rejected_events < self.max_records_per_cycle and
+               self.reader._read_offset - cycle_start < self.max_bytes_per_cycle and
+               (self.processing_time_budget_seconds is None or
+                time.monotonic() - started < self.processing_time_budget_seconds)):
+            remaining = self.max_records_per_cycle - result.processed_events - result.rejected_events
+            remaining_bytes = self.max_bytes_per_cycle - (self.reader._read_offset - cycle_start)
+            batch = self.reader.read_available(max_records=remaining, max_bytes=remaining_bytes)
+            if not batch:
+                try:
+                    size = self.reader.path.stat().st_size
+                except FileNotFoundError:
+                    size = self.reader._read_offset
+                if self.reader._read_offset >= size:
+                    break
+                continue
             for event in batch:
+                if self._stop.is_set():
+                    break
+                if self._detection_id(event) in self._emitted_detection_ids:
+                    self.reader.acknowledge(event)
+                    continue
                 try:
                     self._process(event)
+                    self.reader.acknowledge(event)
                     result.processed_events += 1
                 except (KeyError, TypeError, ValueError, OverflowError):
                     self._rejected += 1
+                    self.reader.acknowledge(event)
                     result.rejected_events += 1
-            try:
-                size = self.reader.path.stat().st_size
-            except FileNotFoundError:
-                size = self.reader.offset
-            if not batch and self.reader.offset >= size:
-                break
+                except TransientProcessingError:
+                    return result
         result.evicted_windows = self._windows.evicted_windows
         return result
 
