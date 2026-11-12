@@ -41,6 +41,9 @@ The commands prompt for distinct strong passphrases. Files are created exclusive
 
 Exchange ONLY public PEMs. Verify independently pinned public SHA256 fingerprints, never trust a key supplied solely by the candidate.
 
+**Mandatory trust bootstrap before owner signing or activation:** after generating the two role keys, independently verify the public-key fingerprints shown by `scripts.lifecycle_keys` on the original machines. Replace BOTH `UNPROVISIONED` sentinels in `src/netids/key_pins.py` with those exact, separately verified 64-hex fingerprints, commit **only these public values** on PR #3, and recheck CI. All real owner signing and VM1 operation CLIs fail closed until both independently pinned keys match. Never substitute a candidate-supplied, runtime-supplied or unreviewed public key. The owner must personally compare the fingerprints before they are pinned. Never copy private PEMs into the repository.
+
+
 ## C. Register original candidate as PROPOSED only
 
 Use scripts/register_generated_rule_review.py on the exact existing rule-handoff artifacts. Provide its required artifact directory, run ID, original calibration manifest and owner-pinned hash, baseline rule file and owner-pinned hash, audit path and isolated root. Add:
