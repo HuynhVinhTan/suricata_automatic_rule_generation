@@ -7,13 +7,13 @@ does not convert unit-test evidence into runtime acceptance.
 | ID | Required behavior | Code path / evidence | Tests | Status | Acceptance gap |
 |---|---|---|---|---|---|
 | EVE-01 | Incremental JSONL consumption | `src/netids/eve_worker.py:JsonlEveReader` bounded chunk/line parsing | `tests/test_eve_worker.py` partial-line, malformed-line, large-file tests | IMPLEMENTED / UNIT_TESTED | Live Suricata stream not observed in this environment |
-| EVE-02 | Rotation and duplicate handling | `JsonlEveReader.read_available()` identity/offset/dedupe plus SQLite `source_cursor` | rotation, dedupe and restart cursor tests | IMPLEMENTED / INTEGRATION_TESTED | Live multi-process rotation recovery not observed |
+| EVE-02 | Rotation and duplicate handling | `JsonlEveReader` records fstat device/inode on each pending record; acknowledgements persist that source identity and offset in SQLite `source_cursor` | rotation, dedupe, restart cursor, and read/rotate/ack race tests | IMPLEMENTED / INTEGRATION_TESTED | Live multi-process rotation recovery not observed |
 | EVE-03 | Bounded processing and graceful shutdown | `StreamingInferenceWorker` bounded synchronous processing, committed reader acknowledgements, SQLite crash ledger, stop event, window expiry/capacity | oversized-input, bounded-cycle, slow-consumer/restart, time-budget, retention, eviction and active-shutdown tests | IMPLEMENTED / INTEGRATION_TESTED | No live long-running Suricata load test |
-| LEDGER-01 | Durable replay/audit state | Indexed SQLite event/replay tables, compact SQL lookups, source cursor, immutable audit rows; output projection is archival-only | thousands-event replay/ledger/restart stress tests | IMPLEMENTED / INTEGRATION_TESTED | Ledger archival/backup remains an operator responsibility; no evidence is silently deleted |
+| LEDGER-01 | Durable replay/audit state | Indexed SQLite event/replay tables, `(capture_run_id, sequence)` query index, compact SQL lookups, source cursor, immutable audit rows; output projection is archival-only | 2,000 ordinary-event ledger stress; 256 signed-Hybrid replay stress; query-plan and restart tests | IMPLEMENTED / INTEGRATION_TESTED | Total disk-capacity acceptance is BLOCKED; immutable ledger archival/backup is an operator responsibility |
 | OUT-01 | Bounded output projection and recovery | Incremental append, bounded `.1` rotation, startup rebuild from ledger | retention, restart and projection-write/rotation tests | IMPLEMENTED / INTEGRATION_TESTED | Projection is not the authoritative audit store; SQLite ledger is authoritative |
 | EVE-04 | Compatible EVE model inference | `FlowModelAdapter`, `suricata_eve_to_features`, `validate_feature_matrix` | test-only RandomForest integration tests | BLOCKED | No verified CTU artifact with SHA/schema/preprocessing/threshold provenance is available; synthetic model is test-only |
-| HYB-01 | Hybrid protocol verification | `src/netids/hybrid_provenance.py` Ed25519 envelope verifier with event ID, sequence watermark, nested schema validation and persisted replay ledger; production trust anchor intentionally unprovisioned | missing-anchor, two-events-per-capture, malformed nested payload, modified-payload, signature, replay, fingerprint and timestamp tests | BLOCKED | No independently pinned producer key is provisioned; all ordinary/untrusted EVE telemetry remains unavailable |
-| MODEL-01 | Provenance-bound decision threshold | `FlowModelAdapter.decision_threshold`, strict structured artifact threshold provenance | threshold default/non-default/missing/invalid/mismatch/calibration-digest tests | IMPLEMENTED / UNIT_TESTED | No verified production CTU artifact is available to execute this gate |
+| HYB-01 | Hybrid protocol verification | `src/netids/hybrid_provenance.py` Ed25519 envelope verifier with event ID, strict integer sequence watermark, nested schema validation and persisted replay ledger; production trust anchor intentionally unprovisioned | missing-anchor, two-events-per-capture, 256 signed events, malformed nested payload, modified-payload, signature, replay, fingerprint, timestamp, boolean/invalid-sequence and restart tests | BLOCKED | No independently pinned producer key is provisioned; all ordinary/untrusted EVE telemetry remains unavailable |
+| MODEL-01 | Provenance-bound decision threshold | `FlowModelAdapter.decision_threshold`, strict typed structured artifact threshold provenance | threshold default/non-default/missing/invalid/mismatch, bool/NaN/infinity, empty-field and calibration-digest tests | IMPLEMENTED / UNIT_TESTED | No verified production CTU artifact is available to execute this gate |
 | EVID-01 | Structured anomaly provenance | `netids_stream_anomaly_v1` output with event/model/run hashes | output provenance assertions | IMPLEMENTED / INTEGRATION_TESTED | No live EVE evidence hash recorded |
 | ORCH-01 | One guarded laboratory entry point | `scripts/run_lab_workflow.py`, `src/netids/lab_workflow.py` one-shot smoke mode | workflow gate test | TESTED / UNIT_TESTED | One poll is explicitly not continuous runtime acceptance; candidate generation, owner approval, staging, activation and rollback are BLOCKED |
 | LAT-01 | Monotonic latency instrumentation | `LatencyTrace` integrated by `run_streaming_lab_workflow` | workflow latency assertions | IMPLEMENTED / UNIT_TESTED | T0–T11 live runtime timings are not measured |
@@ -22,9 +22,38 @@ does not convert unit-test evidence into runtime acceptance.
 | DATA-01 | UNSW/CTU frozen evidence preserved | Existing artifacts and manifests | existing dataset tests | ACCEPTED for preserved evidence | No new claim beyond existing limitations |
 | DATA-02 | CIC-IDS2017 adapter/model/evaluation | `src/netids/adapters/cic.py` remains empty; audit report references `data/raw/cic-ids2017/Friday-WorkingHours-Afternoon-{DDos,PortScan}.pcap_ISCX.csv` | audit tests only | BLOCKED | The referenced raw files are absent from the authorized checkout; no adapter/training/lineage claim is made |
 | REG-01 | Windows pinned-document verification | `documented_rule_recovery._git_blob` and lifecycle text hash normalize CRLF | `tests/test_recovery_signing_boundaries.py` | IMPLEMENTED / UNIT_TESTED | Exact-head CI still required |
-| REG-02 | Full regression suite | fresh local pytest on this implementation | 416 passed, 7 skipped | IMPLEMENTED / VERIFIED LOCALLY | Exact-head CI still required |
+| REG-02 | Full regression suite | fresh local pytest on this implementation | 434 passed, 7 skipped | IMPLEMENTED / VERIFIED LOCALLY | Exact-head CI still required |
 | VM-01 | Actual isolated Suricata activation | `src/netids/isolated_suricata_runtime.py` | negative-path tests | BLOCKED | Requires exact VM/interface, `tcpreplay`, owner signing and write/reload authorization |
 | VM-02 | Actual rollback and post-rollback SID proof | existing runtime rollback gates | negative-path tests | BLOCKED | No live activation was performed; tests cannot substitute for runtime evidence |
+
+## Authoritative ledger storage policy — Option B
+
+The SQLite `events`, `hybrid_replay`, and `source_cursor` tables are the
+authoritative audit and replay state. They are append-only for this worker;
+the bounded JSONL projection and `.1` rotation must never be treated as a
+replacement for those records. The worker does not silently delete or compact
+historical ledger rows.
+
+Operational requirements before total-storage acceptance:
+
+- Before starting or resuming a long run, require free space of at least the
+  greater of 1 GiB or twice the current ledger size.
+- Monitor free space and ledger growth at least once per processing cycle;
+  alert at less than 2 GiB free or less than twice the ledger size, and stop
+  ingestion before free space falls below 1 GiB or the current ledger size.
+- Operators must make immutable, access-controlled backups using SQLite's
+  consistent backup mechanism, record the backup SHA256 and source ledger
+  size, and verify the hash before considering the backup archival.
+- Recovery is: stop the worker, verify and restore the latest backup, preserve
+  `hybrid_replay` and `source_cursor`, rebuild the bounded output projection
+  from `events`, then resume only after the restored ledger hash and free-space
+  checks pass.
+- No automatic deletion, truncation, or replay-ledger rotation is authorized;
+  storage monitoring, backup, archival, and recovery are operator duties.
+
+Until those disk-capacity checks and the operational backup/recovery procedure
+are deployed and exercised, total ledger storage remains **BLOCKED** even
+though the output projection is bounded.
 
 ## Immutable historical evidence retained
 

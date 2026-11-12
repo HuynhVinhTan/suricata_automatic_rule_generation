@@ -97,7 +97,7 @@ def verify_envelope(
         raise ValueError("Pinned Hybrid producer key is inconsistent")
     if not isinstance(envelope["telemetry_event_id"], str) or not envelope["telemetry_event_id"].strip():
         raise ValueError("Hybrid telemetry event identity is required")
-    if not isinstance(envelope["sequence"], int) or envelope["sequence"] < 0:
+    if type(envelope["sequence"]) is not int or envelope["sequence"] < 0:
         raise ValueError("Hybrid telemetry sequence is invalid")
     if envelope["telemetry_event_id"] in seen_capture_ids:
         raise ValueError("Hybrid telemetry event replay detected")

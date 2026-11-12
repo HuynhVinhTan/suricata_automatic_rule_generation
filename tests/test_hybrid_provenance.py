@@ -158,3 +158,15 @@ def test_multiple_events_from_one_capture_and_sequence_policy(monkeypatch):
     third = _signed_envelope(monkeypatch, private=private, event_id="event-3", sequence=2)
     with pytest.raises(ValueError, match="out of order"):
         hybrid_provenance.verify_envelope(third, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+
+
+@pytest.mark.parametrize("sequence", [True, False, -1, "2", 2.0, None])
+def test_hybrid_sequence_requires_strict_nonnegative_integer(monkeypatch, sequence):
+    value = _signed_envelope(monkeypatch, sequence=sequence)
+    with pytest.raises(ValueError, match="sequence"):
+        hybrid_provenance.verify_envelope(
+            value,
+            expected_run_id="capture-a",
+            event_time=datetime.fromisoformat("2026-11-13T10:00:00+00:00"),
+            seen_capture_ids=set(),
+        )

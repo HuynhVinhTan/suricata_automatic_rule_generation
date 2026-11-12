@@ -4,6 +4,7 @@ import os
 import sqlite3
 import threading
 import time
+import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,59 @@ def test_model_decision_threshold_is_validated_and_used():
         FlowModelAdapter(adapter.model, mismatch, allow_test_model=True)
 
 
+@pytest.mark.parametrize("value", [True, False, "0.5", float("nan"), float("inf")])
+def test_test_only_nested_threshold_rejects_non_strict_values(value):
+    adapter = real_model_adapter(0.5)
+    metadata = dict(adapter.metadata)
+    metadata["threshold_provenance"] = {"decision_threshold": value, "contract": "test_only"}
+    with pytest.raises(ValueError, match="threshold"):
+        FlowModelAdapter(adapter.model, metadata, allow_test_model=True)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("calibration_method", ""),
+    ("calibration_version", ""),
+    ("calibration_manifest_sha256", "not-a-sha256"),
+    ("calibration_manifest_sha256", True),
+])
+def test_verified_threshold_provenance_requires_nonempty_typed_fields(field, value):
+    adapter = real_model_adapter(0.9)
+    metadata = dict(adapter.metadata)
+    metadata.update({
+        "status": "verified",
+        "source_dataset": "authorized-test-fixture",
+        "preprocessing": "flow_features_v0.1",
+        "threshold_provenance": {
+            "decision_threshold": 0.9,
+            "calibration_method": "isotonic",
+            "calibration_version": "v1",
+            "calibration_manifest_sha256": "a" * 64,
+            "status": "verified",
+        },
+    })
+    metadata["threshold_provenance"][field] = value
+    with pytest.raises(ValueError, match="provenance"):
+        FlowModelAdapter(adapter.model, metadata)
+
+
+def test_verified_threshold_provenance_accepts_nondefault_threshold():
+    adapter = real_model_adapter(0.9)
+    metadata = dict(adapter.metadata)
+    metadata.update({
+        "status": "verified",
+        "source_dataset": "authorized-test-fixture",
+        "preprocessing": "flow_features_v0.1",
+        "threshold_provenance": {
+            "decision_threshold": 0.9,
+            "calibration_method": "isotonic",
+            "calibration_version": "v1",
+            "calibration_manifest_sha256": "a" * 64,
+            "status": "verified",
+        },
+    })
+    assert FlowModelAdapter(adapter.model, metadata).decision_threshold == 0.9
+
+
 def signed_hybrid(event, run_id, monkeypatch):
     private = Ed25519PrivateKey.generate()
     public = private.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -140,6 +194,41 @@ def test_reader_recovers_from_rotation(tmp_path):
     path.write_text(json.dumps(flow_event(2)) + "\n", encoding="utf-8")
     records = reader.read_available()
     assert [item["flow_id"] for item in records] == [2]
+
+
+def test_rotation_between_read_and_ack_preserves_new_inode_cursor(tmp_path):
+    path = tmp_path / "eve.json"
+    old_event = flow_event(101)
+    new_event = flow_event(202)
+    path.write_text(json.dumps(old_event) + "\n", encoding="utf-8")
+    output = tmp_path / "out.jsonl"
+    ledger = tmp_path / "events.sqlite3"
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output,
+        ledger_path=ledger, run_id="rotation-race",
+    )
+    pending = worker.reader.read_available()
+    assert [event["flow_id"] for event in pending] == [101]
+    worker._process(pending[0])
+    old_identity = worker.reader._pending[0].source_identity
+    path.replace(tmp_path / "eve.json.1")
+    path.write_text(json.dumps(new_event) + "\n", encoding="utf-8")
+    worker._acknowledge(pending[0])
+
+    restarted = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output,
+        ledger_path=ledger, run_id="rotation-race",
+    )
+    assert restarted.reader.offset == 0
+    result = restarted.run_once()
+    assert result.processed_events == 1
+    records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert len({record["detection_id"] for record in records}) == 2
+    with sqlite3.connect(ledger) as connection:
+        row = connection.execute("SELECT device, inode, committed_offset FROM source_cursor WHERE source_path = ?", (str(path),)).fetchone()
+    assert row[0:2] != (str(os.stat(path).st_dev), str(old_identity[1]))
+    assert row[2] == path.stat().st_size
 
 
 def test_reader_rejects_malformed_json_without_stopping(tmp_path):
@@ -410,3 +499,70 @@ def test_sqlite_ledger_bounds_output_projection_and_memory(tmp_path):
     restarted = StreamingInferenceWorker(reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output, ledger_path=ledger, output_max_records=3, run_id="retained")
     restarted.run_once()
     assert len(output.read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_hybrid_replay_index_and_signed_stress_survive_restart(tmp_path, monkeypatch):
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    fingerprint = hybrid_provenance.public_key_sha256(public)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM", public)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_SHA256", fingerprint)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_IDENTITY", "stress-producer")
+
+    def make_event(flow_id, telemetry_event_id, sequence):
+        event = flow_event(flow_id)
+        envelope = {
+            "schema_version": "hybrid_telemetry_v1", "producer_identity": "stress-producer",
+            "capture_run_id": "stress-capture", "telemetry_event_id": telemetry_event_id,
+            "sequence": sequence, "source_pcap_sha256": "c" * 64,
+            "timestamp_provenance": {"first_timestamp": "2026-11-13T09:00:00+00:00", "last_timestamp": "2026-11-13T11:00:00+00:00"},
+            "producer_key_sha256": fingerprint,
+            "payload": {
+                "rst_evidence": {"capture_integrity": {"capture_complete": True}, "max_rst_count_per_window": 1},
+                "port_evidence": {"max_window_distinct_ports": 1},
+                "handshake_evidence": {"initial_syn_packets": 1, "flows_with_confirmed_handshake": 0, "flows_with_bidirectional_payload": 0},
+                "thresholds": {"min_unique_destination_ports": 1, "min_rst_count_per_window": 1, "max_handshake_failure_count": 1},
+            },
+        }
+        envelope["signature"] = base64.b64encode(private.sign(hybrid_provenance.canonical_payload(envelope))).decode()
+        event["netids"] = {"hybrid": envelope}
+        return event
+
+    count = 256
+    path = tmp_path / "eve.json"
+    path.write_text("".join(json.dumps(make_event(i, f"stress-{i}", i)) + "\n" for i in range(1, count + 1)), encoding="utf-8")
+    output = tmp_path / "out.jsonl"
+    ledger = tmp_path / "events.sqlite3"
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output,
+        ledger_path=ledger, run_id="stress-capture", max_records_per_cycle=count,
+    )
+    tracemalloc.start()
+    started = time.perf_counter()
+    result = worker.run_once()
+    _, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert result.processed_events == count
+    assert len(worker.reader._pending) <= worker.max_records_per_cycle
+    assert worker.ledger_query_count > count
+    assert path.stat().st_size > 0 and ledger.stat().st_size > 0 and peak_bytes < 64 * 1024 * 1024
+    assert time.perf_counter() - started < 30
+    with sqlite3.connect(ledger) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM hybrid_replay").fetchone()[0] == count
+        plan = connection.execute("EXPLAIN QUERY PLAN SELECT MAX(sequence) FROM hybrid_replay WHERE capture_run_id = ?", ("stress-capture",)).fetchall()
+        assert any("idx_hybrid_replay_capture_sequence" in row[-1] for row in plan)
+
+    duplicate = make_event(10_001, "stress-1", count + 1)
+    old = make_event(10_002, "stress-old", 1)
+    next_event = make_event(10_003, "stress-next", count + 1)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("".join(json.dumps(event) + "\n" for event in (duplicate, old, next_event)))
+    restarted = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output,
+        ledger_path=ledger, run_id="stress-capture", max_records_per_cycle=3,
+    )
+    follow_up = restarted.run_once()
+    assert follow_up.processed_events == 3
+    records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert sum(record["hybrid"]["classification"] == "unavailable_invalid_telemetry_provenance" for record in records[-3:]) == 2
+    assert records[-1]["hybrid"]["telemetry_event_id"] == "stress-next"

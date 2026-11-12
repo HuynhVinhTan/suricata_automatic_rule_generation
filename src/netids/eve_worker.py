@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,7 @@ class ReaderStats:
 class _PendingRecord:
     event: dict | None
     end_offset: int
+    source_identity: tuple[int, int]
 
 
 class _ReplayEventIndex:
@@ -70,7 +72,7 @@ class _ReplayEventIndex:
         self.worker = worker
 
     def __contains__(self, event_id: str) -> bool:
-        with self.worker._connect_ledger() as connection:
+        with self.worker._ledger() as connection:
             return connection.execute("SELECT 1 FROM hybrid_replay WHERE telemetry_event_id = ?", (event_id,)).fetchone() is not None
 
     def add(self, event_id: str) -> None:
@@ -83,7 +85,7 @@ class _ReplaySequenceWatermarks:
         self.worker = worker
 
     def get(self, capture_id: str, default: int = -1) -> int:
-        with self.worker._connect_ledger() as connection:
+        with self.worker._ledger() as connection:
             row = connection.execute("SELECT MAX(sequence) FROM hybrid_replay WHERE capture_run_id = ?", (capture_id,)).fetchone()
         return default if row is None or row[0] is None else int(row[0])
 
@@ -161,18 +163,19 @@ class JsonlEveReader:
         if self._pending:
             return [item.event for item in list(self._pending)[:max_records] if item.event is not None]
         try:
-            stat = self.path.stat()
+            stream = self.path.open("rb")
         except FileNotFoundError:
             return []
-
-        identity = (int(stat.st_dev), int(stat.st_ino))
-        if self._identity is None:
-            self._identity = identity
-        elif identity != self._identity or stat.st_size < self._read_offset:
-            self._reset_for_rotation(identity)
-
-        with self.path.open("rb") as stream:
+        with stream:
+            stat = os.fstat(stream.fileno())
+            identity = (int(stat.st_dev), int(stat.st_ino))
+            if self._identity is None:
+                self._identity = identity
+            elif identity != self._identity or stat.st_size < self._read_offset:
+                self._reset_for_rotation(identity)
             stream.seek(self._read_offset)
+            read_start = stream.tell()
+            previous_partial = self._partial
             chunk = stream.read(min(self.max_chunk_bytes, max_bytes) if max_bytes is not None else self.max_chunk_bytes)
             self._read_offset = stream.tell()
 
@@ -191,8 +194,8 @@ class JsonlEveReader:
             if not chunk:
                 return []
         discarding_before = self._discarding_oversize_line
-        data = self._partial + chunk
-        base_offset = self._read_offset - len(data)
+        data = previous_partial + chunk
+        base_offset = read_start - len(previous_partial)
         lines = data.split(b"\n")
         self._partial = lines.pop()
         if b"\n" in data:
@@ -218,36 +221,38 @@ class JsonlEveReader:
                 continue
             if not raw.strip():
                 self._partial_counted = False
-                self._pending.append(_PendingRecord(None, end_offset))
+                self._pending.append(_PendingRecord(None, end_offset, identity))
                 continue
             if len(raw) > self.max_line_bytes:
                 self.stats.malformed_lines += 1
-                self._pending.append(_PendingRecord(None, end_offset))
+                self._pending.append(_PendingRecord(None, end_offset, identity))
                 continue
             try:
                 event = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 self.stats.malformed_lines += 1
-                self._pending.append(_PendingRecord(None, end_offset))
+                self._pending.append(_PendingRecord(None, end_offset, identity))
                 continue
             if not isinstance(event, dict) or not self._remember(self._event_identity(event)):
                 if not isinstance(event, dict):
                     self.stats.malformed_lines += 1
-                self._pending.append(_PendingRecord(None, end_offset))
+                self._pending.append(_PendingRecord(None, end_offset, identity))
                 continue
-            self._pending.append(_PendingRecord(event, end_offset))
+            self._pending.append(_PendingRecord(event, end_offset, identity))
         if not self._partial:
             self._partial_counted = False
         while self._pending and self._pending[0].event is None:
             self.offset = self._pending.popleft().end_offset
         return [item.event for item in list(self._pending)[:max_records] if item.event is not None]
 
-    def acknowledge(self, event: dict) -> None:
+    def acknowledge(self, event: dict) -> tuple[tuple[int, int], int]:
         if not self._pending or self._pending[0].event is None:
             raise RuntimeError("No pending event is available to acknowledge")
         if self._event_identity(self._pending[0].event) != self._event_identity(event):
             raise RuntimeError("Events must be acknowledged in file order")
-        self.offset = self._pending.popleft().end_offset
+        pending = self._pending.popleft()
+        self.offset = pending.end_offset
+        return pending.source_identity, pending.end_offset
 
 
 @dataclass
@@ -282,16 +287,31 @@ class FlowModelAdapter:
               not metadata.get("threshold_provenance")):
             raise ValueError("Model requires verified production provenance")
         threshold = metadata.get("decision_threshold")
-        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(float(threshold)) or not 0 <= float(threshold) <= 1:
+        if (type(threshold) not in (int, float) or not math.isfinite(float(threshold)) or
+                not 0 <= float(threshold) <= 1):
             raise ValueError("Model decision threshold is invalid")
         provenance = metadata.get("threshold_provenance")
         if not isinstance(provenance, dict):
             raise ValueError("Model threshold provenance is invalid")
-        if provenance.get("decision_threshold") is not None and float(provenance["decision_threshold"]) != float(threshold):
+        nested_threshold = provenance.get("decision_threshold")
+        if (type(nested_threshold) not in (int, float) or
+                not math.isfinite(float(nested_threshold)) or
+                not 0 <= float(nested_threshold) <= 1):
             raise ValueError("Model threshold provenance mismatch")
+        if float(nested_threshold) != float(threshold):
+            raise ValueError("Model threshold provenance mismatch")
+        if metadata.get("status") == "test_only":
+            if set(provenance) != {"decision_threshold", "contract"} or provenance.get("contract") != "test_only":
+                raise ValueError("Model test-only threshold provenance is invalid")
         if metadata.get("status") != "test_only":
             required = {"decision_threshold", "calibration_method", "calibration_version", "calibration_manifest_sha256", "status"}
-            if set(provenance) != required or provenance.get("status") != "verified" or not isinstance(provenance.get("calibration_method"), str) or not isinstance(provenance.get("calibration_version"), str) or not re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("calibration_manifest_sha256"))):
+            if (set(provenance) != required or provenance.get("status") != "verified" or
+                    not isinstance(provenance.get("calibration_method"), str) or
+                    not provenance["calibration_method"].strip() or
+                    not isinstance(provenance.get("calibration_version"), str) or
+                    not provenance["calibration_version"].strip() or
+                    not isinstance(provenance.get("calibration_manifest_sha256"), str) or
+                    not re.fullmatch(r"[0-9a-f]{64}", provenance["calibration_manifest_sha256"])):
                 raise ValueError("Model threshold provenance is incomplete")
         self.decision_threshold = float(threshold)
         classes = list(getattr(model, "classes_", []))
@@ -395,6 +415,7 @@ class StreamingInferenceWorker:
         )
         self._stop = threading.Event()
         self._output_lock = threading.Lock()
+        self.ledger_query_count = 0
         self._rejected = 0
         self._seen_capture_ids = _ReplayEventIndex(self)
         self._last_hybrid_sequences = _ReplaySequenceWatermarks(self)
@@ -450,12 +471,26 @@ class StreamingInferenceWorker:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.ledger_path)
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.set_trace_callback(self._record_ledger_query)
         return connection
 
+    @contextmanager
+    def _ledger(self):
+        connection = self._connect_ledger()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def _record_ledger_query(self, _statement: str) -> None:
+        self.ledger_query_count += 1
+
     def _initialize_ledger(self) -> None:
-        with self._connect_ledger() as connection:
+        with self._ledger() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS events (detection_id TEXT PRIMARY KEY, event_sha256 TEXT NOT NULL, record_json TEXT NOT NULL, created_utc REAL NOT NULL)")
             connection.execute("CREATE TABLE IF NOT EXISTS hybrid_replay (capture_run_id TEXT NOT NULL, telemetry_event_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, producer_key_sha256 TEXT NOT NULL)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_hybrid_replay_capture_sequence ON hybrid_replay(capture_run_id, sequence)")
             connection.execute("CREATE TABLE IF NOT EXISTS source_cursor (source_path TEXT PRIMARY KEY, device TEXT NOT NULL, inode TEXT NOT NULL, committed_offset INTEGER NOT NULL)")
 
     def _restore_source_cursor(self) -> None:
@@ -463,7 +498,7 @@ class StreamingInferenceWorker:
             stat = self.reader.path.stat()
         except FileNotFoundError:
             return
-        with self._connect_ledger() as connection:
+        with self._ledger() as connection:
             row = connection.execute("SELECT device, inode, committed_offset FROM source_cursor WHERE source_path = ?", (str(self.reader.path),)).fetchone()
         if row and str(row[0]) == str(stat.st_dev) and str(row[1]) == str(stat.st_ino) and 0 <= row[2] <= stat.st_size:
             self.reader.offset = row[2]
@@ -471,24 +506,20 @@ class StreamingInferenceWorker:
             self.reader._identity = (int(row[0]), int(row[1]))
 
     def _acknowledge(self, event: dict) -> None:
-        self.reader.acknowledge(event)
-        try:
-            stat = self.reader.path.stat()
-        except FileNotFoundError:
-            return
-        with self._connect_ledger() as connection:
+        source_identity, committed_offset = self.reader.acknowledge(event)
+        with self._ledger() as connection:
             connection.execute(
                 "INSERT INTO source_cursor(source_path, device, inode, committed_offset) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(source_path) DO UPDATE SET device=excluded.device, inode=excluded.inode, committed_offset=excluded.committed_offset",
-                (str(self.reader.path), str(stat.st_dev), str(stat.st_ino), self.reader.offset),
+                (str(self.reader.path), str(source_identity[0]), str(source_identity[1]), committed_offset),
             )
 
     def _ledger_contains(self, detection_id: str) -> bool:
-        with self._connect_ledger() as connection:
+        with self._ledger() as connection:
             return connection.execute("SELECT 1 FROM events WHERE detection_id = ?", (detection_id,)).fetchone() is not None
 
     def _rebuild_output_projection(self) -> None:
-        with self._connect_ledger() as connection:
+        with self._ledger() as connection:
             rows = connection.execute("SELECT record_json FROM events ORDER BY created_utc DESC LIMIT ?", (self.output_max_records,)).fetchall()
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         with self.output_path.open("w", encoding="utf-8") as stream:
@@ -512,7 +543,7 @@ class StreamingInferenceWorker:
     def _commit_record(self, record: dict) -> bool:
         detection_id = record["detection_id"]
         event_sha = record["provenance"]["event_sha256"]
-        with self._connect_ledger() as connection:
+        with self._ledger() as connection:
             inserted = connection.execute(
                 "INSERT OR IGNORE INTO events(detection_id, event_sha256, record_json, created_utc) VALUES (?, ?, ?, ?)",
                 (detection_id, event_sha, json.dumps(record, sort_keys=True, ensure_ascii=False), time.time()),
