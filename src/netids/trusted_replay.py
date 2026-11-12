@@ -201,7 +201,7 @@ def attest_six_holdouts(
     # Existing backend.rule_handoff._read_artifacts() defines the provenance
     # hash over the one-line rule text, excluding its single terminal LF.
     # File-byte SHA256 must be captured separately; it is *not* the rule hash.
-    if raw_rule.count(b"\\n") != 1 or not raw_rule.endswith(b"\\n") or b"\\r" in raw_rule:
+    if raw_rule.count(b"\n") != 1 or not raw_rule.endswith(b"\n") or b"\r" in raw_rule:
         raise ReplayGateError("Original generated rule must end with exactly one LF")
     rule_bytes = raw_rule[:-1]
     if hashlib.sha256(rule_bytes).hexdigest() != RULE_SHA:
