@@ -9,6 +9,7 @@ available to the authorized reviewer under
 |---|---|---|---|---|
 | Candidate provenance | `data/private/isolated-candidate-9103012-20261112/candidate.json` | `2bb34edcf09ee1474b3a4f1568b6b49273a37ed325674272ac49dd2c5d5114dd` | PASS, review-only | Candidate remains `PROPOSED` |
 | Approved independent cohort | `configs/suricata/isolated-candidate-9103012-independent-cases.json` | `57aa92f0a63bd2f8fe037904d0aecb2e2414031d5b9af8f08e5c9bbf73eddeba` | PASS | Discovery Attack-01 excluded |
+| Deployment provenance | `configs/suricata/isolated-candidate-9103012-deployment-manifest.json` | manifest SHA `4e9849f85c097f2a2b6d228b3f9044e5fd034014fb6437789f38b04bbe35b0dc`; signer/runtime `e278b50369c3947dcbacc5e324faba3276cc48d9` | PASS | Candidate generation source remains `65a197e0df95f0f96e3cb41b4870d96c1d53659a` |
 | Suricata syntax | Private `syntax-stdout.txt`, `syntax-metadata.tsv` | `syntax-20261113-02`; config SHA `a341e5a1dd7e09c5f3440584147665506038f6f54e383254d72e94145e91c203` | PASS | Syntax does not prove safety |
 | Independent replay | `data/private/sid-9103012-validation-20261113-p3/summary.tsv` | `replay-20261113-04`; summary SHA `62401b8428675c645097840e7a413cf189844a2efa9bb962924ee67623975f9a` | Executed | Candidate gate failed |
 | Candidate metrics | `docs/sid-9103012-validation-summary-2026-11-13.md` | TP=2, FN=0, FP=3, TN=0 | FAIL / REJECTED | FPR=1.0000 |
