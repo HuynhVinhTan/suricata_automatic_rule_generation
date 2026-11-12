@@ -35,7 +35,7 @@ provenance.
 | Review-only safety | PASS | Lifecycle, provenance and approval tests | Deployment flags remain false |
 | Security negative paths | PASS | Lifecycle, replay, wrong-host/interface, collision and stale-signature tests | Runtime activation itself remains unperformed |
 | Final reporting and defense script | PASS | `docs/final-defense-report-2026-11-11.md`, checklist and demo script | Live activation section is correctly blocked |
-| CI and local verification | PENDING | Local suite was 369 passed, 4 skipped, plus compileall and diff-check | Final commit and CI run must be recorded after push |
+| CI and local verification | PASS | GitHub Actions run `43246652485` passed for implementation commit `fb91036756ac34ce24f7f8ef7b3fa5598f88f688`; local suite was 369 passed, 4 skipped, plus compileall and diff-check | The documentation-only follow-up preserves the same tested tree |
 
 ## Explicit non-claims
 
