@@ -1,0 +1,3 @@
+scripts/demo/*.sh text eol=lf
+scripts/demo/*.py text eol=lf
+docs/THREE_VM_SHOWCASE_RUNBOOK_VI.md text eol=lf
