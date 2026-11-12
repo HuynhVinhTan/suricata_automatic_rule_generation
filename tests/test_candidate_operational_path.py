@@ -64,6 +64,7 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
     root = tmp_path / "isolated-candidate-9103012"
     root.mkdir()
+    monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
     manifest, cases, pcap_root = _manifest(tmp_path, candidate)
     manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
@@ -104,6 +105,7 @@ def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypa
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
     root = tmp_path / "isolated-candidate-9103012"
     root.mkdir()
+    monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
     manifest, _, pcap_root = _manifest(tmp_path, candidate)
     bad = json.loads(manifest.read_text(encoding="utf-8"))
@@ -192,9 +194,10 @@ def test_manifest_path_resolution_rejects_absolute_traversal_outside_missing_and
         )
 
 
-def test_candidate_isolated_root_rejects_root_and_parent_symlinks(tmp_path):
+def test_candidate_isolated_root_rejects_root_and_parent_symlinks(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", workspace, raising=False)
     valid = workspace / "isolated-candidate-9103012"
     valid.mkdir()
     assert _validate_isolated_root(valid) == valid.resolve()
@@ -213,10 +216,33 @@ def test_candidate_isolated_root_rejects_root_and_parent_symlinks(tmp_path):
         _validate_isolated_root(parent_link / "isolated-candidate-9103012")
 
 
+def test_candidate_isolated_root_rejects_lexical_traversal(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", workspace, raising=False)
+    target = tmp_path / "isolated-candidate-9103012"
+    target.mkdir()
+    with pytest.raises(CandidateReplayError, match="traversal"):
+        _validate_isolated_root(workspace / ".." / target.name)
+
+
+def test_candidate_isolated_root_rejects_off_workspace_directory(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", workspace, raising=False)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    candidate_named_outside = outside / "isolated-candidate-9103012"
+    candidate_named_outside.mkdir()
+    with pytest.raises(CandidateReplayError, match="approved workspace"):
+        _validate_isolated_root(candidate_named_outside)
+
+
 def test_candidate_replay_signer_rejects_unpinned_replay_key(monkeypatch, tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
     root = tmp_path / "isolated-candidate-9103012"
     root.mkdir()
+    monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
     manifest, _, pcap_root = _manifest(tmp_path, candidate)
     with pytest.raises(CandidateReplayError, match="not independently pinned"):
@@ -235,6 +261,7 @@ def test_candidate_replay_false_positive_gate_cannot_issue_attestation(monkeypat
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
     root = tmp_path / "isolated-candidate-9103012"
     root.mkdir()
+    monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
     manifest, cases, pcap_root = _manifest(tmp_path, candidate)
     manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()

@@ -42,11 +42,17 @@ _THRESHOLD = re.compile(r"detection_filter\s*:\s*track\s+by_src\s*,\s*count\s+(\
 _PROTECTED_SURICATA_ROOTS = tuple(
     Path(path) for path in ("/etc/suricata", "/var/lib/suricata", "/var/log/suricata")
 )
+APPROVED_VM1_ISOLATED_WORKSPACE = Path("/home/tanhv/suricata-rule-review")
 
 
 def _validate_isolated_root(path: Path) -> Path:
     """Validate the supplied root before resolving any symlink components."""
     raw = Path(path)
+    lexical = PurePosixPath(str(path).replace("\\", "/"))
+    if any(part in {".", ".."} for part in lexical.parts):
+        raise CandidateReplayError("Candidate isolated root contains lexical traversal")
+    if not raw.is_absolute():
+        raise CandidateReplayError("Candidate isolated root must be absolute")
     current = raw
     while True:
         if current.is_symlink():
@@ -54,19 +60,22 @@ def _validate_isolated_root(path: Path) -> Path:
         if current.parent == current:
             break
         current = current.parent
-    if not raw.is_absolute() or not raw.is_dir():
+    if not raw.is_dir():
         raise CandidateReplayError("Candidate isolated root is missing or unsafe")
     try:
         resolved = raw.resolve(strict=True)
+        approved_workspace = APPROVED_VM1_ISOLATED_WORKSPACE.resolve(strict=True)
     except OSError as exc:
         raise CandidateReplayError("Candidate isolated root cannot be resolved") from exc
+    if resolved == approved_workspace or not resolved.is_relative_to(approved_workspace):
+        raise CandidateReplayError("Candidate isolated root is outside the approved workspace")
     if any(
         resolved == protected or resolved.is_relative_to(protected)
         for protected in _PROTECTED_SURICATA_ROOTS
     ):
         raise CandidateReplayError("Candidate isolated root is a protected production path")
     if not resolved.name.startswith("isolated-candidate-"):
-        raise CandidateReplayError("Candidate isolated root is outside the approved workspace")
+        raise CandidateReplayError("Candidate isolated root has an invalid name")
     return resolved
 
 
