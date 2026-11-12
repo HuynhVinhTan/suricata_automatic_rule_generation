@@ -101,3 +101,20 @@ No trusted real Suricata runtime adapter or private signing services
 have been installed by this PR. Mocked runtime tests are NOT real
 Suricata activation evidence. The remaining gate is explicit owner
 approval plus real isolated activation and verified rollback, with CI.
+
+## Final execution closeout
+
+The repository now contains Ed25519 replay-attestation and owner-authorization
+services. The replay service executes Suricata syntax validation and Attack /
+Normal replay itself before signing; it rejects caller-supplied success
+booleans. The owner service keeps its private key local, displays the exact
+candidate and rollback scope, requires typed confirmation, and limits approval
+to fifteen minutes. The verification path is domain-separated and uses pinned
+public keys.
+
+VM1 preflight was read-only. Suricata 8.0.3 and Filebeat were active, the
+production capture interface was `ens33`, and no tcpdump process or capability
+was present. The exact SID `9103003` rule was recovered and its canonical SHA
+matched `7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df`.
+No owner signature or real replay-attestation key was available, so no isolated
+daemon was started and no activation or rollback claim is made.

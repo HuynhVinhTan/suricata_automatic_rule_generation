@@ -11,10 +11,12 @@
    signature.
 3. CIC-IDS2017 remains unsuitable for model training until duplicate headers,
    non-finite rates and label policy receive a separately reviewed adapter
-   experiment. CTU's largest duplicate/contradiction audit needs more
-   temporary disk; no result is inferred.
+   experiment. CTU's exact audit is now complete: duplicate rows are zero in
+   all four files, while contradictory selected-vector counts remain 354,
+   14,873, 168 and 859.
 4. Active isolated-lab rule installation remains pending explicit owner
-   approval. The lifecycle implementation is dry-run and fail-closed.
+   approval. Ed25519 replay and owner-signing services are implemented, but no
+   real signing keys or live runtime evidence are present in the repository.
 
 ## Scientific scope
 

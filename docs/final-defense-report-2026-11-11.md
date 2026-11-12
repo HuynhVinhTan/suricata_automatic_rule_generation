@@ -125,6 +125,13 @@ deterministic rules-directory manifest SHA-256 is
 | Production safety | Preserved |
 | tcpdump capability cleanup | **Met: no capability reported** |
 
+The final execution branch adds Ed25519 replay and owner-signing services with
+strict exact-scope verification. These services are complete at code level.
+VM1 was inspected read-only and the exact SID 9103003 rule was recovered, but
+no owner signature or trusted replay key was available. Therefore isolated
+activation and runtime rollback remain pending and no production service was
+started, stopped or reloaded.
+
 PR #2 review-fix evidence is documented in
 `docs/pr2-review-fixes-evidence-2026-11-12.md`. The dataset audit is strict and
 disk-bounded; lifecycle approval and activation remain fail-closed and

@@ -19,8 +19,12 @@ Branch: `feat/pcap-ai-worker-integration`
 | Baseline versus augmented improvement | PASS for proxy gate | Baseline candidate 0/6 sessions; augmented candidate 3/3 Attack and 0/3 Normal |
 | Milestone 6 PCAP/EVE/worker correlation | PASS for six lab experiments | Six event/flow-verified envelopes and six exact Elasticsearch read-backs; 303 matching EVE events and 144 matching flows; four historical AI-summary documents preserved |
 | tcpdump capability cleanup | PASS | VM1 `getcap -v /usr/bin/tcpdump` returned `/usr/bin/tcpdump` only |
-| Dataset inventory and quality audit | CONDITIONAL | UNSW, CIC and CTU raw files inventoried and hashed; CIC non-finite rates and UNSW feature-vector label contradictions recorded; largest CTU duplicate audit awaits more temporary disk |
+| Dataset inventory and quality audit | CONDITIONAL | UNSW, CIC and CTU raw files inventoried and hashed; exact CTU audit completed with zero duplicate rows but persistent contradictions; CIC non-finite rates remain |
 | Rule lifecycle safety | PASS for review-only code | Explicit provenance-bound state machine, approval gate, dry-run staging and rollback audit; active isolated-lab installation remains pending owner approval |
+
+| Ed25519 replay attestation service | COMPLETE AT CODE LEVEL | Executes syntax/replay checks before signing; no real VM1 signer key is committed or configured |
+| Ed25519 owner authorization service | COMPLETE AT CODE LEVEL | Interactive typed confirmation, exact scope and 15-minute expiry; no owner approval was generated |
+| Real isolated activation and rollback | PENDING OWNER APPROVAL | VM1 is reachable and production state was inspected read-only; no isolated daemon was started |
 
 The six holdouts are controlled-lab evidence, not a production accuracy claim.
 The complete-hybrid-in-Suricata criterion is not met; the review-only RST proxy
