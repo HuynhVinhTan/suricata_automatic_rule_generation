@@ -150,3 +150,36 @@ The VM1 syntax check initially encountered the expected unprivileged log-dir
 permission error. Re-running `suricata -T` with a temporary non-production log
 directory returned `syntax_rc=0` and reported that the configuration loaded
 successfully. `tcpreplay` is absent on VM1 and was not installed.
+
+## Showcase deployment and live shadow gate — 2026-11-13
+
+The exact feature source was deployed into user-owned roots on all three VMs:
+
+`/home/tanhv/suricata-ai-showcase` on VM1 and VM3, and
+`/home/kali/suricata-ai-showcase` on VM2. The deployed source commit is
+`cff9ef9a2bc82c45b668797e596d915da1c0dc0b` and the verified archive SHA256 is
+`c0469967f7f6b5f1e2b9fc7ba25cda08ecc674c93b3ad98dae41ec827df8ce43`.
+The old `/home/tanhv/suricata-ai-code` checkout and existing private artifacts
+were not overwritten.
+
+The operator assets are in
+`docs/THREE_VM_SHOWCASE_RUNBOOK_VI.md` and `scripts/demo/`. Strict SSH checks,
+source deployment, status checks and the bounded Windows-to-VM3 EVE relay were
+executed. The relay read VM1 EVE without changing production and delivered a
+shadow file on VM3 that grew from 395 bytes to 262,539 bytes during controlled
+VM2 traffic. The 128 MiB sink rotation guard is user-owned and does not parse or
+modify EVE.
+
+The VM2 low-rate Attack generator completed 24/24 probes with RST-refused
+responses. The Normal generator completed 24 attempts but observed zero HTTP
+200 responses because the current VM1 port-80 service is not the expected
+synthetic lab service; this is demo traffic evidence, not a valid independent
+Normal holdout. A new PCAP was not produced: the capture wrapper returned
+`CAPTURE_BLOCKED` with exit 77 because `tcpdump` has no `cap_net_raw` capability.
+The VM3 worker returned `ML_BLOCKED` with exit 77 because no verified compatible
+four-feature model artifact exists. No synthetic prediction was emitted.
+
+These gates support `VM_DEPLOYED` and partial `VM_VERIFIED` showcase status;
+they do not support `SHOWCASE_READY` or `RESEARCH_ACCEPTED` until the missing
+model, capture authorization, independent cohort and candidate approval gates
+are completed.
