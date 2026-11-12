@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path, [switch]$OpenTerminals)
+param([string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path, [switch]$OpenTerminals)
 $ErrorActionPreference = 'Stop'
 $branch = (git -C $RepositoryRoot branch --show-current).Trim()
 if ($branch -ne 'feat/complete-suricata-ai-e2e') { throw "Refusing deployment from branch '$branch'." }
