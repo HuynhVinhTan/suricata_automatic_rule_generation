@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import re
 import socket
 import subprocess
 import tempfile
@@ -21,8 +21,31 @@ from pathlib import Path
 from netids.lifecycle_ed25519 import sha256_file
 from netids.trusted_replay import SID, RULE_SHA, _config_safe
 
+# Logical approval identity remains "suricata-vm1"; the lab VM's
+# observed actual OS hostname is "tanhv", with ens33 = 192.168.10.10/24.
+# Require BOTH invariants, rather than weakening the VM1-only guard.
 VM1_HOST = "suricata-vm1"
+VM1_OS_HOSTNAME = "tanhv"
+VM1_INTERFACE = "ens33"
+VM1_INTERFACE_CIDR = "192.168.10.10/24"
 ROOT = Path("/home/tanhv/suricata-rule-review/isolated-lifecycle-9103003")
+
+
+def is_verified_vm1_host() -> bool:
+    """Read-only host and exact ens33 IPv4 check; false on any uncertainty."""
+    if socket.gethostname() != VM1_OS_HOSTNAME:
+        return False
+    try:
+        check = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", VM1_INTERFACE],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if check.returncode != 0:
+        return False
+    expected = re.escape(VM1_INTERFACE_CIDR)
+    return re.search(r"\binet\s+" + expected + r"(?=\s|$)", check.stdout) is not None
 
 
 class IsolatedRuntimeError(RuntimeError):
@@ -79,8 +102,8 @@ class IsolatedSuricataRuntime:
         self._preflight()
 
     def _preflight(self) -> None:
-        if socket.gethostname() != VM1_HOST:
-            raise IsolatedRuntimeError("Wrong host; isolated activation authorized for VM1 only")
+        if not is_verified_vm1_host():
+            raise IsolatedRuntimeError("Wrong host or ens33 address; isolated VM1 only")
         if not self.root.is_dir() or self.root.is_symlink():
             raise IsolatedRuntimeError("Exact isolated runtime root is missing/unsafe")
         if not Path("/sys/class/net/lo").exists():
