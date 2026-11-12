@@ -124,6 +124,30 @@ def _candidate_alerts(eve_path: Path) -> tuple[int, int]:
     return count, total
 
 
+
+def verify_pinned_rule_artifact(rule_file: Path, *, expected_sid: int, expected_text_sha256: str) -> str:
+    """Return original file-byte SHA only for an exact one-line reviewed rule.
+
+    The existing backend.rule_handoff contract hashes rule text without its
+    one terminal LF. Preserve raw artifact hash separately for evidence.
+    """
+    rule_path = Path(rule_file)
+    if rule_path.is_symlink() or not rule_path.is_file():
+        raise ReplayGateError("Original SID rule artifact unavailable or unsafe")
+    raw_rule = rule_path.read_bytes()
+    if raw_rule.count(b"\n") != 1 or not raw_rule.endswith(b"\n") or b"\r" in raw_rule:
+        raise ReplayGateError("Original generated rule must end with exactly one LF")
+    rule_bytes = raw_rule[:-1]
+    if hashlib.sha256(rule_bytes).hexdigest() != expected_text_sha256:
+        raise ReplayGateError("Canonical rule-text SHA256 mismatch")
+    try:
+        rule_text = rule_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise ReplayGateError("Invalid UTF-8 rule artifact") from exc
+    if collect_sids([rule_text]) != {expected_sid} or not rule_text.startswith("alert tcp "):
+        raise ReplayGateError("Rule is not the approved alert-only TCP signature")
+    return hashlib.sha256(raw_rule).hexdigest()
+
 def attest_six_holdouts(
     *,
     manifest_path: Path,
@@ -194,25 +218,9 @@ def attest_six_holdouts(
         by_id[identifier] = pcap_path.resolve(strict=True)
     if set(by_id) != set(EXPECTED_CASES):
         raise ReplayGateError("Missing original holdout")
-    rule_path = Path(rule_file)
-    if rule_path.is_symlink() or not rule_path.is_file():
-        raise ReplayGateError("Original SID 9103003 rule artifact unavailable or unsafe")
-    raw_rule = rule_path.read_bytes()
-    # Existing backend.rule_handoff._read_artifacts() defines the provenance
-    # hash over the one-line rule text, excluding its single terminal LF.
-    # File-byte SHA256 must be captured separately; it is *not* the rule hash.
-    if raw_rule.count(b"\n") != 1 or not raw_rule.endswith(b"\n") or b"\r" in raw_rule:
-        raise ReplayGateError("Original generated rule must end with exactly one LF")
-    rule_bytes = raw_rule[:-1]
-    if hashlib.sha256(rule_bytes).hexdigest() != RULE_SHA:
-        raise ReplayGateError("SID 9103003 canonical rule-text SHA256 mismatch")
-    try:
-        rule_text = rule_bytes.decode("utf-8")
-    except UnicodeError as exc:
-        raise ReplayGateError("Invalid UTF-8 rule artifact") from exc
-    if collect_sids([rule_text]) != {SID} or not rule_text.startswith("alert tcp "):
-        raise ReplayGateError("Rule is not the approved alert-only TCP signature")
-    original_rule_file_sha256 = hashlib.sha256(raw_rule).hexdigest()
+    original_rule_file_sha256 = verify_pinned_rule_artifact(
+        rule_file, expected_sid=SID, expected_text_sha256=RULE_SHA,
+    )
     config_sha = _config_safe(isolated_yaml, root)
     version = _run([suricata_binary, "-V"], timeout=30).stdout.strip()
     if "8.0.3" not in version:
