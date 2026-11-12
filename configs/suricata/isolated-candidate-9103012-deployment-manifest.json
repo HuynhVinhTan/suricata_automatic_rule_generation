@@ -4,7 +4,8 @@
   "run_id": "lineage-new-generated-20261112-04",
   "sid": 9103012,
   "candidate_generation_source_commit": "65a197e0df95f0f96e3cb41b4870d96c1d53659a",
-  "signer_runtime_source_commit": "c8a6f50683f7f08b74dfe3c2c811cfac6252bd0a",
+  "signer_runtime_deployment_commit": "00402dca891cd9b4491fc9dd53178dd1a0d318d3",
+  "pcap_root_resolver_introduced_by_commit": "c8a6f50683f7f08b74dfe3c2c811cfac6252bd0a",
   "candidate_record": {
     "path": "data/private/isolated-candidate-9103012-20261112/candidate.json",
     "sha256": "2bb34edcf09ee1474b3a4f1568b6b49273a37ed325674272ac49dd2c5d5114dd"
