@@ -31,7 +31,7 @@ provenance.
 | Review-only safety | PASS | Lifecycle, provenance and approval tests | Deployment flags remain false |
 | Security negative paths | PASS | Lifecycle, replay, wrong-host/interface, collision and stale-signature tests | Runtime activation itself remains unperformed |
 | Final reporting and defense script | PASS | `docs/final-defense-report-2026-11-11.md`, checklist and demo script | Live activation section is correctly blocked |
-| CI and local verification | PASS | Final run `43209977942` for `f238dd3` completed successfully for dataset-and-lifecycle and unit-handoff; fresh local full suite was 354 passed, 4 skipped, plus compileall and diff-check | GitHub API exposes job success but not pytest stdout counts; local counts are the reproducible count for this checkout |
+| CI and local verification | PASS | Final run `43210304160` for `7c8f50a` completed successfully for dataset-and-lifecycle and unit-handoff; fresh local full suite was 354 passed, 4 skipped, plus compileall and diff-check | GitHub API exposes job success but not pytest stdout counts; local counts are the reproducible count for this checkout |
 
 ## Explicit non-claims
 
