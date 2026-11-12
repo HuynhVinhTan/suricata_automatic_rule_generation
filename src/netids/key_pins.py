@@ -16,7 +16,7 @@ from netids.lifecycle_ed25519 import public_key_fingerprint
 
 # Provision and independently verify the role keys BEFORE setting these.
 # These are intentionally invalid sentinels, NOT mock or demo public keys.
-PINNED_REPLAY_ED25519_SHA256 = "UNPROVISIONED"
+PINNED_REPLAY_ED25519_SHA256 = "b360fc9660513611a09287c9e6269c4bac4ac354ee85cecc0bbdbd4534f4d982"
 PINNED_OWNER_ED25519_SHA256 = "92b2fb2fffa9da9ac82011fca030b4d5d822046c1fbe6c375ee08d5237cc4de7"
 
 _SHA = re.compile(r"^[0-9a-f]{64}$")
