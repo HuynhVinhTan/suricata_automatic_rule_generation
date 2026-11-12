@@ -35,6 +35,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--manifest-sha256", required=True)
     parser.add_argument("--rule", type=Path, required=True)
+    parser.add_argument(
+        "--rule-provenance", type=Path, required=True,
+        help="JSON produced by documented-frozen rule recovery; historical metadata is never inferred",
+    )
     parser.add_argument("--isolated-yaml", type=Path, required=True)
     parser.add_argument("--isolated-root", type=Path, required=True)
     parser.add_argument("--replay-private", type=Path, required=True)
@@ -53,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         isolated_root=args.isolated_root,
         private_key_pem=args.replay_private.read_bytes(),
         private_key_password=password,
+        rule_provenance=json.loads(args.rule_provenance.read_text(encoding="utf-8")),
         suricata_binary=args.suricata,
     )
     if not verify_record(

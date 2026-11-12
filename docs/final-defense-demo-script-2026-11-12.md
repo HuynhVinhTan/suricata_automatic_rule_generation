@@ -14,10 +14,12 @@
    fail closed.
 6. Run the generated-artifact registration CLI in a synthetic or existing
    review-only fixture. Show `PROPOSED` and the three exact false safety flags.
-7. Show dry-run staging below the isolated root. Do not activate without an
-   authenticated owner authorization and an available isolated runtime.
-8. Close with the scoped decision: Milestone 6 is fully accepted for the six
-   verified bounded experiments. Live isolated activation remains pending.
+7. Show [documented-rule-recovery-2026-11-12.md](./documented-rule-recovery-2026-11-12.md) and explain that accepted rule text was recovered from a pinned Git evidence blob, while historical RST metadata remains unavailable.
+8. Show the real VM1 offline replay counts: 8/8/8 SID alerts for Attack 01/02/03 and zero for all three Normal holdouts. Do not call this a signed attestation until the replay-key passphrase gate completes.
+9. Show dry-run staging below the isolated root. Do not activate without an
+   authenticated owner authorization, `tcpreplay`/loopback prerequisites and an available isolated runtime.
+10. Close with the scoped decision: the six offline replays passed with real
+   EVE evidence; replay signing and live activation/rollback remain blocked.
 
 ## Questions to answer
 

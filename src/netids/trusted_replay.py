@@ -24,6 +24,9 @@ RULE_SHA = "7182bb328ce4ed1230c6de9b20c825d458b8c224a494d6b2a60063cca5ec21df"
 MODEL_SHA = "206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d"
 CAL_SHA = "814e17006c5cfee433477128e9d29abf7e403e28948d78a968c46c800b67e060"
 DECISION_SHA = "c7dffd3021d0c0195789e45c369f30108186753076b95586a2d80c9c744b579a"
+DOCUMENTED_EVIDENCE_PATH = "artifacts/milestones-4-6-acceptance-20261112/evidence.md"
+DOCUMENTED_EVIDENCE_GIT_BLOB_SHA = "4f61d7829ec566c4084444904c6e3bf5955e3f5f"
+DOCUMENTED_EVIDENCE_SHA = "e9d17a8874576ab0a579b15897abe0562d412d624907f6548acae2fb0f788dac"
 EXPECTED_CASES = {
     "worker-attack-holdout-01-20261111": ("attack", "7eb27fe774c8d889480662eaaea1e68b2336cc04c943ff06be399a24e4c0bbb5"),
     "worker-attack-holdout-02-20261111": ("attack", "80b118068f89f0939d9a3c9ba72c977b08f95eff74a04e65b31cd548e0258f61"),
@@ -38,6 +41,20 @@ _HEX = re.compile(r"^[a-f0-9]{64}$")
 
 class ReplayGateError(ValueError):
     pass
+
+
+def validate_documented_rule_provenance(provenance: dict | None) -> None:
+    """Require explicit recovery provenance when historical RST metadata is absent."""
+    if not isinstance(provenance, dict):
+        raise ReplayGateError("Documented-frozen rule provenance is required")
+    if (
+        provenance.get("evidence_class") != "documented_frozen_rule_recovery"
+        or provenance.get("historical_generated_metadata") != "unavailable_not_recovered"
+        or provenance.get("source_document_path") != DOCUMENTED_EVIDENCE_PATH
+        or provenance.get("source_document_git_blob_sha256") != DOCUMENTED_EVIDENCE_GIT_BLOB_SHA
+        or provenance.get("source_document_sha256") != DOCUMENTED_EVIDENCE_SHA
+    ):
+        raise ReplayGateError("Historical generated metadata was not recovered; explicit documented-source proof is required")
 
 
 def _under(path: Path, root: Path) -> Path:
@@ -135,7 +152,12 @@ def verify_pinned_rule_artifact(rule_file: Path, *, expected_sid: int, expected_
     if rule_path.is_symlink() or not rule_path.is_file():
         raise ReplayGateError("Original SID rule artifact unavailable or unsafe")
     raw_rule = rule_path.read_bytes()
-    if raw_rule.count(b"\n") != 1 or not raw_rule.endswith(b"\n") or b"\r" in raw_rule:
+    if b"\r" in raw_rule:
+        raise ReplayGateError("Original generated rule must end with exactly one LF")
+    if raw_rule.count(b"\n") == 1 and raw_rule.endswith(b"\n"):
+        if hashlib.sha256(raw_rule[:-1]).hexdigest() != expected_text_sha256:
+            raise ReplayGateError("Canonical rule-text SHA256 mismatch")
+    if raw_rule.count(b"\n") != 1 or not raw_rule.endswith(b"\n"):
         raise ReplayGateError("Original generated rule must end with exactly one LF")
     rule_bytes = raw_rule[:-1]
     if hashlib.sha256(rule_bytes).hexdigest() != expected_text_sha256:
@@ -157,6 +179,7 @@ def attest_six_holdouts(
     isolated_root: Path,
     private_key_pem: bytes,
     private_key_password: bytes,
+    rule_provenance: dict | None = None,
     suricata_binary: str = "/usr/bin/suricata",
 ) -> dict:
     """Sign only six immutable real-PCAP replays that passed all gates."""
@@ -221,6 +244,7 @@ def attest_six_holdouts(
     original_rule_file_sha256 = verify_pinned_rule_artifact(
         rule_file, expected_sid=SID, expected_text_sha256=RULE_SHA,
     )
+    validate_documented_rule_provenance(rule_provenance)
     config_sha = _config_safe(isolated_yaml, root)
     version = _run([suricata_binary, "-V"], timeout=30).stdout.strip()
     if "8.0.3" not in version:
@@ -265,6 +289,7 @@ def attest_six_holdouts(
         "sid": SID,
         "rule_sha256": RULE_SHA,
         "original_rule_file_sha256": original_rule_file_sha256,
+        "rule_provenance": rule_provenance,
         "model_sha256": MODEL_SHA,
         "calibration_sha256": CAL_SHA,
         "decision_manifest_sha256": DECISION_SHA,

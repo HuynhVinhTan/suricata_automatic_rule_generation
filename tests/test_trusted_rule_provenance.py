@@ -42,7 +42,7 @@ def test_rejects_any_noncanonical_original_rule_bytes(tmp_path, raw):
 
 def test_rejects_incorrect_rule_sha_or_sid(tmp_path):
     path = tmp_path / "rule.rules"
-    path.write_text(RULE + "\n", encoding="utf-8")
+    path.write_bytes((RULE + "\n").encode("utf-8"))
     with pytest.raises(ReplayGateError, match="SHA256"):
         verify_pinned_rule_artifact(
             path, expected_sid=9103999, expected_text_sha256="0" * 64,

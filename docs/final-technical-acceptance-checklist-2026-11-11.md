@@ -1,7 +1,7 @@
 # Final technical acceptance checklist
 
 Date: 2026-11-12
-Branch: `feat/pcap-ai-worker-integration`
+Branch: `feat/isolated-rule-runtime-signing`
 
 | Gate | Decision | Evidence / limitation |
 |---|---|---|
@@ -19,8 +19,12 @@ Branch: `feat/pcap-ai-worker-integration`
 | Baseline versus augmented improvement | PASS for proxy gate | Baseline candidate 0/6 sessions; augmented candidate 3/3 Attack and 0/3 Normal |
 | Milestone 6 PCAP/EVE/worker correlation | PASS for six lab experiments | Six event/flow-verified envelopes and six exact Elasticsearch read-backs; 303 matching EVE events and 144 matching flows; four historical AI-summary documents preserved |
 | tcpdump capability cleanup | PASS | VM1 `getcap -v /usr/bin/tcpdump` returned `/usr/bin/tcpdump` only |
-| Dataset inventory and quality audit | CONDITIONAL | UNSW, CIC and CTU raw files inventoried and hashed; CIC non-finite rates and UNSW feature-vector label contradictions recorded; largest CTU duplicate audit awaits more temporary disk |
+| Dataset inventory and quality audit | CONDITIONAL | UNSW, CIC and CTU raw files inventoried and hashed; CIC non-finite rates and UNSW feature-vector label contradictions recorded; CTU duplicate audit completed with zero duplicates and persistent contradictions |
 | Rule lifecycle safety | PASS for review-only code | Explicit provenance-bound state machine, approval gate, dry-run staging and rollback audit; active isolated-lab installation remains pending owner approval |
+| Original RST metadata provenance | BLOCKED | Read-only searches found no genuine accepted RST metadata; documented-frozen recovery is explicit and does not claim historical metadata recovery |
+| Real six-PCAP offline replay | PASSED WITH REAL EVIDENCE | VM1 Suricata 8.0.3: Attack 01/02/03 each 8 SID alerts; Normal 01/02/03 each 0; all EVE files nonempty |
+| Replay Ed25519 attestation | BLOCKED AT PASSPHRASE GATE | Replay private key is present only on VM1; signing requires its human-held passphrase and must bind the verified replay evidence |
+| Isolated activation and rollback | BLOCKED | `tcpreplay` is unavailable and no owner approval exists; no daemon activation was attempted |
 
 The six holdouts are controlled-lab evidence, not a production accuracy claim.
 The complete-hybrid-in-Suricata criterion is not met; the review-only RST proxy

@@ -94,6 +94,16 @@ triggered 3/3 Attack sessions and 0/3 Normal sessions in isolated Suricata
 deployed are all false. This does not count unique ports or implement the full
 hybrid verdict.
 
+The original generated RST metadata was not recovered from the local, VM1 or
+VM3 artifact searches. The accepted rule was instead recovered from the
+unchanged pinned Git evidence blob and is explicitly labelled
+`documented_frozen_rule_recovery`; this does not claim historical generator
+provenance. A fresh VM1 Suricata 8.0.3 offline replay of the six immutable
+holdouts produced 8/8/8 candidate SID alerts for Attack 01/02/03 and 0/0/0 for
+Normal 01/02/03, with nonempty EVE output. Ed25519 signing remains blocked at
+the VM1 replay-key passphrase gate, and live loopback activation remains
+blocked because `tcpreplay` is unavailable and no owner approval exists.
+
 ## Safety and reproducibility
 
 All review artifacts link the source PCAP, feature CSV and frozen-model hashes.
