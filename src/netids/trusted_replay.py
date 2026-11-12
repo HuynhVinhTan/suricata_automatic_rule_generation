@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -184,6 +185,37 @@ def verify_pinned_rule_artifact(rule_file: Path, *, expected_sid: int, expected_
     if collect_sids([rule_text]) != {expected_sid} or not rule_text.startswith("alert tcp "):
         raise ReplayGateError("Rule is not the approved alert-only TCP signature")
     return hashlib.sha256(raw_rule).hexdigest()
+
+
+def create_exclusive_replay_run_dir(root: Path) -> tuple[str, Path]:
+    """Create a fresh additive signing run while preserving prior evidence.
+
+    Existing replay-evidence directories are expected: earlier unsigned runs
+    must remain untouched. Each invocation gets a cryptographically random,
+    exclusive child directory; partial failed attempts are never overwritten.
+    """
+    root = Path(root).resolve()
+    evidence_root = _under(root / "replay-evidence", root)
+    if evidence_root.exists():
+        if not evidence_root.is_dir():
+            raise ReplayGateError("Existing replay-evidence path is not a directory")
+    else:
+        evidence_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+
+    runs_root = _under(evidence_root / "signing-runs", root)
+    if runs_root.exists():
+        if not runs_root.is_dir():
+            raise ReplayGateError("Existing signing-runs path is not a directory")
+    else:
+        runs_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+
+    replay_run_id = secrets.token_hex(16)
+    run_root = _under(runs_root / replay_run_id, root)
+    try:
+        run_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise ReplayGateError("Replay signing run ID collision; stop and inspect") from exc
+    return replay_run_id, run_root
 
 def attest_six_holdouts(
     *,
