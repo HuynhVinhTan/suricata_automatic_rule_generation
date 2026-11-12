@@ -15,8 +15,15 @@ def _public():
     )[1]
 
 
-def test_unprovisioned_public_keys_block_any_real_operation():
+def test_unprovisioned_public_keys_block_any_real_operation(monkeypatch):
+    monkeypatch.setattr(key_pins, "PINNED_REPLAY_ED25519_SHA256", "UNPROVISIONED")
+    monkeypatch.setattr(key_pins, "PINNED_OWNER_ED25519_SHA256", "UNPROVISIONED")
     with pytest.raises(key_pins.TrustAnchorError, match="not provisioned"):
+        key_pins.require_pinned_role_keys(_public(), _public())
+
+
+def test_provisioned_keys_still_reject_unrelated_test_keys():
+    with pytest.raises(key_pins.TrustAnchorError, match="mismatch"):
         key_pins.require_pinned_role_keys(_public(), _public())
 
 
