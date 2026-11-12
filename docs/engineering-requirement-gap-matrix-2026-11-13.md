@@ -21,8 +21,8 @@ does not convert unit-test evidence into runtime acceptance.
 | LIFE-01 | Owner-gated isolated lifecycle | Existing `RuleLifecycle` and isolated runtime code | existing lifecycle/security suite | IMPLEMENTED / UNIT_TESTED | VM identity, real load/reload, SID alert and rollback remain BLOCKED without authorization |
 | DATA-01 | UNSW/CTU frozen evidence preserved | Existing artifacts and manifests | existing dataset tests | ACCEPTED for preserved evidence | No new claim beyond existing limitations |
 | DATA-02 | CIC-IDS2017 adapter/model/evaluation | `src/netids/adapters/cic.py` remains empty; audit report references `data/raw/cic-ids2017/Friday-WorkingHours-Afternoon-{DDos,PortScan}.pcap_ISCX.csv` | audit tests only | BLOCKED | The referenced raw files are absent from the authorized checkout; no adapter/training/lineage claim is made |
-| REG-01 | Windows pinned-document verification | `documented_rule_recovery._git_blob` and lifecycle text hash normalize CRLF | `tests/test_recovery_signing_boundaries.py` | IMPLEMENTED / UNIT_TESTED | Exact-head CI still required |
-| REG-02 | Full regression suite | fresh local pytest on this implementation | 434 passed, 7 skipped | IMPLEMENTED / VERIFIED LOCALLY | Exact-head CI still required |
+| REG-01 | Windows pinned-document verification | `documented_rule_recovery._git_blob` and lifecycle text hash normalize CRLF | `tests/test_recovery_signing_boundaries.py`; GitHub exact-head CI run `43309761774` | IMPLEMENTED / VERIFIED | Exact-head CI passed on `3c27b615042a214ef7a62045fc15ebdf2808c3e5` |
+| REG-02 | Full regression suite | fresh local Windows pytest on this implementation | 434 passed, 7 skipped; GitHub `dataset-and-lifecycle` 440 passed, 1 skipped, 16 subtests; `unit-handoff` 24 passed | IMPLEMENTED / VERIFIED LOCALLY AND IN CI | No remaining CI gate for the verified baseline |
 | VM-01 | Actual isolated Suricata activation | `src/netids/isolated_suricata_runtime.py` | negative-path tests | BLOCKED | Requires exact VM/interface, `tcpreplay`, owner signing and write/reload authorization |
 | VM-02 | Actual rollback and post-rollback SID proof | existing runtime rollback gates | negative-path tests | BLOCKED | No live activation was performed; tests cannot substitute for runtime evidence |
 
@@ -74,7 +74,7 @@ or relabel that holdout.
 3. Authorize the exact isolated VM operation: SSH/file transfer, isolated
    directory writes, Suricata syntax/load/reload, packet replay, EVE capture,
    owner signing and rollback verification.
-4. Run exact-head CI and preserve its URL/conclusion in the acceptance ledger.
+4. Exact-head CI is complete for `3c27b615042a214ef7a62045fc15ebdf2808c3e5`; preserve run `43309761774` and its conclusion in the acceptance ledger.
 5. Provision an independently pinned Hybrid producer Ed25519 public key and
    fingerprint, or keep Hybrid unavailable; no private key is requested or
    stored by this project.
