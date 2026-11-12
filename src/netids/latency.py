@@ -57,16 +57,21 @@ class LatencyTrace:
                 **({"error_type": error} if error else {}),
             })
 
-    def record(self, name: str, elapsed_ms: float, *, status: str = "measured") -> None:
-        """Record an externally measured stage without inventing timestamps."""
-        if not isinstance(elapsed_ms, (int, float)) or elapsed_ms < 0:
-            raise ValueError("elapsed_ms must be a non-negative number")
-        self.stages.append({
+    def record(self, name: str, elapsed_ms: float | None = None, *, status: str = "measured") -> None:
+        """Record an external stage; unmeasured stages have no duration field."""
+        if status == "not_measured":
+            if elapsed_ms is not None:
+                raise ValueError("not_measured stages cannot contain elapsed_ms")
+        elif not isinstance(elapsed_ms, (int, float)) or elapsed_ms < 0:
+            raise ValueError("measured stages require a non-negative elapsed_ms")
+        entry = {
             "name": name,
-            "elapsed_ms": round(float(elapsed_ms), 3),
             "status": status,
             "timestamp_source": "external_measurement",
-        })
+        }
+        if elapsed_ms is not None:
+            entry["elapsed_ms"] = round(float(elapsed_ms), 3)
+        self.stages.append(entry)
 
     def as_dict(self) -> dict:
         if self._active:

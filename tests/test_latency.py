@@ -30,6 +30,13 @@ def test_latency_trace_preserves_failed_stage_and_external_unmeasured_marker():
     with pytest.raises(RuntimeError):
         with trace.stage("activation"):
             raise RuntimeError("blocked")
-    trace.record("rollback", 0, status="not_measured")
+    trace.record("rollback", status="not_measured")
     assert trace.as_dict()["stages"][0]["error_type"] == "RuntimeError"
     assert trace.as_dict()["stages"][1]["status"] == "not_measured"
+    assert "elapsed_ms" not in trace.as_dict()["stages"][1]
+
+
+def test_not_measured_cannot_be_zero_milliseconds():
+    trace = LatencyTrace(run_id="latency-test-4")
+    with pytest.raises(ValueError, match="cannot contain"):
+        trace.record("activation", 0, status="not_measured")

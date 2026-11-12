@@ -1,5 +1,10 @@
 # Suricata baseline-versus-augmented comparison
 
+> The experiment described here was subsequently executed. See
+> [baseline-comparison-evidence-2026-11-12.md](baseline-comparison-evidence-2026-11-12.md)
+> for the actual VM1 results and hashes. This document retains the harness
+> contract and historical-provenance limitations.
+
 ## Scope and honest status
 
 This is the reproducibility record for the baseline experiment required by the

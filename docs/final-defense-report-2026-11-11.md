@@ -108,6 +108,35 @@ evidence directory is `replay-evidence/signed-documented-frozen-rule-signing-202
 Owner approval and live loopback activation remain blocked: `tcpreplay` is
 unavailable on VM1 and no owner authorization was requested or generated.
 
+## New baseline and causal-lineage evidence
+
+A new VM1 baseline evaluation was executed against the six exact PCAP hashes,
+using the active YAML SHA `6224bc7d...` and newly copied ruleset SHA
+`30d7a02c...`. The ruleset was syntax-checked in both baseline and augmented
+arms, and the harness required non-empty valid EVE for every replay. At the
+session level, the new baseline produced TP=0, FP=0, FN=3, TN=3; adding the
+exact candidate produced TP=3, FP=0, FN=0, TN=3. Precision, Recall, F1 and FPR
+were respectively 0/0/0/0 and 1/1/1/0. This is a NEW baseline evaluation, not
+proof about the unrecovered historical ET snapshot. Full provenance is in
+`docs/baseline-comparison-evidence-2026-11-12.md`.
+
+A separate new pipeline run `lineage-new-generated-20261112-02` executed frozen
+feature extraction, IF/AE inference, calibrated Hybrid review, eligibility,
+automatic rule generation and artifact validation. It generated review-only
+SID `9103011`; canonical rule SHA is
+`8b2391f922cd45566d776f60ceabfceee061c548567d5e76515a2284cf94a0af`, metadata
+file SHA is `a81974e69b2ceb46e1b3bfcd80e6538d137fdce5476cb140a227568dd2a74d00`,
+and full rule-file SHA is
+`9c60db6cddabbe6e8d8b1df8ac4f109b902be3f2761de3168e23c2b5c530c805`. Its
+source PCAP SHA is `7eb27fe7...` and frozen model SHA is
+`206dadaf...`. The run remains `needs_review`; no approval or deployment flags
+were changed. Its latency trace is SHA
+`7c30561d145f139c9cfd0e1ccf96772db24c96158c5e3ff294c68d08f2b65f2a`.
+
+The first same-input pipeline attempt is preserved as a separate failed
+execution because missing capture-integrity metadata correctly prevented rule
+generation. It is not used as successful evidence.
+
 ## Safety and reproducibility
 
 All review artifacts link the source PCAP, feature CSV and frozen-model hashes.
@@ -135,7 +164,7 @@ deterministic rules-directory manifest SHA-256 is
 | Python hybrid separation | Met in this bounded lab |
 | Review-only RST proxy rule | **Met: validated_for_review, SID 9103003** |
 | Complete hybrid logic in Suricata | **Not met by design** |
-| Baseline versus augmented Suricata comparison | Met for proxy gate: 3/3 Attack, 0/3 Normal |
+| Baseline versus augmented Suricata comparison | **Met for NEW VM1 baseline**: baseline 0/3 Attack and 0/3 Normal reconnaissance verdicts; augmented 3/3 Attack and 0/3 Normal |
 | Production safety | Preserved |
 | tcpdump capability cleanup | **Met: no capability reported** |
 | Real replay Ed25519 attestation | **Met with real evidence** | Attestation SHA-256 recorded above; independent pinned-key verification passed |

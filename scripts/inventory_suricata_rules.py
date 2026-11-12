@@ -1,7 +1,8 @@
-"""Inventory a Suricata rules directory without changing the installation.
+"""Read-only inventory of a copied Suricata ruleset.
 
-This is intentionally a local/offline utility.  Copying files from a VM is a
-separate operator action; the script never invokes sudo, systemctl or reload.
+The tool does not infer Emerging Threats provenance from filenames. Source
+origin, effective enablement and historical identity are separate facts and
+must be supplied or verified from the YAML/rule-manager record.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ import hashlib
 import json
 from pathlib import Path
 import re
-
 
 SID_RE = re.compile(r"\bsid\s*:\s*(\d+)\s*;", re.IGNORECASE)
 
@@ -24,37 +24,39 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def classify(path: Path) -> str:
-    lower = path.name.lower()
-    if "emerging" in lower or lower in {"suricata.rules", "suricata.rules.gz"}:
-        return "emerging_threats_or_aggregated"
-    if "local" in lower or "custom" in lower:
-        return "custom_or_local"
-    return "other"
-
-
-def inventory(root: Path, config: Path | None = None) -> dict:
+def inventory(root: Path, config: Path | None = None, *, source_label: str = "UNKNOWN") -> dict:
     files = []
+    all_sids: set[int] = set()
     for path in sorted(root.rglob("*.rules")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        sids = sorted({int(value) for value in SID_RE.findall(text)})
+        text = path.read_text(encoding="utf-8", errors="strict")
+        active_sids = set()
+        active_lines = 0
+        for line in text.splitlines():
+            if line.strip() and not line.lstrip().startswith("#"):
+                active_lines += 1
+                match = SID_RE.search(line)
+                if match:
+                    active_sids.add(int(match.group(1)))
+        all_sids.update(active_sids)
         files.append({
             "path": str(path),
-            "classification": classify(path),
+            "source_attribution": source_label,
             "size_bytes": path.stat().st_size,
             "sha256": sha256(path),
-            "rule_lines": sum(1 for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")),
-            "sid_count": len(sids),
-            "sid_min": min(sids) if sids else None,
-            "sid_max": max(sids) if sids else None,
+            "active_rule_lines": active_lines,
+            "active_unique_sid_count": len(active_sids),
+            "active_sids_sha256": hashlib.sha256(",".join(map(str, sorted(active_sids))).encode()).hexdigest(),
         })
     result = {
-        "schema_version": "suricata_rules_inventory_v1",
+        "schema_version": "suricata_rules_inventory_v2",
         "rules_root": str(root),
+        "source_attribution": source_label,
+        "historical_identity": "NOT_ESTABLISHED",
         "files": files,
         "total_files": len(files),
-        "total_rule_lines": sum(item["rule_lines"] for item in files),
-        "total_sid_count": sum(item["sid_count"] for item in files),
+        "total_active_rule_lines": sum(item["active_rule_lines"] for item in files),
+        "total_active_unique_sid_count": len(all_sids),
+        "active_sids_sha256": hashlib.sha256(",".join(map(str, sorted(all_sids))).encode()).hexdigest(),
     }
     if config is not None:
         result["config"] = {"path": str(config), "sha256": sha256(config), "size_bytes": config.stat().st_size}
@@ -65,9 +67,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("rules_root", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--source-label", default="UNKNOWN")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = inventory(args.rules_root, args.config)
+    result = inventory(args.rules_root, args.config, source_label=args.source_label)
     payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.write_text(payload, encoding="utf-8", newline="\n")

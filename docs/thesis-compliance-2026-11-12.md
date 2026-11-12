@@ -14,15 +14,15 @@ provenance.
 | IF/AE model artifacts | PASS | Frozen model hash and stored experiment reports | Standalone six-session FPR was 1.0 |
 | Hybrid protocol verification | PASS | `src/netids/hybrid_review.py`, calibration provenance and 3+3 holdouts | Laboratory observation, not production accuracy |
 | New/unseen attack definition | PASS | Final report and baseline comparison report | No real-zero-day claim |
-| ML-to-rule causal lineage | PARTIAL | `pipeline.py`, `rulegen.py`, `worker.py`, provenance tests | Historical SID metadata unavailable; documented recovery is separate |
-| New generated candidate experiment | PARTIAL | Existing generated SID 9103001 is preserved as rejected; review-only registration is tested | No new candidate is represented as authentic without private input execution |
+| ML-to-rule causal lineage | PASS for new review-only run | `data/private/lineage-new-generated-20261112-02/` links PCAP, features, frozen predictions, hybrid evidence, SID `9103011`, rule and metadata hashes | Historical SID 9103003 metadata remains unavailable |
+| New generated candidate experiment | PASS | New run `lineage-new-generated-20261112-02` generated SID `9103011`, contemporaneous `.rules` and metadata with exact hashes | Review-only; no approval or deployment |
 | Rule syntax validation | PASS | Suricata `-T` replay evidence and lifecycle tests | Candidate-specific syntax, not full hybrid semantics |
-| Baseline versus augmented ET gap | PARTIAL | `docs/suricata-baseline-comparison-2026-11-12.md` and harness | Historical ET snapshot/private PCAPs unavailable; whole-ET metric not measured |
+| Baseline versus augmented ET gap | PASS for a NEW baseline evaluation | `docs/baseline-comparison-evidence-2026-11-12.md`; six pinned PCAPs; active VM1 YAML/rules hashes; real EVE | Historical original ruleset identity remains unrecovered |
 | Six-PCAP signed replay | PASS | `docs/documented-rule-recovery-2026-11-12.md`, signed attestation hash | Offline replay only |
 | Isolated live activation | BLOCKED | `docs/isolated-rule-9103003-operational-acceptance-2026-11-12.md` | `tcpreplay` absent; no owner authorization; no activation attempted |
 | Verified rollback after live activation | BLOCKED | Lifecycle state machine and negative tests | Cannot substitute unit tests for real runtime proof |
-| Latency instrumentation | PASS for available stages | `src/netids/latency.py`, `tests/test_latency.py` | Activation-dependent T8-T11 remain NOT MEASURED |
-| Latency measurements | PARTIAL | Existing reports intentionally omit offline replay as live latency | A new end-to-end live run is blocked |
+| Latency instrumentation | PASS | `src/netids/pipeline.py` wires `LatencyTrace` through extraction, inference, hybrid review, generation and validation | Activation-dependent T8-T11 remain NOT MEASURED |
+| Latency measurements | PASS for executed stages | `docs/new-ml-rule-lineage-and-latency-2026-11-12.md`; new run contains immutable `latency-trace.json` with monotonic durations and UTC boundaries | T8-T11 are explicitly absent because live activation is blocked |
 | Suricata-to-EVE-to-ELK path | PASS | `docs/milestone-6-correlation-evidence-2026-11-12.md` | Correlation is event/flow evidence, not EVE-driven ML |
 | EVE-driven continuous AI inference | NOT IMPLEMENTED | `scripts/infer_eve_batch.py` explicitly remains batch-only | Must not be claimed as real-time |
 | UNSW evaluation | PASS with limitations | Frozen v02 reports and adapters | Feature-only/generalization limits disclosed |

@@ -312,7 +312,7 @@ def write_ml_rule_artifacts(output_dir, result):
         stream.write("\n")
     if result["rule"] is not None:
         with (output_dir / "ml-generated.rules").open(
-            "x", encoding="utf-8"
+            "x", encoding="utf-8", newline="\n"
         ) as stream:
             stream.write(result["rule"] + "\n")
 
@@ -331,7 +331,7 @@ def write_rst_rule_artifacts(output_dir, result):
         stream.write("\n")
     if result["rule"] is not None:
         with (output_dir / "ml-generated-rst.rules").open(
-            "x", encoding="utf-8"
+            "x", encoding="utf-8", newline="\n"
         ) as stream:
             stream.write(result["rule"] + "\n")
 
