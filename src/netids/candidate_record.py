@@ -22,6 +22,7 @@ class CandidateRecordError(ValueError):
 
 _HEX = re.compile(r"^[0-9a-f]{64}$")
 _RUN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+APPROVED_CASE_MANIFEST_SHA256 = "57aa92f0a63bd2f8fe037904d0aecb2e2414031d5b9af8f08e5c9bbf73eddeba"
 
 
 def _sha_bytes(value: bytes) -> str:
@@ -190,7 +191,7 @@ def verify_signed_replay_evidence(candidate: dict, evidence: dict, public_key: b
         return False
     if (
         evidence.get("case_manifest_schema") != "candidate_independent_replay_manifest_v1"
-        or not _HEX.fullmatch(evidence.get("case_manifest_sha256", ""))
+        or evidence.get("case_manifest_sha256") != APPROVED_CASE_MANIFEST_SHA256
         or evidence.get("minimum_attack_cases") != 2
         or evidence.get("minimum_normal_cases") != 3
     ):

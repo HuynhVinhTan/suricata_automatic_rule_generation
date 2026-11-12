@@ -4,6 +4,7 @@ import json
 import pytest
 
 from netids.candidate_record import (
+    APPROVED_CASE_MANIFEST_SHA256,
     CandidateRecordError,
     build_candidate_record,
     verify_candidate_record,
@@ -93,7 +94,7 @@ def test_signed_replay_evidence_must_bind_candidate_and_real_eve_hashes(tmp_path
         "suricata_version": "8.0.3 RELEASE",
         "syntax_authenticated": True,
         "case_manifest_schema": "candidate_independent_replay_manifest_v1",
-        "case_manifest_sha256": "e" * 64,
+        "case_manifest_sha256": APPROVED_CASE_MANIFEST_SHA256,
         "minimum_attack_cases": 2, "minimum_normal_cases": 3,
         "cases": [
             {"scenario": "attack", "pcap_sha256": "1" * 64, "eve_sha256": "2" * 64, "events": 2, "candidate_sid_alerts": 1},
@@ -122,7 +123,7 @@ def test_signed_replay_rejects_discovery_pcap_as_independent_case(tmp_path):
         "suricata_version": "8.0.3 RELEASE",
         "syntax_authenticated": True,
         "case_manifest_schema": "candidate_independent_replay_manifest_v1",
-        "case_manifest_sha256": "e" * 64,
+        "case_manifest_sha256": APPROVED_CASE_MANIFEST_SHA256,
         "minimum_attack_cases": 2, "minimum_normal_cases": 3,
         "cases": [
             {"scenario": "attack", "pcap_sha256": candidate["pcap_sha256"], "eve_sha256": "2" * 64, "events": 2, "candidate_sid_alerts": 1},

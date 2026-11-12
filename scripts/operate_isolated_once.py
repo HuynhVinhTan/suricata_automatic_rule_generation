@@ -376,6 +376,7 @@ def execute_candidate_one_time(
     lifecycle = None
     runtime = None
     started = datetime.now(timezone.utc)
+    operation_error = None
     try:
         before = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
         lifecycle = RuleLifecycle(
@@ -402,12 +403,21 @@ def execute_candidate_one_time(
         if (datetime.now(timezone.utc) - started).total_seconds() > 300:
             raise OperationError("Candidate operation exceeded 300 seconds")
         after = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+        if before != after:
+            raise OperationError("Production before/after evidence differs; fail acceptance")
     except Exception as exc:
-        if runtime is not None:
-            try:
-                runtime.shutdown()
-            except Exception:
-                pass
+        operation_error = exc
+    if runtime is not None:
+        try:
+            runtime.shutdown()
+        except Exception as exc:
+            if operation_error is None:
+                operation_error = OperationError(f"Final runtime shutdown failed: {exc}")
+            else:
+                operation_error = OperationError(
+                    f"{operation_error}; final runtime shutdown failed: {exc}"
+                )
+    if operation_error is not None:
         cleanup_verified = bool(
             runtime is None or runtime.process is None or runtime.process.poll() is not None
         )
@@ -428,19 +438,14 @@ def execute_candidate_one_time(
             "candidate_record_schema": "candidate_record_v1",
             "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
             "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
-            "failure_reason": str(exc), "rollback_verified": False,
+            "failure_reason": str(operation_error), "rollback_verified": False,
             "production_before": before, "production_after": after,
             "lifecycle_audit_records": audit_records,
             "lifecycle_audit_sha256": audit_sha,
             "cleanup_status": "verified_process_stopped" if cleanup_verified else "cleanup_unverified",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        raise
-    finally:
-        if runtime is not None:
-            runtime.shutdown()
-    if before != after:
-        raise OperationError("Production before/after evidence differs; fail acceptance")
+        raise operation_error
     record = {
         "schema_version": "isolated_runtime_acceptance_v1",
         "candidate_record_schema": "candidate_record_v1",

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from netids.candidate_record import (
+    APPROVED_CASE_MANIFEST_SHA256,
     CandidateRecordError,
     build_candidate_record,
     verify_candidate_record,
@@ -40,9 +41,11 @@ def load_independent_case_manifest(
 ) -> tuple[dict, list[dict]]:
     """Load the reviewed case inventory; caller-supplied inventories are rejected."""
     manifest_path = Path(path)
-    if not _HEX.fullmatch(str(expected_sha256)) or manifest_path.is_symlink() or not manifest_path.is_file():
+    if expected_sha256 != APPROVED_CASE_MANIFEST_SHA256:
+        raise CandidateReplayError("Caller-supplied manifest digest is not the approved digest")
+    if manifest_path.is_symlink() or not manifest_path.is_file():
         raise CandidateReplayError("Pinned independent case manifest is required")
-    if sha256_file(manifest_path) != expected_sha256:
+    if sha256_file(manifest_path) != APPROVED_CASE_MANIFEST_SHA256:
         raise CandidateReplayError("Independent case manifest hash mismatch")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

@@ -5,10 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from netids.candidate_replay import CandidateReplayError, attest_candidate_replay
+import netids.candidate_replay as candidate_replay
+import netids.candidate_record as candidate_record
+from netids.candidate_replay import (
+    APPROVED_CASE_MANIFEST_SHA256, CandidateReplayError, attest_candidate_replay,
+)
 from netids.candidate_record import build_candidate_record, expected_candidate_runtime_id
 from netids.lifecycle_ed25519 import generate_encrypted_keypair, verify_record
 from scripts.approve_isolated_activation import build_candidate_owner_authorization
+from scripts.operate_isolated_once import OperationError, _write_failure_report
 from tests.test_candidate_record import _fixture
 
 
@@ -55,6 +60,9 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
     root.mkdir()
     config = _config(root)
     manifest, cases = _manifest(tmp_path, candidate)
+    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    monkeypatch.setattr(candidate_replay, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
+    monkeypatch.setattr(candidate_record, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
     def fake_run(argv, **kwargs):
         if "-r" in argv:
             logdir = Path(argv[argv.index("-l") + 1])
@@ -70,7 +78,7 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
     signed = attest_candidate_replay(
         candidate=candidate, artifact_dir=artifact, calibration_manifest=calibration,
         baseline_rules=baseline, case_manifest=manifest,
-        expected_case_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        expected_case_manifest_sha256=manifest_sha,
         isolated_yaml=config, isolated_root=root,
         private_key_pem=private, private_key_password=PASSWORD,
         replay_public_pem=public, suricata_binary="suricata",
@@ -90,17 +98,45 @@ def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypa
     bad = json.loads(manifest.read_text(encoding="utf-8"))
     bad["cases"][0]["pcap_sha256"] = candidate["pcap_sha256"]
     manifest.write_text(json.dumps(bad), encoding="utf-8")
+    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    monkeypatch.setattr(candidate_replay, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
     called = []
     monkeypatch.setattr("netids.candidate_replay.subprocess.run", lambda *a, **k: called.append(a))
     with pytest.raises(CandidateReplayError, match="Discovery PCAP"):
         attest_candidate_replay(
             candidate=candidate, artifact_dir=artifact, calibration_manifest=calibration,
             baseline_rules=baseline, case_manifest=manifest,
-            expected_case_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            expected_case_manifest_sha256=manifest_sha,
             isolated_yaml=config, isolated_root=root, private_key_pem=b"", private_key_password=PASSWORD,
             replay_public_pem=b"", suricata_binary="suricata",
         )
     assert called == []
+
+
+def test_candidate_replay_rejects_self_consistent_unapproved_manifest_digest(tmp_path):
+    candidate, artifact, calibration, baseline = _candidate(tmp_path)
+    root = tmp_path / "isolated"
+    root.mkdir()
+    manifest, _ = _manifest(tmp_path, candidate)
+    replacement_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    with pytest.raises(CandidateReplayError, match="approved digest"):
+        from netids.candidate_replay import load_independent_case_manifest
+        load_independent_case_manifest(manifest, replacement_sha, candidate)
+
+
+def test_failure_report_is_durable_and_never_claims_rollback_success(tmp_path):
+    report_path = tmp_path / "failure.json"
+    _write_failure_report(report_path, {
+        "schema_version": "isolated_runtime_failure_v1",
+        "failure_reason": "production before/after mismatch",
+        "rollback_verified": False,
+        "cleanup_status": "cleanup_unverified",
+    })
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["schema_version"] == "isolated_runtime_failure_v1"
+    assert report["rollback_verified"] is False
+    with pytest.raises(OperationError, match="already exists"):
+        _write_failure_report(report_path, report)
 
 
 def test_candidate_owner_authorization_binds_runtime_and_replay(tmp_path):
@@ -114,7 +150,7 @@ def test_candidate_owner_authorization_binds_runtime_and_replay(tmp_path):
         "attack_replay_passed": True, "normal_replay_passed": True,
         "normal_false_positive_count": 0, "threshold": 3,
         "case_manifest_schema": "candidate_independent_replay_manifest_v1",
-        "case_manifest_sha256": "e" * 64,
+        "case_manifest_sha256": APPROVED_CASE_MANIFEST_SHA256,
         "minimum_attack_cases": 2, "minimum_normal_cases": 3,
         "experiment_id": "candidate-replay", "created_at": "2026-11-12T14:00:00+00:00",
         "cases": [
