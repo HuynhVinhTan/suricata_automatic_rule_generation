@@ -1,0 +1,47 @@
+# Engineering requirement gap matrix — 2026-11-13
+
+This is an engineering tracking artifact, not the final thesis report. It
+records the state of the implementation on `feat/complete-suricata-ai-e2e` and
+does not convert unit-test evidence into runtime acceptance.
+
+| ID | Required behavior | Code path / evidence | Tests | Status | Acceptance gap |
+|---|---|---|---|---|---|
+| EVE-01 | Incremental JSONL consumption | `src/netids/eve_worker.py:JsonlEveReader` | `tests/test_eve_worker.py` partial-line, malformed-line tests | IMPLEMENTED / UNIT_TESTED | Live Suricata stream not observed in this environment |
+| EVE-02 | Rotation and duplicate handling | `JsonlEveReader.read_available()` identity/offset/dedupe | rotation and dedupe tests | IMPLEMENTED / UNIT_TESTED | Multi-process checkpoint recovery is not implemented |
+| EVE-03 | Bounded queue and graceful shutdown | `StreamingInferenceWorker` bounded `queue.Queue`, stop event | bounded-load and shutdown tests | IMPLEMENTED / UNIT_TESTED | No long-running lab load test |
+| EVE-04 | Compatible EVE model inference | `FlowModelAdapter`, `suricata_eve_to_features`, `validate_feature_matrix` | real RandomForest integration tests | IMPLEMENTED / INTEGRATION_TESTED | Trusted CTU artifact is absent from this checkout; no production accuracy claim |
+| HYB-01 | Hybrid protocol verification | Optional `event.netids.hybrid` path; missing packet telemetry is fail-closed | authorized-telemetry integration test | IMPLEMENTED / UNIT_TESTED | Ordinary EVE flow records do not contain RST/port/handshake evidence |
+| EVID-01 | Structured anomaly provenance | `netids_stream_anomaly_v1` output with event/model/run hashes | output provenance assertions | IMPLEMENTED / INTEGRATION_TESTED | No live EVE evidence hash recorded |
+| ORCH-01 | One guarded laboratory entry point | `scripts/run_lab_workflow.py`, `src/netids/lab_workflow.py` | workflow gate test | IMPLEMENTED / UNIT_TESTED | Candidate generation, owner approval, staging, activation and rollback are explicit BLOCKED |
+| LAT-01 | Monotonic latency instrumentation | `LatencyTrace` integrated by `run_streaming_lab_workflow` | workflow latency assertions | IMPLEMENTED / UNIT_TESTED | T0–T11 live runtime timings are not measured |
+| RULE-01 | Safe rule-generation semantics | Existing `src/netids/rulegen.py` and review-only lifecycle retained | existing rule-generation/security suite | IMPLEMENTED / UNIT_TESTED | The historical SID 9103012 remains rejected; no new passing candidate was produced |
+| LIFE-01 | Owner-gated isolated lifecycle | Existing `RuleLifecycle` and isolated runtime code | existing lifecycle/security suite | IMPLEMENTED / UNIT_TESTED | VM identity, real load/reload, SID alert and rollback remain BLOCKED without authorization |
+| DATA-01 | UNSW/CTU frozen evidence preserved | Existing artifacts and manifests | existing dataset tests | ACCEPTED for preserved evidence | No new claim beyond existing limitations |
+| DATA-02 | CIC-IDS2017 adapter/model/evaluation | `src/netids/adapters/cic.py` remains empty; audit records non-finite values and duplicate headers | audit tests only | FAILED | Raw data/validated adapter/training lineage are not available in this worktree |
+| REG-01 | Windows pinned-document verification | `documented_rule_recovery._git_blob` and lifecycle text hash normalize CRLF | `tests/test_recovery_signing_boundaries.py` | IMPLEMENTED / UNIT_TESTED | Exact-head CI still required |
+| REG-02 | Full regression suite | baseline was 384 passed, 7 skipped, 2 failed before the Windows fix | full pytest pending | BLOCKED | Must run fresh full suite and CI on the implementation commit |
+| VM-01 | Actual isolated Suricata activation | `src/netids/isolated_suricata_runtime.py` | negative-path tests | BLOCKED | Requires exact VM/interface, `tcpreplay`, owner signing and write/reload authorization |
+| VM-02 | Actual rollback and post-rollback SID proof | existing runtime rollback gates | negative-path tests | BLOCKED | No live activation was performed; tests cannot substitute for runtime evidence |
+
+## Immutable historical evidence retained
+
+Candidate SID `9103012`, candidate ID
+`84ad314c885d821fb69713353134671cb355662a6effec1b890d59f38cada7e4`, source
+run `lineage-new-generated-20261112-04`, and its rejected independent cohort
+remain unchanged. The recorded result is TP=2, FN=0, FP=3, TN=0, precision
+0.4000, recall 1.0000, F1 0.5714 and FPR 1.0000. This branch does not retune
+or relabel that holdout.
+
+## Required external actions before overall acceptance
+
+1. Provide a trusted, version-compatible CTU flow model artifact if the
+   streaming worker is to run against the frozen model rather than the test
+   classifier.
+2. Provide a genuinely new development cohort and independent Attack/Normal
+   cohort for a new candidate; the rejected SID 9103012 cohort is immutable.
+3. Authorize the exact isolated VM operation: SSH/file transfer, isolated
+   directory writes, Suricata syntax/load/reload, packet replay, EVE capture,
+   owner signing and rollback verification.
+4. Run exact-head CI and preserve its URL/conclusion in the acceptance ledger.
+
+Overall status for this matrix: **BLOCKED**, not complete.

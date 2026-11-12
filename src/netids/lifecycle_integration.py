@@ -23,7 +23,13 @@ from netids.trusted_replay import (
 )
 
 
-def _verified_file(path: Path, expected_sha256: str, label: str) -> tuple[Path, str]:
+def _verified_file(
+    path: Path,
+    expected_sha256: str,
+    label: str,
+    *,
+    normalize_line_endings: bool = False,
+) -> tuple[Path, str]:
     resolved = Path(path)
     if resolved.is_symlink() or not resolved.is_file():
         raise LifecycleError(f"Missing or unsafe {label}")
@@ -33,7 +39,10 @@ def _verified_file(path: Path, expected_sha256: str, label: str) -> tuple[Path, 
         or any(digit not in "0123456789abcdef" for digit in expected_sha256)
     ):
         raise LifecycleError(f"Missing pinned {label} SHA256")
-    actual = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    payload = resolved.read_bytes()
+    if normalize_line_endings:
+        payload = payload.replace(b"\r\n", b"\n")
+    actual = hashlib.sha256(payload).hexdigest()
     if actual != expected_sha256:
         raise LifecycleError(f"{label} SHA256 mismatch")
     return resolved.resolve(strict=True), actual
@@ -179,11 +188,13 @@ def register_documented_frozen_candidate(
     ):
         raise LifecycleError("Documented recovery source is not the pinned Git evidence")
     calibration_path, calibration_sha = _verified_file(
-        calibration_manifest, CAL_SHA, "frozen calibration manifest"
+        calibration_manifest, CAL_SHA, "frozen calibration manifest",
+        normalize_line_endings=True,
     )
     if decision_manifest is not None:
         decision_path, decision_sha = _verified_file(
-            decision_manifest, DECISION_SHA, "frozen decision manifest"
+            decision_manifest, DECISION_SHA, "frozen decision manifest",
+            normalize_line_endings=True,
         )
     else:
         decision_path, decision_sha = None, DECISION_SHA
