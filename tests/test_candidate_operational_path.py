@@ -9,6 +9,7 @@ import netids.candidate_replay as candidate_replay
 import netids.candidate_record as candidate_record
 from netids.candidate_replay import (
     APPROVED_CASE_MANIFEST_SHA256, CandidateReplayError, attest_candidate_replay,
+    resolve_manifest_pcap_path,
 )
 from netids.candidate_record import build_candidate_record, expected_candidate_runtime_id
 from netids.lifecycle_ed25519 import generate_encrypted_keypair, verify_record
@@ -37,11 +38,13 @@ def _config(root: Path) -> Path:
 def _manifest(tmp_path, candidate):
     cases = []
     for scenario, index in (("attack", 2), ("attack", 3), ("normal", 1), ("normal", 2), ("normal", 3)):
-        pcap = tmp_path / f"{scenario}-{index}.pcap"
+        pcap = tmp_path / "fresh-holdouts-20261111" / f"{scenario}-holdout-{index}" / "traffic.pcap"
+        pcap.parent.mkdir(parents=True, exist_ok=True)
         pcap.write_bytes(f"{scenario}-{index}".encode())
         cases.append({
             "id": f"worker-{scenario}-holdout-{index}", "scenario": scenario,
-            "pcap_path": str(pcap), "pcap_sha256": hashlib.sha256(pcap.read_bytes()).hexdigest(),
+            "pcap_path": f"data/private/fresh-holdouts-20261111/{scenario}-holdout-{index}/traffic.pcap",
+            "pcap_sha256": hashlib.sha256(pcap.read_bytes()).hexdigest(),
         })
     manifest = {
         "schema_version": "candidate_independent_replay_manifest_v1",
@@ -51,7 +54,7 @@ def _manifest(tmp_path, candidate):
     }
     path = tmp_path / "independent-cases.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
-    return path, cases
+    return path, cases, tmp_path / "fresh-holdouts-20261111"
 
 
 def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeypatch, tmp_path):
@@ -59,7 +62,7 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
     root = tmp_path / "isolated"
     root.mkdir()
     config = _config(root)
-    manifest, cases = _manifest(tmp_path, candidate)
+    manifest, cases, pcap_root = _manifest(tmp_path, candidate)
     manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
     monkeypatch.setattr(candidate_replay, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
     monkeypatch.setattr(candidate_record, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
@@ -79,7 +82,8 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
         candidate=candidate, artifact_dir=artifact, calibration_manifest=calibration,
         baseline_rules=baseline, case_manifest=manifest,
         expected_case_manifest_sha256=manifest_sha,
-        isolated_yaml=config, isolated_root=root,
+        isolated_yaml=config, pcap_root=pcap_root,
+        manifest_prefix="data/private/fresh-holdouts-20261111", isolated_root=root,
         private_key_pem=private, private_key_password=PASSWORD,
         replay_public_pem=public, suricata_binary="suricata",
     )
@@ -94,7 +98,7 @@ def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypa
     root = tmp_path / "isolated"
     root.mkdir()
     config = _config(root)
-    manifest, _ = _manifest(tmp_path, candidate)
+    manifest, _, pcap_root = _manifest(tmp_path, candidate)
     bad = json.loads(manifest.read_text(encoding="utf-8"))
     bad["cases"][0]["pcap_sha256"] = candidate["pcap_sha256"]
     manifest.write_text(json.dumps(bad), encoding="utf-8")
@@ -107,7 +111,9 @@ def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypa
             candidate=candidate, artifact_dir=artifact, calibration_manifest=calibration,
             baseline_rules=baseline, case_manifest=manifest,
             expected_case_manifest_sha256=manifest_sha,
-            isolated_yaml=config, isolated_root=root, private_key_pem=b"", private_key_password=PASSWORD,
+            isolated_yaml=config, pcap_root=pcap_root,
+            manifest_prefix="data/private/fresh-holdouts-20261111", isolated_root=root,
+            private_key_pem=b"", private_key_password=PASSWORD,
             replay_public_pem=b"", suricata_binary="suricata",
         )
     assert called == []
@@ -117,7 +123,7 @@ def test_candidate_replay_rejects_self_consistent_unapproved_manifest_digest(tmp
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
     root = tmp_path / "isolated"
     root.mkdir()
-    manifest, _ = _manifest(tmp_path, candidate)
+    manifest, _, _ = _manifest(tmp_path, candidate)
     replacement_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
     with pytest.raises(CandidateReplayError, match="approved digest"):
         from netids.candidate_replay import load_independent_case_manifest
@@ -137,6 +143,38 @@ def test_failure_report_is_durable_and_never_claims_rollback_success(tmp_path):
     assert report["rollback_verified"] is False
     with pytest.raises(OperationError, match="already exists"):
         _write_failure_report(report_path, report)
+
+
+def test_manifest_path_resolution_rejects_absolute_traversal_outside_missing_and_hash_independent_paths(tmp_path):
+    root = tmp_path / "fresh-holdouts-20261111"
+    safe = root / "attack-holdout-02" / "traffic.pcap"
+    safe.parent.mkdir(parents=True)
+    safe.write_bytes(b"safe")
+    prefix = "data/private/fresh-holdouts-20261111"
+    assert resolve_manifest_pcap_path(
+        f"{prefix}/attack-holdout-02/traffic.pcap", pcap_root=root, manifest_prefix=prefix,
+    ) == safe.resolve()
+    for bad in (
+        "/etc/passwd",
+        "C:/Windows/System32/config/SAM",
+        f"{prefix}/../secret.pcap",
+        "data/private/other/traffic.pcap",
+        f"{prefix}/missing/traffic.pcap",
+    ):
+        with pytest.raises(CandidateReplayError):
+            resolve_manifest_pcap_path(bad, pcap_root=root, manifest_prefix=prefix)
+    outside = tmp_path / "outside.pcap"
+    outside.write_bytes(b"outside")
+    escaped = root / "normal-holdout-01" / "traffic.pcap"
+    escaped.parent.mkdir(parents=True)
+    try:
+        escaped.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable on this runner")
+    with pytest.raises(CandidateReplayError, match="symlink"):
+        resolve_manifest_pcap_path(
+            f"{prefix}/normal-holdout-01/traffic.pcap", pcap_root=root, manifest_prefix=prefix,
+        )
 
 
 def test_candidate_owner_authorization_binds_runtime_and_replay(tmp_path):

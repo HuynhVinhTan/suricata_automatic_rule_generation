@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--baseline-rules", type=Path, required=True)
     parser.add_argument("--case-manifest", type=Path, required=True)
+    parser.add_argument("--pcap-root", type=Path, required=True)
+    parser.add_argument("--manifest-prefix", required=True)
     parser.add_argument("--isolated-yaml", type=Path, required=True)
     parser.add_argument("--isolated-root", type=Path, required=True)
     parser.add_argument("--replay-private", type=Path, required=True)
@@ -51,7 +53,8 @@ def main(argv: list[str] | None = None) -> int:
             calibration_manifest=args.calibration, baseline_rules=args.baseline_rules,
             case_manifest=args.case_manifest,
             expected_case_manifest_sha256=APPROVED_CASE_MANIFEST_SHA256,
-            isolated_yaml=args.isolated_yaml, isolated_root=args.isolated_root,
+            isolated_yaml=args.isolated_yaml, pcap_root=args.pcap_root,
+            manifest_prefix=args.manifest_prefix, isolated_root=args.isolated_root,
             private_key_pem=args.replay_private.read_bytes(), private_key_password=password,
             replay_public_pem=args.replay_public.read_bytes(), suricata_binary=args.suricata,
         )

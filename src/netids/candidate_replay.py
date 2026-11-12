@@ -15,6 +15,7 @@ import secrets
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import PurePosixPath
 
 from netids.candidate_record import (
     APPROVED_CASE_MANIFEST_SHA256,
@@ -80,6 +81,35 @@ def load_independent_case_manifest(
     if counts != {"attack": 2, "normal": 3}:
         raise CandidateReplayError("Independent manifest does not meet the minimum evaluation cohort")
     return manifest, cases
+
+
+def resolve_manifest_pcap_path(
+    manifest_path: str, *, pcap_root: Path, manifest_prefix: str,
+) -> Path:
+    """Map one reviewed repository path into an approved VM PCAP root."""
+    if not isinstance(manifest_path, str) or not manifest_path or "\\" in manifest_path:
+        raise CandidateReplayError("Manifest PCAP path must be a relative POSIX path")
+    raw = PurePosixPath(manifest_path)
+    prefix = PurePosixPath(manifest_prefix.strip("/"))
+    if raw.is_absolute() or prefix.is_absolute() or re.match(r"^[A-Za-z]:", manifest_path) or ".." in raw.parts:
+        raise CandidateReplayError("Absolute or traversal PCAP path rejected")
+    if len(raw.parts) <= len(prefix.parts) or raw.parts[:len(prefix.parts)] != prefix.parts:
+        raise CandidateReplayError("Manifest PCAP path is outside the approved prefix")
+    root = Path(pcap_root)
+    if root.is_symlink() or not root.is_dir():
+        raise CandidateReplayError("Approved PCAP root is missing or symlinked")
+    suffix = raw.parts[len(prefix.parts):]
+    candidate = root.joinpath(*suffix)
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise CandidateReplayError("Manifest PCAP is missing or unresolved") from exc
+    if not resolved.is_relative_to(resolved_root):
+        raise CandidateReplayError("Manifest PCAP symlink escapes approved root")
+    if not resolved.is_file() or candidate.is_symlink():
+        raise CandidateReplayError("Manifest PCAP is missing or symlinked")
+    return resolved
 
 
 def _run(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess:
@@ -160,7 +190,7 @@ def _verify_candidate_sources(
 def attest_candidate_replay(
     *, candidate: dict, artifact_dir: Path, calibration_manifest: Path,
     baseline_rules: Path, case_manifest: Path, expected_case_manifest_sha256: str,
-    isolated_yaml: Path,
+    isolated_yaml: Path, pcap_root: Path, manifest_prefix: str,
     isolated_root: Path, private_key_pem: bytes, private_key_password: bytes,
     replay_public_pem: bytes, suricata_binary: str = "/usr/bin/suricata",
 ) -> dict:
@@ -183,13 +213,16 @@ def attest_candidate_replay(
         case_id = case["id"]
         scenario = case.get("scenario")
         digest = case.get("pcap_sha256")
-        pcap = Path(case.get("pcap_path", ""))
         if case_id in seen or scenario not in {"attack", "normal"} or not _HEX.fullmatch(str(digest)):
             raise CandidateReplayError("Duplicate or malformed independent replay case")
         if digest == candidate["pcap_sha256"]:
             raise CandidateReplayError("Discovery PCAP cannot be an independent replay case")
-        if pcap.is_symlink() or not pcap.is_file() or sha256_file(pcap) != digest:
+        resolved_pcap = resolve_manifest_pcap_path(
+            case.get("pcap_path"), pcap_root=pcap_root, manifest_prefix=manifest_prefix,
+        )
+        if sha256_file(resolved_pcap) != digest:
             raise CandidateReplayError("Independent PCAP is missing or hash-mismatched")
+        case["resolved_pcap_path"] = str(resolved_pcap)
         seen.add(case_id)
     labels = {case.get("scenario") for case in cases}
     if labels != {"attack", "normal"} or len(seen) != len(cases):
@@ -219,7 +252,7 @@ def attest_candidate_replay(
         case_dir = run_root / case["id"]
         case_dir.mkdir(mode=0o700)
         _run([
-            suricata_binary, "-r", str(Path(case["pcap_path"]).resolve(strict=True)),
+            suricata_binary, "-r", case["resolved_pcap_path"],
             "-k", "none", "--init-errors-fatal", "-c", str(isolated_yaml),
             "-S", str(rule_path), "-l", str(case_dir),
         ], timeout=300)
