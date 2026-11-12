@@ -32,7 +32,7 @@ provenance.
 | Review-only safety | PASS | Lifecycle, provenance and approval tests | Deployment flags remain false |
 | Security negative paths | PASS | Lifecycle, replay, wrong-host/interface, collision and stale-signature tests | Runtime activation itself remains unperformed |
 | Final reporting and defense script | PASS | `docs/final-defense-report-2026-11-11.md`, checklist and demo script | Live activation section is correctly blocked |
-| CI and local verification | PENDING | The prior CI run passed; this change requires a fresh local suite and post-push CI run | Final status must use the new commit's verified run |
+| CI and local verification | PASS | GitHub Actions run `43240434950` passed for commit `391fbca67e41e40cb4ec61f3b2ae9ada959084c7`; fresh local suite was 365 passed, 4 skipped, plus compileall and diff-check | CI job output is authoritative for workflow success; local counts are from this checkout |
 
 ## Explicit non-claims
 
