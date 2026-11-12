@@ -194,11 +194,25 @@ def attest_six_holdouts(
         by_id[identifier] = pcap_path.resolve(strict=True)
     if set(by_id) != set(EXPECTED_CASES):
         raise ReplayGateError("Missing original holdout")
-    if Path(rule_file).is_symlink() or sha256_file(rule_file) != RULE_SHA:
-        raise ReplayGateError("SID 9103003 rule SHA256 mismatch")
-    rule_text = Path(rule_file).read_text(encoding="utf-8").strip()
+    rule_path = Path(rule_file)
+    if rule_path.is_symlink() or not rule_path.is_file():
+        raise ReplayGateError("Original SID 9103003 rule artifact unavailable or unsafe")
+    raw_rule = rule_path.read_bytes()
+    # Existing backend.rule_handoff._read_artifacts() defines the provenance
+    # hash over the one-line rule text, excluding its single terminal LF.
+    # File-byte SHA256 must be captured separately; it is *not* the rule hash.
+    if raw_rule.count(b"\\n") != 1 or not raw_rule.endswith(b"\\n") or b"\\r" in raw_rule:
+        raise ReplayGateError("Original generated rule must end with exactly one LF")
+    rule_bytes = raw_rule[:-1]
+    if hashlib.sha256(rule_bytes).hexdigest() != RULE_SHA:
+        raise ReplayGateError("SID 9103003 canonical rule-text SHA256 mismatch")
+    try:
+        rule_text = rule_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise ReplayGateError("Invalid UTF-8 rule artifact") from exc
     if collect_sids([rule_text]) != {SID} or not rule_text.startswith("alert tcp "):
         raise ReplayGateError("Rule is not the approved alert-only TCP signature")
+    original_rule_file_sha256 = hashlib.sha256(raw_rule).hexdigest()
     config_sha = _config_safe(isolated_yaml, root)
     version = _run([suricata_binary, "-V"], timeout=30).stdout.strip()
     if "8.0.3" not in version:
@@ -242,6 +256,7 @@ def attest_six_holdouts(
         "pcap_sha256": manifest.get("pcap_sha256"),
         "sid": SID,
         "rule_sha256": RULE_SHA,
+        "original_rule_file_sha256": original_rule_file_sha256,
         "model_sha256": MODEL_SHA,
         "calibration_sha256": CAL_SHA,
         "decision_manifest_sha256": DECISION_SHA,
