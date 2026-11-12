@@ -51,11 +51,15 @@ def validate_hybrid_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict) or set(payload) != {"rst_evidence", "port_evidence", "handshake_evidence", "thresholds"}:
         raise ValueError("Hybrid evidence payload is incomplete")
     rst, ports, handshake, thresholds = (payload[name] for name in ("rst_evidence", "port_evidence", "handshake_evidence", "thresholds"))
-    if not isinstance(rst, dict) or not isinstance(rst.get("capture_integrity"), dict) or type(rst["capture_integrity"].get("capture_complete")) is not bool:
+    if (not isinstance(rst, dict) or set(rst) != {"capture_integrity", "max_rst_count_per_window"} or
+            not isinstance(rst.get("capture_integrity"), dict) or
+            set(rst["capture_integrity"]) != {"capture_complete"} or
+            type(rst["capture_integrity"].get("capture_complete")) is not bool):
         raise ValueError("Invalid RST evidence schema")
     if type(rst.get("max_rst_count_per_window")) is not int or rst["max_rst_count_per_window"] < 0:
         raise ValueError("Invalid RST counter")
-    if not isinstance(ports, dict) or type(ports.get("max_window_distinct_ports")) is not int or ports["max_window_distinct_ports"] < 0:
+    if (not isinstance(ports, dict) or set(ports) != {"max_window_distinct_ports"} or
+            type(ports.get("max_window_distinct_ports")) is not int or ports["max_window_distinct_ports"] < 0):
         raise ValueError("Invalid port evidence schema")
     required_handshake = {"initial_syn_packets", "flows_with_confirmed_handshake", "flows_with_bidirectional_payload"}
     if not isinstance(handshake, dict) or set(handshake) != required_handshake or any(type(handshake[name]) is not int or handshake[name] < 0 for name in required_handshake):
@@ -83,7 +87,7 @@ def verify_envelope(
         "source_pcap_sha256",
         "timestamp_provenance", "producer_key_sha256", "payload", "signature",
     }
-    if not required.issubset(envelope):
+    if set(envelope) != required:
         raise ValueError("Incomplete Hybrid trust envelope")
     if envelope["schema_version"] != "hybrid_telemetry_v1":
         raise ValueError("Unsupported Hybrid telemetry schema")

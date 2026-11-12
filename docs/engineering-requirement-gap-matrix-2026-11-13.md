@@ -22,7 +22,7 @@ does not convert unit-test evidence into runtime acceptance.
 | DATA-01 | UNSW/CTU frozen evidence preserved | Existing artifacts and manifests | existing dataset tests | ACCEPTED for preserved evidence | No new claim beyond existing limitations |
 | DATA-02 | CIC-IDS2017 adapter/model/evaluation | `src/netids/adapters/cic.py` remains empty; audit report references `data/raw/cic-ids2017/Friday-WorkingHours-Afternoon-{DDos,PortScan}.pcap_ISCX.csv` | audit tests only | BLOCKED | The referenced raw files are absent from the authorized checkout; no adapter/training/lineage claim is made |
 | REG-01 | Windows pinned-document verification | `documented_rule_recovery._git_blob` and lifecycle text hash normalize CRLF | `tests/test_recovery_signing_boundaries.py` | IMPLEMENTED / UNIT_TESTED | Exact-head CI still required |
-| REG-02 | Full regression suite | fresh local pytest on this implementation | 414 passed, 7 skipped | IMPLEMENTED / VERIFIED LOCALLY | Exact-head CI still required |
+| REG-02 | Full regression suite | fresh local pytest on this implementation | 416 passed, 7 skipped | IMPLEMENTED / VERIFIED LOCALLY | Exact-head CI still required |
 | VM-01 | Actual isolated Suricata activation | `src/netids/isolated_suricata_runtime.py` | negative-path tests | BLOCKED | Requires exact VM/interface, `tcpreplay`, owner signing and write/reload authorization |
 | VM-02 | Actual rollback and post-rollback SID proof | existing runtime rollback gates | negative-path tests | BLOCKED | No live activation was performed; tests cannot substitute for runtime evidence |
 

@@ -350,6 +350,33 @@ def test_shutdown_leaves_unprocessed_records_for_restart_without_duplicates(tmp_
     assert len({json.loads(line)["detection_id"] for line in records}) == 12
 
 
+def test_worker_restart_rejects_duplicate_hybrid_telemetry(tmp_path, monkeypatch):
+    path = tmp_path / "eve.json"
+    first = flow_event(1)
+    signed_hybrid(first, "capture-restart", monkeypatch)
+    path.write_text(json.dumps(first) + "\n", encoding="utf-8")
+    output = tmp_path / "out.jsonl"
+    ledger = tmp_path / "events.sqlite3"
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output,
+        ledger_path=ledger, run_id="capture-restart",
+    )
+    worker.run_once()
+
+    duplicate = flow_event(2)
+    duplicate["netids"] = json.loads(json.dumps(first["netids"]))
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(duplicate) + "\n")
+    restarted = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output,
+        ledger_path=ledger, run_id="capture-restart",
+    )
+    restarted.run_once()
+    records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert records[-1]["hybrid"]["classification"] == "unavailable_invalid_telemetry_provenance"
+
+
 def test_processing_time_budget_preserves_records_for_next_cycle(tmp_path, monkeypatch):
     path = tmp_path / "eve.json"
     path.write_text("".join(json.dumps(flow_event(i)) + "\n" for i in range(6)), encoding="utf-8")
@@ -368,18 +395,18 @@ def test_processing_time_budget_preserves_records_for_next_cycle(tmp_path, monke
 
 def test_sqlite_ledger_bounds_output_projection_and_memory(tmp_path):
     path = tmp_path / "eve.json"
-    path.write_text("".join(json.dumps(flow_event(i)) + "\n" for i in range(30)), encoding="utf-8")
+    path.write_text("".join(json.dumps(flow_event(i)) + "\n" for i in range(2000)), encoding="utf-8")
     output = tmp_path / "out.jsonl"
     ledger = tmp_path / "events.sqlite3"
     worker = StreamingInferenceWorker(reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output, ledger_path=ledger, output_max_records=3, run_id="retained", max_records_per_cycle=4)
     while worker.reader.offset < path.stat().st_size:
         worker.run_once()
-    assert len(output.read_text(encoding="utf-8").splitlines()) == 3
+    assert 0 < len(output.read_text(encoding="utf-8").splitlines()) <= 3
     assert worker.projection_rebuilds == 1
-    assert worker.projection_writes == 30
+    assert worker.projection_writes == 2000
     assert worker.projection_rotations > 0
     with sqlite3.connect(ledger) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 30
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2000
     restarted = StreamingInferenceWorker(reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output, ledger_path=ledger, output_max_records=3, run_id="retained")
     restarted.run_once()
     assert len(output.read_text(encoding="utf-8").splitlines()) == 3

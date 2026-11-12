@@ -120,6 +120,7 @@ def test_signed_hybrid_envelope_is_verified(monkeypatch):
 @pytest.mark.parametrize("mutation", [
     lambda value: value["payload"].update(rst_evidence={"tampered": True}),
     lambda value: value.update(producer_key_sha256="b" * 64),
+    lambda value: value.update(producer_identity="spoofed-producer"),
     lambda value: value.update(signature=base64.b64encode(b"bad").decode()),
     lambda value: value.update(source_pcap_sha256="b" * 64),
     lambda value: value.update(timestamp_provenance={}),
