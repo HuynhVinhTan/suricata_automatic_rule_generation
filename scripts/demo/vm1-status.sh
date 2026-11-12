@@ -4,7 +4,7 @@ echo "HOST=$(hostname) USER=$(id -un)"
 ip -4 -o addr show ens33
 echo "SURICATA=$(systemctl is-active suricata)"
 echo "FILEBEAT=$(systemctl is-active filebeat)"
-suricata --build-info | head -5
+suricata --build-info | awk 'NR <= 5 { print }'
 pgrep -af '/usr/bin/suricata' || true
 pgrep -af '/usr/share/filebeat/bin/filebeat' || true
 stat -c 'EVE=%n SIZE=%s MTIME=%y' /var/log/suricata/eve.json
