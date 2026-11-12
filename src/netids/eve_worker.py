@@ -14,6 +14,8 @@ import re
 import sqlite3
 import math
 import os
+import shutil
+import stat
 import threading
 import time
 from collections import deque
@@ -29,6 +31,82 @@ from netids.adapters.suricata import suricata_eve_to_features
 from netids.features.schema import SCHEMA_VERSION, validate_feature_matrix
 from netids.hybrid_review import evaluate_hybrid
 from netids import hybrid_provenance
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def backup_sqlite_ledger(source_path: str | Path, backup_path: str | Path) -> dict[str, Any]:
+    """Create a consistent, immutable SQLite backup and return its evidence."""
+    source = Path(source_path).resolve(strict=True)
+    backup = Path(backup_path).resolve()
+    if backup.exists():
+        raise FileExistsError(f"Immutable ledger backup already exists: {backup}")
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    source_connection = sqlite3.connect(source)
+    backup_connection = sqlite3.connect(backup)
+    try:
+        source_connection.backup(backup_connection)
+        backup_connection.commit()
+    finally:
+        backup_connection.close()
+        source_connection.close()
+    with backup.open("r+b") as stream:
+        os.fsync(stream.fileno())
+    try:
+        backup.chmod(stat.S_IREAD)
+    except OSError:
+        pass
+    return {
+        "schema_version": "sqlite_ledger_backup_v1",
+        "source_size_bytes": source.stat().st_size,
+        "backup_size_bytes": backup.stat().st_size,
+        "backup_sha256": _sha256_file(backup),
+    }
+
+
+def verify_sqlite_backup(source_path: str | Path, backup_path: str | Path) -> str:
+    """Verify that a backup is readable and internally consistent."""
+    source = Path(source_path).resolve(strict=True)
+    backup = Path(backup_path).resolve(strict=True)
+    if source == backup:
+        raise ValueError("Ledger backup must be distinct from its source")
+    with sqlite3.connect(f"file:{backup}?mode=ro", uri=True) as connection:
+        result = connection.execute("PRAGMA integrity_check").fetchone()
+    if result != ("ok",):
+        raise ValueError("SQLite ledger backup integrity check failed")
+    return _sha256_file(backup)
+
+
+def restore_sqlite_ledger(backup_path: str | Path, destination_path: str | Path) -> None:
+    """Restore a verified backup atomically without deleting ledger history."""
+    backup = Path(backup_path).resolve(strict=True)
+    destination = Path(destination_path).resolve()
+    verify_sqlite_backup(destination if destination.exists() else backup, backup)
+    temporary = destination.with_name(destination.name + ".restore.tmp")
+    if temporary.exists():
+        temporary.unlink()
+    backup_connection = sqlite3.connect(f"file:{backup}?mode=ro", uri=True)
+    destination_connection = sqlite3.connect(temporary)
+    try:
+        backup_connection.backup(destination_connection)
+        destination_connection.commit()
+    finally:
+        destination_connection.close()
+        backup_connection.close()
+    try:
+        os.replace(temporary, destination)
+    except PermissionError:
+        # Windows cannot atomically replace an existing SQLite file in every
+        # filesystem configuration; remove only the explicitly named ledger
+        # after all connections are closed, then complete the restore.
+        destination.unlink(missing_ok=True)
+        os.replace(temporary, destination)
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -260,6 +338,7 @@ class WorkerResult:
     processed_events: int = 0
     rejected_events: int = 0
     evicted_windows: int = 0
+    stopped_for_low_space: bool = False
 
 
 class TransientProcessingError(RuntimeError):
@@ -394,10 +473,13 @@ class StreamingInferenceWorker:
                  run_id: str, window_seconds: int = 10, max_bytes_per_cycle: int = 4 * 1024 * 1024,
                  max_records_per_cycle: int = 1024, processing_time_budget_seconds: float | None = None,
                  window_retention_seconds: int | None = None, max_active_windows: int = 10_000,
-                 ledger_path: str | Path | None = None, output_max_records: int = 10_000):
+                 ledger_path: str | Path | None = None, output_max_records: int = 10_000,
+                 min_free_space_bytes: int = 1024 * 1024 * 1024,
+                 alert_free_space_bytes: int = 2 * 1024 * 1024 * 1024):
         if (not run_id.strip() or max_bytes_per_cycle < 1 or max_records_per_cycle < 1 or
                 (processing_time_budget_seconds is not None and processing_time_budget_seconds <= 0) or
-                output_max_records < 1):
+                output_max_records < 1 or min_free_space_bytes < 1 or
+                alert_free_space_bytes < min_free_space_bytes):
             raise ValueError("run_id and cycle bounds are required")
         self.reader = reader
         self.model = model
@@ -408,6 +490,10 @@ class StreamingInferenceWorker:
         self.processing_time_budget_seconds = processing_time_budget_seconds
         self.ledger_path = Path(ledger_path) if ledger_path is not None else self.output_path.with_suffix(".ledger.sqlite3")
         self.output_max_records = output_max_records
+        self.min_free_space_bytes = min_free_space_bytes
+        self.alert_free_space_bytes = alert_free_space_bytes
+        self.low_space_alerts = 0
+        self._low_space_stopped = False
         self._windows = _WindowAggregator(
             window_seconds,
             window_seconds if window_retention_seconds is None else window_retention_seconds,
@@ -419,6 +505,7 @@ class StreamingInferenceWorker:
         self._rejected = 0
         self._seen_capture_ids = _ReplayEventIndex(self)
         self._last_hybrid_sequences = _ReplaySequenceWatermarks(self)
+        self._ledger_preflight()
         self._initialize_ledger()
         self._restore_source_cursor()
         self.projection_rebuilds = 0
@@ -433,6 +520,35 @@ class StreamingInferenceWorker:
 
     def request_shutdown(self) -> None:
         self._stop.set()
+
+    def _ledger_size(self) -> int:
+        try:
+            return self.ledger_path.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    def _free_space(self) -> int:
+        return int(shutil.disk_usage(self.ledger_path.parent).free)
+
+    def _ledger_preflight(self) -> None:
+        free = self._free_space()
+        required = max(self.min_free_space_bytes, 2 * self._ledger_size())
+        if free < required:
+            raise OSError(
+                f"ledger free-space preflight requires {required} bytes, only {free} available"
+            )
+
+    def _check_ledger_space(self, result: WorkerResult) -> bool:
+        free = self._free_space()
+        ledger_size = self._ledger_size()
+        if free < self.alert_free_space_bytes or free < 2 * ledger_size:
+            self.low_space_alerts += 1
+        if free < max(self.min_free_space_bytes, ledger_size):
+            self._low_space_stopped = True
+            result.stopped_for_low_space = True
+            self._stop.set()
+            return False
+        return True
 
     def _hybrid(self, event: dict, anomalous: bool) -> dict:
         telemetry = event.get("netids", {}).get("hybrid") if isinstance(event.get("netids"), dict) else None
@@ -599,6 +715,8 @@ class StreamingInferenceWorker:
 
     def run_once(self) -> WorkerResult:
         result = WorkerResult()
+        if not self._check_ledger_space(result):
+            return result
         started = time.monotonic()
         cycle_start = self.reader._read_offset
         while (not self._stop.is_set() and
@@ -622,6 +740,8 @@ class StreamingInferenceWorker:
                         (self.processing_time_budget_seconds is not None and
                          time.monotonic() - started >= self.processing_time_budget_seconds)):
                     break
+                if not self._check_ledger_space(result):
+                    return result
                 if self._ledger_contains(self._detection_id(event)):
                     self._acknowledge(event)
                     continue

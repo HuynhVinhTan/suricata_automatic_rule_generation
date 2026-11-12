@@ -18,6 +18,9 @@ from netids.eve_worker import (
     FlowModelAdapter,
     JsonlEveReader,
     StreamingInferenceWorker,
+    backup_sqlite_ledger,
+    restore_sqlite_ledger,
+    verify_sqlite_backup,
 )
 from netids import hybrid_provenance
 
@@ -566,3 +569,67 @@ def test_hybrid_replay_index_and_signed_stress_survive_restart(tmp_path, monkeyp
     records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert sum(record["hybrid"]["classification"] == "unavailable_invalid_telemetry_provenance" for record in records[-3:]) == 2
     assert records[-1]["hybrid"]["telemetry_event_id"] == "stress-next"
+
+
+def test_ledger_preflight_requires_free_space_before_startup(tmp_path, monkeypatch):
+    path = tmp_path / "eve.json"
+    path.write_text(json.dumps(flow_event()) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "netids.eve_worker.shutil.disk_usage",
+        lambda _: type("Usage", (), {"free": 99})(),
+    )
+    with pytest.raises(OSError, match="ledger free-space preflight"):
+        StreamingInferenceWorker(
+            reader=JsonlEveReader(path),
+            model=real_model_adapter(),
+            output_path=tmp_path / "out.jsonl",
+            ledger_path=tmp_path / "ledger.sqlite3",
+            run_id="space-preflight",
+            min_free_space_bytes=100,
+            alert_free_space_bytes=200,
+        )
+
+
+def test_ledger_low_space_stops_before_processing_next_cycle(tmp_path, monkeypatch):
+    path = tmp_path / "eve.json"
+    path.write_text("".join(json.dumps(flow_event(i)) + "\n" for i in range(2)), encoding="utf-8")
+    usage = {"free": 10_000_000}
+    monkeypatch.setattr("netids.eve_worker.shutil.disk_usage", lambda _: type("Usage", (), usage)())
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path),
+        model=real_model_adapter(),
+        output_path=tmp_path / "out.jsonl",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        run_id="space-stop",
+        min_free_space_bytes=100,
+        alert_free_space_bytes=200,
+    )
+    assert worker.run_once().processed_events == 2
+    usage["free"] = 99
+    result = worker.run_once()
+    assert result.processed_events == 0
+    assert result.stopped_for_low_space is True
+    assert worker.low_space_alerts == 1
+
+
+def test_sqlite_backup_is_hash_verified_and_restores_authoritative_rows(tmp_path):
+    source = tmp_path / "ledger.sqlite3"
+    backup = tmp_path / "backup.sqlite3"
+    path = tmp_path / "eve.json"
+    path.write_text(json.dumps(flow_event()) + "\n", encoding="utf-8")
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(),
+        output_path=tmp_path / "out.jsonl", ledger_path=source, run_id="backup",
+    )
+    assert worker.run_once().processed_events == 1
+    evidence = backup_sqlite_ledger(source, backup)
+    assert evidence["backup_sha256"] == verify_sqlite_backup(source, backup)
+    connection = sqlite3.connect(source)
+    try:
+        connection.execute("DELETE FROM events")
+        connection.commit()
+    finally:
+        connection.close()
+    restore_sqlite_ledger(backup, source)
+    with sqlite3.connect(source) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1

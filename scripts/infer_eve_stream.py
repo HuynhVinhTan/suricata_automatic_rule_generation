@@ -29,6 +29,8 @@ def main() -> None:
     parser.add_argument("--max-line-bytes", type=int, default=1_000_000)
     parser.add_argument("--window-retention-seconds", type=int)
     parser.add_argument("--max-active-windows", type=int, default=10_000)
+    parser.add_argument("--min-free-space-bytes", type=int, default=1024 * 1024 * 1024)
+    parser.add_argument("--alert-free-space-bytes", type=int, default=2 * 1024 * 1024 * 1024)
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument("--once", action="store_true", help="Process currently complete lines and exit")
     args = parser.parse_args()
@@ -47,6 +49,8 @@ def main() -> None:
         ledger_path=args.ledger_path,
         window_retention_seconds=args.window_retention_seconds,
         max_active_windows=args.max_active_windows,
+        min_free_space_bytes=args.min_free_space_bytes,
+        alert_free_space_bytes=args.alert_free_space_bytes,
     )
     if args.once:
         result = worker.run_once()
