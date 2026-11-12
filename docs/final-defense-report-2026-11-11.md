@@ -133,6 +133,17 @@ source PCAP SHA is `7eb27fe7...` and frozen model SHA is
 were changed. Its latency trace is SHA
 `4e695e95e3f11ec29e5c846ba57579c25d895903703ded2b4db88aeed096dc94`.
 
+The same run was registered through the candidate-specific fail-closed
+lifecycle. Candidate ID is
+`84ad314c885d821fb69713353134671cb355662a6effec1b890d59f38cada7e4`; the
+record binds the run, SID, canonical rule, source PCAP, frozen model,
+calibration, decision manifest and copied-baseline hashes. Its record SHA is
+`2bb34edcf09ee1474b3a4f1568b6b49273a37ed325674272ac49dd2c5d5114dd`.
+It remains `PROPOSED` with all approval/deployment flags false. The local
+workstation has no Suricata 8.0.3 binary, so SID 9103012 has no claimed
+syntax, EVE, replay, signature or safety result; attack-01 is discovery-only
+and excluded from independent Attack evaluation.
+
 An additive fresh Suricata 8.0.3 validation then tested SID 9103011 against the
 same six pinned sessions. `-T` passed, but replay produced TP=3, FP=3, FN=0,
 TN=0, Precision=0.500, Recall=1.000, F1=0.667 and FPR=1.000. The candidate
@@ -177,6 +188,7 @@ deterministic rules-directory manifest SHA-256 is
 | Complete hybrid logic in Suricata | **Not met by design** |
 | Baseline versus augmented Suricata comparison | **Met for NEW VM1 baseline**: baseline 0/3 Attack and 0/3 Normal reconnaissance verdicts; augmented 3/3 Attack and 0/3 Normal |
 | New SID 9103011 candidate safety | **Not met: rejected**: 3 false-positive Normal sessions, FPR 1.0 |
+| New SID 9103012 candidate-specific lifecycle | **Partially met: provenance only** | Candidate record and collision gate passed; Suricata replay is blocked locally |
 | Production safety | Preserved |
 | tcpdump capability cleanup | **Met: no capability reported** |
 | Real replay Ed25519 attestation | **Met with real evidence** | Attestation SHA-256 recorded above; independent pinned-key verification passed |

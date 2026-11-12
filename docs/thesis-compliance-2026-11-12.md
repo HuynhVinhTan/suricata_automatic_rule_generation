@@ -15,8 +15,9 @@ provenance.
 | Hybrid protocol verification | PASS | `src/netids/hybrid_review.py`, calibration provenance and 3+3 holdouts | Laboratory observation, not production accuracy |
 | New/unseen attack definition | PASS | Final report and baseline comparison report | No real-zero-day claim |
 | ML-to-rule causal lineage | PASS for new review-only run | `data/private/lineage-new-generated-20261112-04/` links PCAP, features, frozen predictions, hybrid evidence, SID `9103012`, rule and metadata hashes | Historical SID 9103003 metadata remains unavailable |
+| Candidate-specific provenance record | PASS for review-only registration | `docs/candidate-9103012-lifecycle-2026-11-12.md`; candidate record binds run, SID, rule, PCAP, model, calibration, decision and baseline hashes; SID collision gate passed | Record is `PROPOSED`; no replay evidence or approval is asserted |
 | New generated candidate experiment | PARTIAL | New run `lineage-new-generated-20261112-04` generated SID `9103012`; separately validated SID `9103011` remains rejected | Additive SID 9103011 replay rejected it: FP=3 and FPR=1.0 |
-| Rule syntax validation | PASS for syntax / PARTIAL for candidate safety | Fresh Suricata 8.0.3 `-T` passed for SID 9103011; offline replay is preserved | Candidate is rejected by the false-positive gate |
+| Rule syntax validation | PARTIAL | Fresh Suricata 8.0.3 `-T` passed for SID 9103011; SID 9103012 inputs are pinned and prepared | Local Suricata is unavailable for SID 9103012; no syntax, EVE or replay result is claimed |
 | Baseline versus augmented ET gap | PASS for a NEW baseline evaluation | `docs/baseline-comparison-evidence-2026-11-12.md`; six pinned PCAPs; active VM1 YAML/rules hashes; real EVE | Historical original ruleset identity remains unrecovered |
 | Six-PCAP signed replay | PASS | `docs/documented-rule-recovery-2026-11-12.md`, signed attestation hash | Offline replay only |
 | Isolated live activation | BLOCKED | `docs/isolated-rule-9103003-operational-acceptance-2026-11-12.md` | `tcpreplay` absent; no owner authorization; no activation attempted |
@@ -31,7 +32,7 @@ provenance.
 | Review-only safety | PASS | Lifecycle, provenance and approval tests | Deployment flags remain false |
 | Security negative paths | PASS | Lifecycle, replay, wrong-host/interface, collision and stale-signature tests | Runtime activation itself remains unperformed |
 | Final reporting and defense script | PASS | `docs/final-defense-report-2026-11-11.md`, checklist and demo script | Live activation section is correctly blocked |
-| CI and local verification | PASS | Final run `43210304160` for `7c8f50a` completed successfully for dataset-and-lifecycle and unit-handoff; fresh local full suite was 354 passed, 4 skipped, plus compileall and diff-check | GitHub API exposes job success but not pytest stdout counts; local counts are the reproducible count for this checkout |
+| CI and local verification | PENDING | The prior CI run passed; this change requires a fresh local suite and post-push CI run | Final status must use the new commit's verified run |
 
 ## Explicit non-claims
 

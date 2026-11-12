@@ -200,7 +200,20 @@ class RuleLifecycle:
             raise LifecycleError("Rule text or hash mismatch")
         if any(candidate.get(key) is not False for key in ("approved", "deployable", "deployed")):
             raise LifecycleError("Candidate safety flags must be false")
-        expected_id = _sha(f"{candidate['run_id']}:{sid}:{candidate['rule_sha256']}")
+        if candidate.get("candidate_record_schema") == "candidate_record_v1":
+            identity = {
+                key: candidate.get(key)
+                for key in (
+                    "run_id", "sid", "rule_sha256", "pcap_sha256",
+                    "model_sha256", "calibration_sha256",
+                    "decision_manifest_sha256",
+                )
+            }
+            expected_id = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        else:
+            expected_id = _sha(f"{candidate['run_id']}:{sid}:{candidate['rule_sha256']}")
         if candidate.get("candidate_id") != expected_id:
             raise LifecycleError("Candidate identity mismatch")
 
@@ -217,7 +230,8 @@ class RuleLifecycle:
         sid = result.get("sid")
         if type(sid) is not int:
             raise LifecycleError("Invalid SID")
-        result["candidate_id"] = _sha(f"{result['run_id']}:{sid}:{result['rule_sha256']}")
+        if "candidate_id" not in result:
+            result["candidate_id"] = _sha(f"{result['run_id']}:{sid}:{result['rule_sha256']}")
         result["state"] = "PROPOSED"
         self._guard(result)
         self._audit("candidate_created", result, state="PROPOSED")

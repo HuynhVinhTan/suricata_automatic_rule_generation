@@ -81,8 +81,12 @@ class IsolatedSuricataRuntime:
         self, *, config: Path, attack_pcap: Path, attack_sha256: str,
         normal_pcap: Path, normal_sha256: str, suricata="/usr/bin/suricata",
         suricatasc="/usr/bin/suricatasc", tcpreplay="/usr/bin/tcpreplay",
+        candidate_sid: int = SID, candidate_rule_sha256: str = RULE_SHA,
+        root: Path = ROOT,
     ):
-        self.root = ROOT
+        self.root = Path(root)
+        self.sid = candidate_sid
+        self.rule_sha256 = candidate_rule_sha256
         self.config = Path(config)
         self.attack_pcap = Path(attack_pcap)
         self.normal_pcap = Path(normal_pcap)
@@ -209,7 +213,7 @@ class IsolatedSuricataRuntime:
                 return False
             if (
                 data.get("event_type") == "alert"
-                and data.get("alert", {}).get("signature_id") == SID
+                and data.get("alert", {}).get("signature_id") == self.sid
             ):
                 found += 1
         if not events:
@@ -242,7 +246,7 @@ class IsolatedSuricataRuntime:
             temporary.unlink(missing_ok=True)
 
     def activate(self, destination: Path, sid: int, rule_sha256: str) -> bool:
-        if sid != SID or rule_sha256 != RULE_SHA:
+        if sid != self.sid or rule_sha256 != self.rule_sha256:
             return False
         source = Path(destination)
         if source.is_symlink() or sha256_file(source) != rule_sha256:
@@ -260,9 +264,9 @@ class IsolatedSuricataRuntime:
 
     def verify_active(self, sid: int, rule_sha256: str) -> bool:
         if (
-            sid != SID or rule_sha256 != RULE_SHA or not self._activated
+            sid != self.sid or rule_sha256 != self.rule_sha256 or not self._activated
             or self.process is None or self.process.poll() is not None
-            or sha256_file(self.active_rules) != RULE_SHA
+            or sha256_file(self.active_rules) != self.rule_sha256
         ):
             return False
         try:
@@ -276,7 +280,7 @@ class IsolatedSuricataRuntime:
             return False
 
     def rollback(self, destination: Path, sid: int, rule_sha256: str) -> bool:
-        if sid != SID or rule_sha256 != RULE_SHA or self.process is None:
+        if sid != self.sid or rule_sha256 != self.rule_sha256 or self.process is None:
             return False
         try:
             _atomic(self.active_rules, self._old_rules)
@@ -286,7 +290,7 @@ class IsolatedSuricataRuntime:
             return False
 
     def verify_rollback(self, sid: int, rule_sha256: str) -> bool:
-        if sid != SID or rule_sha256 != RULE_SHA or self.process is None:
+        if sid != self.sid or rule_sha256 != self.rule_sha256 or self.process is None:
             return False
         try:
             if self.process.poll() is not None:

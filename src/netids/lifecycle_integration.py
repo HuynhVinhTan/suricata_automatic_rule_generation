@@ -13,6 +13,7 @@ from pathlib import Path
 
 from backend.rule_handoff import HandoffError, _read_artifacts
 from netids.rule_lifecycle import LifecycleError, RuleLifecycle
+from netids.candidate_record import CandidateRecordError, build_candidate_record
 from netids.rulegen import collect_sids
 from netids.documented_rule_recovery import recover_documented_frozen_rule
 from netids.trusted_replay import (
@@ -99,6 +100,25 @@ def register_generated_candidate(
         "calibration_manifest_path": str(calibration_path),
         "baseline_rules_sha256": baseline_sha,
     }
+    review_path = Path(artifact_dir) / "review.json"
+    if review_path.is_file():
+        try:
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+            if (
+                review.get("generated_rule_sid") == sid
+                and isinstance(calibration.get("threshold_provenance"), dict)
+            ):
+                verified = build_candidate_record(
+                    Path(artifact_dir), calibration_path, rules_path
+                )
+                verified.update({
+                    "calibration_manifest_path": str(calibration_path),
+                    "baseline_rules_sha256": baseline_sha,
+                })
+                source = verified
+        except (CandidateRecordError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise LifecycleError("Candidate record provenance failed") from exc
     result = lifecycle.create_candidate(source)
     summary = {
         "status": result["state"],
