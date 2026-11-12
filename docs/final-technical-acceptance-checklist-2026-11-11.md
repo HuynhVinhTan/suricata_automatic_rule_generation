@@ -27,6 +27,17 @@ Branch: `feat/isolated-rule-runtime-signing`
 | Recovery candidate registration | PASS WITH VERIFIED IDENTITY | Candidate `d1020f83f684675e0547a76b467162fc1371bbf3c3005ec72e9951f1026c4f0a`; documented-frozen provenance; all safety flags false |
 | Isolated activation and rollback | BLOCKED | `tcpreplay` is unavailable, packet-injection privileges were not established, and no owner approval was generated; no daemon activation was attempted |
 
+## Candidate SID 9103012 final disposition
+
+| Gate | Decision | Evidence / limitation |
+|---|---|---|
+| Candidate source integrity and exact provenance | PASS | Candidate record and source artifact hashes are required and verified; candidate remains `PROPOSED` with all safety flags false |
+| Suricata 8.0.3 syntax | PASS | VM1 run `syntax-20261113-02`; one rule loaded and configuration exited successfully |
+| Independent Attack/Normal replay | PASS as execution / FAIL as candidate gate | VM1 run `replay-20261113-04`; fresh EVE evidence exists for the exact 2-Attack/3-Normal cohort |
+| Candidate safety metrics | FAIL | TP=2, FN=0, FP=3, TN=0, Precision=0.4000, Recall=1.0000, F1=0.5714, FPR=1.0000 |
+| Signed replay attestation | BLOCKED | The false-positive gate correctly prevented signing |
+| Owner approval, activation and rollback | BLOCKED | No private key, owner signature, production change, live activation or rollback was performed |
+
 The six holdouts are controlled-lab evidence, not a production accuracy claim.
 The complete-hybrid-in-Suricata criterion is not met; the review-only RST proxy
 criterion is met and remains non-deployable.

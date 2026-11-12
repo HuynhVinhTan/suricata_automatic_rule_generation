@@ -29,6 +29,7 @@ from netids.candidate_record import (
     expected_candidate_runtime_id, verify_candidate_record,
     verify_signed_replay_evidence,
 )
+from netids.candidate_replay import _validate_isolated_root
 from netids.trusted_replay import (
     SID, RULE_SHA, MODEL_SHA, CAL_SHA, EXPECTED_CASES,
     validate_documented_rule_provenance,
@@ -40,6 +41,16 @@ PINNED_PRODUCTION_YAML_SHA256 = "6224bc7d0bc04d97c4282f54a71e0736341341aa82c530f
 
 class OperationError(RuntimeError):
     pass
+
+
+def _require_candidate_baseline(candidate: dict, production: dict) -> None:
+    expected = candidate.get("baseline_rules_sha256")
+    actual = production.get("production_rules_sha256")
+    if (
+        not isinstance(expected, str) or not _HEX.fullmatch(expected)
+        or actual != expected
+    ):
+        raise OperationError("Candidate baseline rules do not match actual production rules")
 
 
 def _read_json(path: Path) -> dict:
@@ -208,8 +219,10 @@ def _verify_candidate_inputs(
     if (
         approval.get("replay_evidence_sha256") != replay_digest
         or any(approval.get(key) != candidate.get(key) for key in (
-            "candidate_id", "run_id", "sid", "rule_sha256", "pcap_sha256",
-            "model_sha256", "calibration_sha256", "decision_manifest_sha256",
+            "candidate_id", "run_id", "sid", "rule_sha256",
+            "source_rule_file_sha256", "source_metadata_sha256", "review_sha256",
+            "pcap_sha256", "model_sha256", "calibration_sha256",
+            "decision_manifest_sha256", "baseline_rules_sha256",
         ))
         or approval.get("candidate_record_schema") != "candidate_record_v1"
         or approval.get("runtime_id") != runtime_id
@@ -351,7 +364,10 @@ def execute_candidate_one_time(
     """Candidate-specific one-shot operator; no historical SID constants are used."""
     if not is_verified_vm1_host():
         raise OperationError("Owner authorization is only for verified VM1")
-    root = Path(isolated_root).resolve()
+    try:
+        root = _validate_isolated_root(Path(isolated_root))
+    except ValueError as exc:
+        raise OperationError("Candidate isolated root is missing or unsafe") from exc
     if Path(audit_path).resolve() != root / "audit" / "owner-once.jsonl":
         raise OperationError("Activation audit must use the candidate isolated ledger")
     candidate = _read_json(candidate_file)
@@ -377,8 +393,10 @@ def execute_candidate_one_time(
     runtime = None
     started = datetime.now(timezone.utc)
     operation_error = None
+    shutdown_verified = runtime is None
     try:
         before = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+        _require_candidate_baseline(candidate, before)
         lifecycle = RuleLifecycle(
             audit_path, isolated_root=root, replay_verification_key=replay_public,
             owner_verification_key=owner_public, attestation_mode="ed25519",
@@ -409,8 +427,11 @@ def execute_candidate_one_time(
         operation_error = exc
     if runtime is not None:
         try:
-            runtime.shutdown()
+            shutdown_verified = runtime.shutdown() is True
+            if not shutdown_verified and operation_error is None:
+                operation_error = OperationError("Final runtime shutdown was not verified")
         except Exception as exc:
+            shutdown_verified = False
             if operation_error is None:
                 operation_error = OperationError(f"Final runtime shutdown failed: {exc}")
             else:
@@ -419,7 +440,7 @@ def execute_candidate_one_time(
                 )
     if operation_error is not None:
         cleanup_verified = bool(
-            runtime is None or runtime.process is None or runtime.process.poll() is not None
+            shutdown_verified and (runtime is None or runtime.process is None or runtime.process.poll() is not None)
         )
         try:
             if after is None and before is not None:
@@ -451,6 +472,10 @@ def execute_candidate_one_time(
         "candidate_record_schema": "candidate_record_v1",
         "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
         "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
+        "source_rule_file_sha256": candidate["source_rule_file_sha256"],
+        "source_metadata_sha256": candidate["source_metadata_sha256"],
+        "review_sha256": candidate["review_sha256"],
+        "baseline_rules_sha256": candidate["baseline_rules_sha256"],
         "replay_evidence_sha256": _digest(replay),
         "owner_approval_sha256": _digest(approval), "suricata_version": "8.0.3",
         "runtime_id": approval["runtime_id"], "interface": approval["interface"],

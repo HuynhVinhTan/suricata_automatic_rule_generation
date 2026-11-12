@@ -11,7 +11,11 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from netids.candidate_record import expected_candidate_runtime_id, verify_candidate_record
+from netids.candidate_record import (
+    expected_candidate_runtime_id, verify_candidate_record,
+    verify_signed_replay_evidence,
+)
+from netids.candidate_replay import _validate_isolated_root
 from netids.key_pins import require_pinned_role_keys
 from netids.lifecycle_ed25519 import sha256_file
 from scripts.approve_isolated_activation import build_candidate_owner_authorization
@@ -43,8 +47,14 @@ def main(argv: list[str] | None = None) -> int:
     replay_public = args.replay_public.read_bytes()
     owner_public = args.owner_public.read_bytes()
     require_pinned_role_keys(replay_public, owner_public)
+    if not verify_signed_replay_evidence(candidate, replay, replay_public):
+        parser.error("Replay attestation is not independently verified for this candidate")
     print(f"Candidate {candidate['candidate_id']} / SID {candidate['sid']}")
-    root = str(args.isolated_root.resolve())
+    print(f"Run ID: {candidate['run_id']}")
+    try:
+        root = str(_validate_isolated_root(args.isolated_root))
+    except ValueError as exc:
+        parser.error(f"Unsafe isolated root: {exc}")
     expected_runtime = expected_candidate_runtime_id(
         candidate, target_vm=args.target_vm, interface=args.interface, isolated_root=root,
     )
@@ -52,6 +62,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Runtime ID does not match the independently derived candidate scope")
     expires_preview = datetime.now(timezone.utc) + timedelta(minutes=15)
     print(f"Canonical rule SHA: {candidate['rule_sha256']}")
+    print(f"Full rule-file SHA: {candidate['source_rule_file_sha256']}")
+    print(f"Metadata SHA: {candidate['source_metadata_sha256']}")
+    print(f"Review SHA: {candidate['review_sha256']}")
+    print(f"Model SHA: {candidate['model_sha256']}")
+    print(f"Calibration SHA: {candidate['calibration_sha256']}")
+    print(f"Decision manifest SHA: {candidate['decision_manifest_sha256']}")
+    print(f"Baseline rules SHA: {candidate['baseline_rules_sha256']}")
     print(f"Runtime ID: {expected_runtime}")
     print(f"Target VM / interface: {args.target_vm} / {args.interface}")
     print(f"Isolated root: {root}")

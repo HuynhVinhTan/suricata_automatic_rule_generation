@@ -29,14 +29,17 @@ third Attack capture is synthesized.
 
 ## Validation status
 
-The local workstation has no Suricata binary (`SURICATA_NOT_AVAILABLE`). The
-independent replay inputs are present and hash-verified: attack-02
-`80b118068f89f0939d9a3c9ba72c977b08f95eff74a04e65b31cd548e0258f61`, attack-03
-`837dd0b52f3472ce620baf9479f7f44da7515901455f54e2fe907277648a3343`, and the
-three Normal hashes already pinned in the baseline evidence. No syntax result,
-EVE result, replay signature, owner approval, or activation result is claimed
-for SID 9103012. Attack-01 remains the discovery PCAP and is excluded from the
-independent Attack set.
+VM1 Suricata 8.0.3 syntax validation passed in `syntax-20261113-02`. The
+independent replay inputs were hash-verified and executed in
+`replay-20261113-04`: Attack-02 and Attack-03 alerted; Normal-01, Normal-02
+and Normal-03 also alerted. The resulting session metrics are TP=2, FN=0,
+FP=3, TN=0, Precision=0.4000, Recall=1.0000, F1=0.5714 and FPR=1.0000.
+This is a genuine rejection result, not a signed attestation. Attack-01
+remains the discovery PCAP and is excluded from the independent Attack set.
+
+Fresh sanitized replay evidence is indexed in
+`docs/final-defense-evidence-index-2026-11-13.md`; raw EVE remains private.
+The failed replay gate prevented signing, owner approval and activation.
 
 The candidate operator derives a reviewed runtime identity from the candidate,
 target `suricata-vm1`, loopback `lo`, and isolated-root scope. It binds live

@@ -23,6 +23,23 @@ class CandidateRecordError(ValueError):
 _HEX = re.compile(r"^[0-9a-f]{64}$")
 _RUN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 APPROVED_CASE_MANIFEST_SHA256 = "57aa92f0a63bd2f8fe037904d0aecb2e2414031d5b9af8f08e5c9bbf73eddeba"
+APPROVED_INDEPENDENT_CASES = {
+    "worker-attack-holdout-02-20261111": (
+        "attack", "80b118068f89f0939d9a3c9ba72c977b08f95eff74a04e65b31cd548e0258f61",
+    ),
+    "worker-attack-holdout-03-20261111": (
+        "attack", "837dd0b52f3472ce620baf9479f7f44da7515901455f54e2fe907277648a3343",
+    ),
+    "worker-normal-holdout-01-20261111": (
+        "normal", "a4500b006908c26ffeed932244148c7372f2be2cb8abeb954cfe17ad3cda0fe7",
+    ),
+    "worker-normal-holdout-02-20261111": (
+        "normal", "aad42d5710eb1006b76b744983744f47322137b2703126537b46787e34b01aaf",
+    ),
+    "worker-normal-holdout-03-20261111": (
+        "normal", "5a61ae059d8f25a2aa6bf1672f82d66c36f3e64de8d9d01dde6afca5081a2468",
+    ),
+}
 
 
 def _sha_bytes(value: bytes) -> str:
@@ -156,14 +173,28 @@ def build_candidate_record(artifact_dir: Path, calibration_manifest: Path, basel
 def verify_candidate_record(record: object) -> bool:
     if not isinstance(record, dict) or record.get("schema_version") != "candidate_record_v1":
         return False
-    required = ("candidate_id", "run_id", "rule_sha256", "pcap_sha256", "model_sha256", "calibration_sha256", "decision_manifest_sha256", "baseline_rules_sha256")
+    required = (
+        "candidate_id", "rule_sha256", "source_rule_file_sha256",
+        "source_metadata_sha256", "review_sha256", "pcap_sha256",
+        "model_sha256", "calibration_sha256", "decision_manifest_sha256",
+        "baseline_rules_sha256",
+    )
     if not isinstance(record.get("run_id"), str) or not _RUN.fullmatch(record["run_id"]):
         return False
-    if any(not isinstance(record.get(key), str) or not _HEX.fullmatch(record[key]) for key in required if key not in {"candidate_id", "run_id"}):
+    if any(not isinstance(record.get(key), str) or not _HEX.fullmatch(record[key]) for key in required if key != "candidate_id"):
         return False
     if not isinstance(record.get("candidate_id"), str) or not _HEX.fullmatch(record["candidate_id"]):
         return False
     if type(record.get("sid")) is not int or not 1 <= record["sid"] <= 4294967295:
+        return False
+    rule = record.get("rule")
+    if not isinstance(rule, str) or _sha_bytes(rule.encode("utf-8")) != record["rule_sha256"]:
+        return False
+    try:
+        sids = collect_sids([rule])
+    except (TypeError, ValueError):
+        return False
+    if sids != {record["sid"]}:
         return False
     expected = _candidate_id(record)
     if record["candidate_id"] != expected:
@@ -181,8 +212,9 @@ def verify_signed_replay_evidence(candidate: dict, evidence: dict, public_key: b
     ):
         return False
     if any(evidence.get(key) != candidate.get(key) for key in (
-        "candidate_id", "run_id", "sid", "rule_sha256", "pcap_sha256",
-        "model_sha256", "calibration_sha256", "decision_manifest_sha256",
+        "candidate_id", "run_id", "sid", "rule_sha256", "source_rule_file_sha256",
+        "source_metadata_sha256", "review_sha256", "pcap_sha256", "model_sha256",
+        "calibration_sha256", "decision_manifest_sha256", "baseline_rules_sha256",
     )):
         return False
     if evidence.get("suricata_version", "").find("8.0.3") < 0:
@@ -202,10 +234,16 @@ def verify_signed_replay_evidence(candidate: dict, evidence: dict, public_key: b
     labels = {case.get("scenario") for case in cases if isinstance(case, dict)}
     if not {"attack", "normal"}.issubset(labels):
         return False
-    replay_pcaps = []
+    replay_ids = []
     counts = {"attack": 0, "normal": 0}
     for case in cases:
         if not isinstance(case, dict):
+            return False
+        case_id = case.get("run_id")
+        if case_id not in APPROVED_INDEPENDENT_CASES or case_id in replay_ids:
+            return False
+        expected_scenario, expected_pcap = APPROVED_INDEPENDENT_CASES[case_id]
+        if case.get("scenario") != expected_scenario or case.get("pcap_sha256") != expected_pcap:
             return False
         if case.get("scenario") not in {"attack", "normal"}:
             return False
@@ -214,10 +252,10 @@ def verify_signed_replay_evidence(candidate: dict, evidence: dict, public_key: b
             return False
         if case["pcap_sha256"] == candidate["pcap_sha256"]:
             return False
-        replay_pcaps.append(case["pcap_sha256"])
+        replay_ids.append(case_id)
         if type(case.get("events")) is not int or case["events"] <= 0:
             return False
         alerts = case.get("candidate_sid_alerts")
         if type(alerts) is not int or (case["scenario"] == "attack" and alerts < 1) or (case["scenario"] == "normal" and alerts != 0):
             return False
-    return counts == {"attack": 2, "normal": 3} and len(replay_pcaps) == len(set(replay_pcaps))
+    return counts == {"attack": 2, "normal": 3} and set(replay_ids) == set(APPROVED_INDEPENDENT_CASES)

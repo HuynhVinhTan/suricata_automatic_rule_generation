@@ -26,6 +26,18 @@ class TrustAnchorError(ValueError):
     """Missing or untrusted replay/owner Ed25519 public key."""
 
 
+def require_pinned_replay_key(replay_public_pem: bytes) -> None:
+    """Require the independently provisioned replay trust anchor."""
+    if not _SHA.fullmatch(PINNED_REPLAY_ED25519_SHA256):
+        raise TrustAnchorError("Replay trust anchor is not provisioned")
+    try:
+        fingerprint = public_key_fingerprint(replay_public_pem)
+    except (ValueError, TypeError) as exc:
+        raise TrustAnchorError("Invalid replay public-key PEM") from exc
+    if fingerprint != PINNED_REPLAY_ED25519_SHA256:
+        raise TrustAnchorError("Replay public-key fingerprint mismatch")
+
+
 def require_pinned_role_keys(replay_public_pem: bytes, owner_public_pem: bytes) -> None:
     """Fail closed until both independently reviewed role fingerprints match."""
     if (

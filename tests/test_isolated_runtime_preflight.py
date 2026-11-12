@@ -8,7 +8,9 @@ import pytest
 from netids.isolated_suricata_runtime import (
     IsolatedSuricataRuntime, IsolatedRuntimeError, is_verified_vm1_host,
 )
-from scripts.operate_isolated_once import OperationError, production_snapshot
+from scripts.operate_isolated_once import (
+    OperationError, _require_candidate_baseline, production_snapshot,
+)
 
 
 def test_runtime_refuses_non_vm1_even_with_synthetic_pcap(monkeypatch, tmp_path):
@@ -94,3 +96,16 @@ def test_vm1_identity_fails_closed_when_ip_command_is_unavailable(monkeypatch):
         raise FileNotFoundError("ip missing")
     monkeypatch.setattr("netids.isolated_suricata_runtime.subprocess.run", missing_ip)
     assert is_verified_vm1_host() is False
+
+
+def test_candidate_baseline_must_match_actual_production_rules_hash():
+    candidate = {"baseline_rules_sha256": "a" * 64}
+    snapshot = {"production_rules_sha256": "a" * 64}
+    _require_candidate_baseline(candidate, snapshot)
+    with pytest.raises(OperationError, match="baseline rules"):
+        _require_candidate_baseline(candidate, {"production_rules_sha256": "b" * 64})
+
+
+def test_candidate_baseline_missing_hash_fails_closed():
+    with pytest.raises(OperationError, match="baseline rules"):
+        _require_candidate_baseline({}, {"production_rules_sha256": "a" * 64})

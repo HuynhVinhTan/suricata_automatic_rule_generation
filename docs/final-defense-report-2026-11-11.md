@@ -71,12 +71,60 @@ Normal session. The hybrid classified all three Attack sessions as
 The observed hybrid result is a controlled laboratory result, not a production
 accuracy estimate or a claim of generalization.
 
+## Final candidate-specific validation: SID 9103012
+
+The new ML-to-rule candidate was generated from
+`lineage-new-generated-20261112-04` and evaluated without changing its rule,
+threshold, model, calibration or holdout partition. The workflow is:
+
+`Suricata capture -> PCAP/SYN-window features -> frozen IF/AE inference -> Hybrid evidence and review -> candidate rule and provenance -> isolated Suricata syntax/replay -> fresh EVE evidence -> human review decision`.
+
+Production EVE-to-Filebeat-to-ELK visibility remains a separate operational
+path; continuous EVE-driven ML inference is not implemented.
+
+Suricata 8.0.3 syntax validation passed with one candidate rule loaded. Fresh
+offline replay used the pinned two-Attack/three-Normal cohort, with discovery
+Attack-01 excluded. The candidate alerted on both Attack sessions and all
+three Normal sessions:
+
+| TP | FN | FP | TN | Precision | Recall | F1 | FPR | Accuracy |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 0 | 3 | 0 | 0.4000 | 1.0000 | 0.5714 | 1.0000 | 0.4000 |
+
+The candidate disposition is **REJECTED**. Recall of 1.0 is insufficient when
+the false-positive rate is also 1.0. No replay attestation, owner approval,
+activation or deployment was produced for this candidate.
+
+The private evidence is indexed in
+`docs/final-defense-evidence-index-2026-11-13.md` and stored under
+`data/private/sid-9103012-validation-20261113-p3/`. Normal-session error
+analysis found the same alert signature, `9103012` / `ML REVIEW - SYN packet
+burst`, with action `allowed` and severity 3. This establishes the observed
+fact that the rule's stateless SYN-burst condition also fires on the Normal
+holdouts; it does not establish a new tuning hypothesis or justify holdout
+retuning.
+
 ## Suricata baseline and rule feasibility
 
 The existing isolated Suricata evidence for the rejected candidate recorded
 baseline and augmented whole-PCAP results of TP=1, FP=1, FN=0, TN=0, precision
 0.5, recall 1.0, F1 0.667 and FPR 1.0. That candidate was rejected because it
 alerted on Normal traffic as well as Attack traffic.
+
+The three evidence classes remain separate: historical SID 9103003 documented
+rule recovery and signed replay; the new baseline-versus-augmented ruleset
+comparison; and the new candidate-specific SID 9103012 validation. None is
+used to claim recovery of the unavailable historical Emerging Threats
+snapshot.
+
+## Research objective and defense boundary
+
+The research addresses the limits of manually maintained signature rules by
+combining frozen anomaly models with protocol evidence and review-only
+Suricata rule generation. The implementation demonstrates provenance-bound
+candidate creation and isolated validation, not autonomous production
+blocking. Live activation and real rollback remain outside the accepted
+evidence boundary.
 
 The complete Python verdict remains non-expressible by one Suricata signature:
 unique destination
@@ -137,19 +185,20 @@ The same run was registered through the candidate-specific fail-closed
 lifecycle. Candidate ID is
 `84ad314c885d821fb69713353134671cb355662a6effec1b890d59f38cada7e4`; the
 record binds the run, SID, canonical rule, source PCAP, frozen model,
-calibration, decision manifest and copied-baseline hashes. Its record SHA is
+calibration, decision manifest, source-artifact and copied-baseline hashes. Its record SHA is
 `2bb34edcf09ee1474b3a4f1568b6b49273a37ed325674272ac49dd2c5d5114dd`.
-It remains `PROPOSED` with all approval/deployment flags false. The local
-workstation has no Suricata 8.0.3 binary, so SID 9103012 has no claimed
-syntax, EVE, replay, signature or safety result; attack-01 is discovery-only
-and excluded from independent Attack evaluation.
+It remains `PROPOSED` with all approval/deployment flags false. VM1 Suricata
+8.0.3 syntax and offline replay were executed for SID 9103012; the candidate
+alerted on all three Normal sessions and was rejected. Attack-01 is
+discovery-only and excluded from independent Attack evaluation. No replay
+signature was issued.
 
-An additive fresh Suricata 8.0.3 validation then tested SID 9103011 against the
-same six pinned sessions. `-T` passed, but replay produced TP=3, FP=3, FN=0,
-TN=0, Precision=0.500, Recall=1.000, F1=0.667 and FPR=1.000. The candidate
-was rejected and remains neither approved nor deployable. The private report
-is `data/private/sid-9103011-validation-20261112-e7a1895/report.json` with
-SHA-256 `6d4623546262ebc08394f8825c42c4d0b3acd6e5d4c43c50317f382c1e702fc5`.
+The final fresh Suricata 8.0.3 validation tested SID 9103012 against the
+approved two-Attack/three-Normal cohort. `-T` passed, but replay produced
+TP=2, FP=3, FN=0, TN=0, Precision=0.400, Recall=1.000, F1=0.5714 and
+FPR=1.000. The candidate was rejected and remains neither approved nor
+deployable. The sanitized report is
+`docs/sid-9103012-validation-summary-2026-11-13.md`; raw EVE remains private.
 The 0.023 ms legacy lineage value is decision-call latency only; current
 instrumentation separately measures RST, port diversity, handshake, full
 Hybrid evidence and pure Hybrid decision. Suricata syntax timing is reported
@@ -187,11 +236,11 @@ deterministic rules-directory manifest SHA-256 is
 | Review-only RST proxy rule | **Met: validated_for_review, SID 9103003** |
 | Complete hybrid logic in Suricata | **Not met by design** |
 | Baseline versus augmented Suricata comparison | **Met for NEW VM1 baseline**: baseline 0/3 Attack and 0/3 Normal reconnaissance verdicts; augmented 3/3 Attack and 0/3 Normal |
-| New SID 9103011 candidate safety | **Not met: rejected**: 3 false-positive Normal sessions, FPR 1.0 |
-| New SID 9103012 candidate-specific lifecycle | **Partially met: provenance only** | Candidate record and collision gate passed; Suricata replay is blocked locally |
+| New SID 9103012 candidate safety | **Not met: rejected**: 3 false-positive Normal sessions, FPR 1.0 |
+| New SID 9103012 candidate-specific lifecycle | **Partially met: replay executed, candidate rejected** | Candidate record, syntax and fresh EVE evidence passed integrity checks; signing and activation were blocked by the false-positive gate |
 | Production safety | Preserved |
 | tcpdump capability cleanup | **Met: no capability reported** |
-| Real replay Ed25519 attestation | **Met with real evidence** | Attestation SHA-256 recorded above; independent pinned-key verification passed |
+| Real replay Ed25519 attestation | **Historical SID 9103003 only** | SID 9103012 did not produce an attestation because its replay safety gate failed |
 | Owner approval and isolated activation/rollback | **Blocked by explicit gate** | No owner approval generated; `tcpreplay` missing and live loopback injection prerequisites remain unproven |
 
 PR #2 review-fix evidence is documented in

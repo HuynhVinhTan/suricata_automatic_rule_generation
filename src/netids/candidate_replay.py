@@ -19,11 +19,13 @@ from pathlib import PurePosixPath
 
 from netids.candidate_record import (
     APPROVED_CASE_MANIFEST_SHA256,
+    APPROVED_INDEPENDENT_CASES,
     CandidateRecordError,
     build_candidate_record,
     verify_candidate_record,
     verify_signed_replay_evidence,
 )
+from netids.key_pins import require_pinned_replay_key
 from netids.lifecycle_ed25519 import sha256_file, sign_record
 from netids.trusted_replay import _config_safe
 
@@ -35,6 +37,37 @@ class CandidateReplayError(ValueError):
 _HEX = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _THRESHOLD = re.compile(r"detection_filter\s*:\s*track\s+by_src\s*,\s*count\s+(\d+)\s*,", re.I)
+
+
+_PROTECTED_SURICATA_ROOTS = tuple(
+    Path(path) for path in ("/etc/suricata", "/var/lib/suricata", "/var/log/suricata")
+)
+
+
+def _validate_isolated_root(path: Path) -> Path:
+    """Validate the supplied root before resolving any symlink components."""
+    raw = Path(path)
+    current = raw
+    while True:
+        if current.is_symlink():
+            raise CandidateReplayError("Candidate isolated root or parent is symlinked")
+        if current.parent == current:
+            break
+        current = current.parent
+    if not raw.is_absolute() or not raw.is_dir():
+        raise CandidateReplayError("Candidate isolated root is missing or unsafe")
+    try:
+        resolved = raw.resolve(strict=True)
+    except OSError as exc:
+        raise CandidateReplayError("Candidate isolated root cannot be resolved") from exc
+    if any(
+        resolved == protected or resolved.is_relative_to(protected)
+        for protected in _PROTECTED_SURICATA_ROOTS
+    ):
+        raise CandidateReplayError("Candidate isolated root is a protected production path")
+    if not resolved.name.startswith("isolated-candidate-"):
+        raise CandidateReplayError("Candidate isolated root is outside the approved workspace")
+    return resolved
 
 
 def load_independent_case_manifest(
@@ -69,11 +102,17 @@ def load_independent_case_manifest(
         raise CandidateReplayError("Frozen independent cohort must contain exactly 2 Attack and 3 Normal cases")
     counts = {"attack": 0, "normal": 0}
     ids: set[str] = set()
+    expected_ids = set(APPROVED_INDEPENDENT_CASES)
     for case in cases:
         if not isinstance(case, dict) or not _ID.fullmatch(str(case.get("id", ""))):
             raise CandidateReplayError("Independent manifest contains an invalid case ID")
         if case["id"] in ids or case.get("scenario") not in counts or not _HEX.fullmatch(str(case.get("pcap_sha256"))):
             raise CandidateReplayError("Independent manifest contains a duplicate or invalid case")
+        if case.get("pcap_sha256") == candidate["pcap_sha256"]:
+            raise CandidateReplayError("Discovery PCAP is present in independent manifest")
+        expected_scenario, expected_pcap = APPROVED_INDEPENDENT_CASES[case["id"]] if case["id"] in expected_ids else (None, None)
+        if case["id"] not in expected_ids or case.get("scenario") != expected_scenario or case.get("pcap_sha256") != expected_pcap:
+            raise CandidateReplayError("Independent manifest differs from the approved inventory")
         if case["pcap_sha256"] == candidate["pcap_sha256"]:
             raise CandidateReplayError("Discovery PCAP is present in independent manifest")
         ids.add(case["id"])
@@ -213,9 +252,11 @@ def attest_candidate_replay(
         candidate, artifact_dir=Path(artifact_dir),
         calibration_manifest=Path(calibration_manifest), baseline_rules=Path(baseline_rules),
     )
-    root = Path(isolated_root).resolve()
-    if root.is_symlink() or not root.is_dir():
-        raise CandidateReplayError("Candidate isolated root is missing or unsafe")
+    try:
+        require_pinned_replay_key(replay_public_pem)
+    except ValueError as exc:
+        raise CandidateReplayError("Replay signing key is not independently pinned") from exc
+    root = _validate_isolated_root(Path(isolated_root))
     manifest, cases = load_independent_case_manifest(
         case_manifest, expected_case_manifest_sha256, candidate,
     )
@@ -284,6 +325,9 @@ def attest_candidate_replay(
         "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
         "replay_run_id": replay_run_id, "pcap_sha256": candidate["pcap_sha256"],
         "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
+        "source_rule_file_sha256": candidate["source_rule_file_sha256"],
+        "source_metadata_sha256": candidate["source_metadata_sha256"],
+        "review_sha256": candidate["review_sha256"],
         "model_sha256": candidate["model_sha256"],
         "calibration_sha256": candidate["calibration_sha256"],
         "decision_manifest_sha256": candidate["decision_manifest_sha256"],

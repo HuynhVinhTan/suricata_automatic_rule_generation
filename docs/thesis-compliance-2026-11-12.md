@@ -16,11 +16,11 @@ provenance.
 | New/unseen attack definition | PASS | Final report and baseline comparison report | No real-zero-day claim |
 | ML-to-rule causal lineage | PASS for new review-only run | `data/private/lineage-new-generated-20261112-04/` links PCAP, features, frozen predictions, hybrid evidence, SID `9103012`, rule and metadata hashes | Historical SID 9103003 metadata remains unavailable |
 | Candidate-specific provenance record | PASS for review-only registration | `docs/candidate-9103012-lifecycle-2026-11-12.md`; candidate record binds run, SID, rule, PCAP, model, calibration, decision and baseline hashes; SID collision gate passed | Record is `PROPOSED`; no replay evidence or approval is asserted |
-| Candidate-aware trusted replay signer | PARTIAL | `src/netids/candidate_replay.py`, `scripts/attest_candidate_replay.py`; revalidates immutable artifacts, runs `-T`/`-r`, parses fresh EVE, excludes discovery PCAP and signs only after `verify_signed_replay_evidence()` passes | No local Suricata 8.0.3 binary, so no genuine SID 9103012 attestation exists |
+| Candidate-aware trusted replay signer | PARTIAL | `src/netids/candidate_replay.py`, `scripts/attest_candidate_replay.py`; revalidates immutable artifacts, enforces the pinned replay trust anchor, runs `-T`/`-r`, parses fresh EVE, excludes discovery PCAP and signs only after `verify_signed_replay_evidence()` passes | VM1 replay produced genuine evidence but failed the Normal false-positive gate, so no signed SID 9103012 attestation exists |
 | Precommitted independent replay cohort | PASS for manifest integrity / BLOCKED for execution | `configs/suricata/isolated-candidate-9103012-independent-cases.json`, SHA-256 `57aa92f0a63bd2f8fe037904d0aecb2e2414031d5b9af8f08e5c9bbf73eddeba`; exact 2 Attack + 3 Normal cohort, discovery Attack-01 excluded | No third Attack capture is invented; Suricata execution remains unavailable |
 | Candidate-aware owner/operator integration | PARTIAL | `scripts/approve_candidate_activation.py` and `scripts/operate_candidate_once.py`; exact candidate lineage, runtime scope, replay signature, authorization and rollback gates are enforced | Owner signing, live activation and rollback remain unperformed and unauthorized |
-| New generated candidate experiment | PARTIAL | New run `lineage-new-generated-20261112-04` generated SID `9103012`; separately validated SID `9103011` remains rejected | Additive SID 9103011 replay rejected it: FP=3 and FPR=1.0 |
-| Rule syntax validation | PARTIAL | Fresh Suricata 8.0.3 `-T` passed for SID 9103011; SID 9103012 inputs are pinned and prepared | Local Suricata is unavailable for SID 9103012; no syntax, EVE or replay result is claimed |
+| New generated candidate experiment | FAIL | New run `lineage-new-generated-20261112-04` generated SID `9103012`; syntax passed and independent replay was executed | SID 9103012 was rejected: TP=2, FN=0, FP=3, TN=0, F1=0.5714 and FPR=1.0 |
+| Rule syntax validation | PASS | VM1 Suricata 8.0.3 `-T` run `syntax-20261113-02`; one candidate rule loaded | Syntax PASS does not imply candidate safety |
 | Baseline versus augmented ET gap | PASS for a NEW baseline evaluation | `docs/baseline-comparison-evidence-2026-11-12.md`; six pinned PCAPs; active VM1 YAML/rules hashes; real EVE | Historical original ruleset identity remains unrecovered |
 | Six-PCAP signed replay | PASS | `docs/documented-rule-recovery-2026-11-12.md`, signed attestation hash | Offline replay only |
 | Isolated live activation | BLOCKED | `docs/isolated-rule-9103003-operational-acceptance-2026-11-12.md` | `tcpreplay` absent; no owner authorization; no activation attempted |
@@ -35,7 +35,8 @@ provenance.
 | Review-only safety | PASS | Lifecycle, provenance and approval tests | Deployment flags remain false |
 | Security negative paths | PASS | Lifecycle, replay, wrong-host/interface, collision and stale-signature tests | Runtime activation itself remains unperformed |
 | Final reporting and defense script | PASS | `docs/final-defense-report-2026-11-11.md`, checklist and demo script | Live activation section is correctly blocked |
-| CI and local verification | PASS | GitHub Actions run `43246652485` passed for implementation commit `fb91036756ac34ce24f7f8ef7b3fa5598f88f688`; local suite was 369 passed, 4 skipped, plus compileall and diff-check | The documentation-only follow-up preserves the same tested tree |
+| CI and local verification | PASS | Final implementation commit and exact-head GitHub Actions run are recorded in the evidence index; local suite, compileall and diff-check are rerun before delivery | CI validates code paths, not VM1 activation |
+| SID 9103012 independent replay safety gate | FAIL | `data/private/sid-9103012-validation-20261113-p3/summary.tsv`, replay `replay-20261113-04`; fresh EVE hashes and five pinned PCAP hashes | All three Normal sessions alerted; candidate remains rejected |
 
 ## Explicit non-claims
 

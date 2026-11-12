@@ -7,12 +7,15 @@ import pytest
 
 import netids.candidate_replay as candidate_replay
 import netids.candidate_record as candidate_record
+import netids.key_pins as key_pins
 from netids.candidate_replay import (
     APPROVED_CASE_MANIFEST_SHA256, CandidateReplayError, attest_candidate_replay,
-    resolve_manifest_pcap_path,
+    _validate_isolated_root, resolve_manifest_pcap_path,
 )
-from netids.candidate_record import build_candidate_record, expected_candidate_runtime_id
-from netids.lifecycle_ed25519 import generate_encrypted_keypair, verify_record
+from netids.candidate_record import (
+    APPROVED_INDEPENDENT_CASES, build_candidate_record, expected_candidate_runtime_id,
+)
+from netids.lifecycle_ed25519 import generate_encrypted_keypair, public_key_fingerprint, verify_record
 from scripts.approve_isolated_activation import build_candidate_owner_authorization
 from scripts.operate_isolated_once import OperationError, _write_failure_report
 from tests.test_candidate_record import _fixture
@@ -59,13 +62,16 @@ def _manifest(tmp_path, candidate):
 
 def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeypatch, tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
-    root = tmp_path / "isolated"
+    root = tmp_path / "isolated-candidate-9103012"
     root.mkdir()
     config = _config(root)
     manifest, cases, pcap_root = _manifest(tmp_path, candidate)
     manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
     monkeypatch.setattr(candidate_replay, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
     monkeypatch.setattr(candidate_record, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
+    approved_cases = {case["id"]: (case["scenario"], case["pcap_sha256"]) for case in cases}
+    monkeypatch.setattr(candidate_replay, "APPROVED_INDEPENDENT_CASES", approved_cases)
+    monkeypatch.setattr(candidate_record, "APPROVED_INDEPENDENT_CASES", approved_cases)
     def fake_run(argv, **kwargs):
         if "-r" in argv:
             logdir = Path(argv[argv.index("-l") + 1])
@@ -78,6 +84,7 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
         return SimpleNamespace(returncode=0, stdout="This is Suricata 8.0.3", stderr="")
     monkeypatch.setattr("netids.candidate_replay.subprocess.run", fake_run)
     private, public = generate_encrypted_keypair(PASSWORD)
+    monkeypatch.setattr(key_pins, "PINNED_REPLAY_ED25519_SHA256", public_key_fingerprint(public))
     signed = attest_candidate_replay(
         candidate=candidate, artifact_dir=artifact, calibration_manifest=calibration,
         baseline_rules=baseline, case_manifest=manifest,
@@ -95,7 +102,7 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
 
 def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypatch, tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
-    root = tmp_path / "isolated"
+    root = tmp_path / "isolated-candidate-9103012"
     root.mkdir()
     config = _config(root)
     manifest, _, pcap_root = _manifest(tmp_path, candidate)
@@ -104,6 +111,8 @@ def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypa
     manifest.write_text(json.dumps(bad), encoding="utf-8")
     manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
     monkeypatch.setattr(candidate_replay, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
+    private, public = generate_encrypted_keypair(PASSWORD)
+    monkeypatch.setattr(key_pins, "PINNED_REPLAY_ED25519_SHA256", public_key_fingerprint(public))
     called = []
     monkeypatch.setattr("netids.candidate_replay.subprocess.run", lambda *a, **k: called.append(a))
     with pytest.raises(CandidateReplayError, match="Discovery PCAP"):
@@ -113,8 +122,8 @@ def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypa
             expected_case_manifest_sha256=manifest_sha,
             isolated_yaml=config, pcap_root=pcap_root,
             manifest_prefix="data/private/fresh-holdouts-20261111", isolated_root=root,
-            private_key_pem=b"", private_key_password=PASSWORD,
-            replay_public_pem=b"", suricata_binary="suricata",
+            private_key_pem=private, private_key_password=PASSWORD,
+            replay_public_pem=public, suricata_binary="suricata",
         )
     assert called == []
 
@@ -183,13 +192,91 @@ def test_manifest_path_resolution_rejects_absolute_traversal_outside_missing_and
         )
 
 
+def test_candidate_isolated_root_rejects_root_and_parent_symlinks(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    valid = workspace / "isolated-candidate-9103012"
+    valid.mkdir()
+    assert _validate_isolated_root(valid) == valid.resolve()
+    root_link = workspace / "isolated-candidate-link"
+    parent = workspace / "parent"
+    parent.mkdir()
+    try:
+        root_link.symlink_to(valid, target_is_directory=True)
+        parent_link = workspace / "parent-link"
+        parent_link.symlink_to(parent, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable on this runner")
+    with pytest.raises(CandidateReplayError, match="symlink"):
+        _validate_isolated_root(root_link)
+    with pytest.raises(CandidateReplayError, match="symlink"):
+        _validate_isolated_root(parent_link / "isolated-candidate-9103012")
+
+
+def test_candidate_replay_signer_rejects_unpinned_replay_key(monkeypatch, tmp_path):
+    candidate, artifact, calibration, baseline = _candidate(tmp_path)
+    root = tmp_path / "isolated-candidate-9103012"
+    root.mkdir()
+    config = _config(root)
+    manifest, _, pcap_root = _manifest(tmp_path, candidate)
+    with pytest.raises(CandidateReplayError, match="not independently pinned"):
+        attest_candidate_replay(
+            candidate=candidate, artifact_dir=artifact, calibration_manifest=calibration,
+            baseline_rules=baseline, case_manifest=manifest,
+            expected_case_manifest_sha256=APPROVED_CASE_MANIFEST_SHA256,
+            isolated_yaml=config, pcap_root=pcap_root,
+            manifest_prefix="data/private/fresh-holdouts-20261111", isolated_root=root,
+            private_key_pem=b"", private_key_password=PASSWORD,
+            replay_public_pem=b"not-a-key", suricata_binary="suricata",
+        )
+
+
+def test_candidate_replay_false_positive_gate_cannot_issue_attestation(monkeypatch, tmp_path):
+    candidate, artifact, calibration, baseline = _candidate(tmp_path)
+    root = tmp_path / "isolated-candidate-9103012"
+    root.mkdir()
+    config = _config(root)
+    manifest, cases, pcap_root = _manifest(tmp_path, candidate)
+    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    monkeypatch.setattr(candidate_replay, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
+    monkeypatch.setattr(candidate_record, "APPROVED_CASE_MANIFEST_SHA256", manifest_sha)
+    approved_cases = {case["id"]: (case["scenario"], case["pcap_sha256"]) for case in cases}
+    monkeypatch.setattr(candidate_replay, "APPROVED_INDEPENDENT_CASES", approved_cases)
+    monkeypatch.setattr(candidate_record, "APPROVED_INDEPENDENT_CASES", approved_cases)
+    private, public = generate_encrypted_keypair(PASSWORD)
+    monkeypatch.setattr(key_pins, "PINNED_REPLAY_ED25519_SHA256", public_key_fingerprint(public))
+
+    def fake_run(argv, **kwargs):
+        if "-r" in argv:
+            logdir = Path(argv[argv.index("-l") + 1])
+            logdir.mkdir(parents=True, exist_ok=True)
+            (logdir / "eve.json").write_text(
+                json.dumps({"event_type": "alert", "alert": {"signature_id": 9103012}}) + "\n",
+                encoding="utf-8",
+            )
+        return SimpleNamespace(returncode=0, stdout="This is Suricata 8.0.3", stderr="")
+
+    monkeypatch.setattr("netids.candidate_replay.subprocess.run", fake_run)
+    with pytest.raises(CandidateReplayError, match="safety gate"):
+        attest_candidate_replay(
+            candidate=candidate, artifact_dir=artifact, calibration_manifest=calibration,
+            baseline_rules=baseline, case_manifest=manifest,
+            expected_case_manifest_sha256=manifest_sha,
+            isolated_yaml=config, pcap_root=pcap_root,
+            manifest_prefix="data/private/fresh-holdouts-20261111", isolated_root=root,
+            private_key_pem=private, private_key_password=PASSWORD,
+            replay_public_pem=public, suricata_binary="suricata",
+        )
+    assert not list((root / "replay-evidence" / "signing-runs").glob("*/attestation.json"))
+
+
 def test_candidate_owner_authorization_binds_runtime_and_replay(tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
     replay_private, replay_public = generate_encrypted_keypair(PASSWORD)
     owner_private, owner_public = generate_encrypted_keypair(PASSWORD)
     replay = {
         "schema_version": "isolated_replay_attestation_v1",
-        **{key: candidate[key] for key in ("candidate_id", "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256", "calibration_sha256", "decision_manifest_sha256")},
+        **{key: candidate[key] for key in ("candidate_id", "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256", "calibration_sha256", "decision_manifest_sha256", "source_rule_file_sha256", "source_metadata_sha256", "review_sha256", "baseline_rules_sha256")},
         "suricata_version": "8.0.3", "syntax_authenticated": True,
         "attack_replay_passed": True, "normal_replay_passed": True,
         "normal_false_positive_count": 0, "threshold": 3,
@@ -198,11 +285,11 @@ def test_candidate_owner_authorization_binds_runtime_and_replay(tmp_path):
         "minimum_attack_cases": 2, "minimum_normal_cases": 3,
         "experiment_id": "candidate-replay", "created_at": "2026-11-12T14:00:00+00:00",
         "cases": [
-            {"run_id": "attack-independent", "scenario": "attack", "pcap_sha256": "1" * 64, "eve_sha256": "2" * 64, "events": 1, "candidate_sid_alerts": 1},
-            {"run_id": "attack-independent-2", "scenario": "attack", "pcap_sha256": "3" * 64, "eve_sha256": "4" * 64, "events": 1, "candidate_sid_alerts": 1},
-            {"run_id": "normal-independent", "scenario": "normal", "pcap_sha256": "5" * 64, "eve_sha256": "6" * 64, "events": 1, "candidate_sid_alerts": 0},
-            {"run_id": "normal-independent-2", "scenario": "normal", "pcap_sha256": "7" * 64, "eve_sha256": "8" * 64, "events": 1, "candidate_sid_alerts": 0},
-            {"run_id": "normal-independent-3", "scenario": "normal", "pcap_sha256": "9" * 64, "eve_sha256": "a" * 64, "events": 1, "candidate_sid_alerts": 0},
+            {"run_id": "worker-attack-holdout-02-20261111", "scenario": "attack", "pcap_sha256": APPROVED_INDEPENDENT_CASES["worker-attack-holdout-02-20261111"][1], "eve_sha256": "2" * 64, "events": 1, "candidate_sid_alerts": 1},
+            {"run_id": "worker-attack-holdout-03-20261111", "scenario": "attack", "pcap_sha256": APPROVED_INDEPENDENT_CASES["worker-attack-holdout-03-20261111"][1], "eve_sha256": "4" * 64, "events": 1, "candidate_sid_alerts": 1},
+            {"run_id": "worker-normal-holdout-01-20261111", "scenario": "normal", "pcap_sha256": APPROVED_INDEPENDENT_CASES["worker-normal-holdout-01-20261111"][1], "eve_sha256": "6" * 64, "events": 1, "candidate_sid_alerts": 0},
+            {"run_id": "worker-normal-holdout-02-20261111", "scenario": "normal", "pcap_sha256": APPROVED_INDEPENDENT_CASES["worker-normal-holdout-02-20261111"][1], "eve_sha256": "8" * 64, "events": 1, "candidate_sid_alerts": 0},
+            {"run_id": "worker-normal-holdout-03-20261111", "scenario": "normal", "pcap_sha256": APPROVED_INDEPENDENT_CASES["worker-normal-holdout-03-20261111"][1], "eve_sha256": "a" * 64, "events": 1, "candidate_sid_alerts": 0},
         ],
     }
     from netids.lifecycle_ed25519 import sign_record

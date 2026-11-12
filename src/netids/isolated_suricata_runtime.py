@@ -303,15 +303,17 @@ class IsolatedSuricataRuntime:
         except (IsolatedRuntimeError, OSError):
             return False
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> bool:
         """Only shut down the Popen-owned isolated process, never systemd."""
         if self.process is None:
-            return
+            return True
+        shutdown_error = False
         try:
             if self.process.poll() is None:
                 self._command("shutdown")
                 self.process.wait(timeout=20)
         except (IsolatedRuntimeError, subprocess.TimeoutExpired):
+            shutdown_error = True
             if self.process.poll() is None:
                 self.process.terminate()
                 try:
@@ -323,3 +325,4 @@ class IsolatedSuricataRuntime:
             self.pidfile.unlink(missing_ok=True)
             self.socket_path.unlink(missing_ok=True)
             self.active_rules.unlink(missing_ok=True)
+        return not shutdown_error and self.process.poll() is not None
