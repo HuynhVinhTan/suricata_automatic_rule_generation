@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from netids.key_pins import require_pinned_role_keys
 from netids.lifecycle_ed25519 import sign_record, verify_record, sha256_file
 from netids.isolated_suricata_runtime import (
     ROOT, VM1_HOST, IsolatedSuricataRuntime,
@@ -117,6 +118,7 @@ def _verify_inputs(
     candidate: dict, replay: dict, authorization: dict,
     replay_public: bytes, owner_public: bytes,
 ) -> None:
+    require_pinned_role_keys(replay_public, owner_public)
     if not verify_record(replay, replay_public, domain="isolated-replay-v1"):
         raise OperationError("Untrusted replay attestation")
     if not verify_record(authorization, owner_public, domain="isolated-owner-approval-v1"):
