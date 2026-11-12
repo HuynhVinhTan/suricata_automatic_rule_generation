@@ -18,6 +18,7 @@ import shutil
 import stat
 import threading
 import time
+import tempfile
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -41,6 +42,36 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+_EXPECTED_LEDGER_TABLES = frozenset({"events", "hybrid_replay", "source_cursor"})
+
+
+def _verify_sqlite_database(path: Path) -> None:
+    connection = None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    except sqlite3.DatabaseError as exc:
+        raise ValueError("SQLite backup is unreadable") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    if integrity != ("ok",):
+        raise ValueError("SQLite backup integrity check failed")
+    if not _EXPECTED_LEDGER_TABLES.issubset(tables):
+        raise ValueError("SQLite backup schema is incomplete")
+
+
+def _cleanup_sqlite_sidecars(path: Path) -> None:
+    for suffix in ("-wal", "-shm"):
+        Path(str(path) + suffix).unlink(missing_ok=True)
+
+
 def backup_sqlite_ledger(source_path: str | Path, backup_path: str | Path) -> dict[str, Any]:
     """Create a consistent, immutable SQLite backup and return its evidence."""
     source = Path(source_path).resolve(strict=True)
@@ -56,6 +87,7 @@ def backup_sqlite_ledger(source_path: str | Path, backup_path: str | Path) -> di
     finally:
         backup_connection.close()
         source_connection.close()
+    _verify_sqlite_database(backup)
     with backup.open("r+b") as stream:
         os.fsync(stream.fileno())
     try:
@@ -70,43 +102,60 @@ def backup_sqlite_ledger(source_path: str | Path, backup_path: str | Path) -> di
     }
 
 
-def verify_sqlite_backup(source_path: str | Path, backup_path: str | Path) -> str:
-    """Verify that a backup is readable and internally consistent."""
-    source = Path(source_path).resolve(strict=True)
+def verify_sqlite_backup(backup_path: str | Path, expected_backup_sha256: str) -> str:
+    """Verify an independently recorded digest, integrity and ledger schema."""
     backup = Path(backup_path).resolve(strict=True)
-    if source == backup:
-        raise ValueError("Ledger backup must be distinct from its source")
-    with sqlite3.connect(f"file:{backup}?mode=ro", uri=True) as connection:
-        result = connection.execute("PRAGMA integrity_check").fetchone()
-    if result != ("ok",):
-        raise ValueError("SQLite ledger backup integrity check failed")
-    return _sha256_file(backup)
+    if not isinstance(expected_backup_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_backup_sha256):
+        raise ValueError("Expected backup SHA256 is invalid")
+    actual = _sha256_file(backup)
+    if actual != expected_backup_sha256:
+        raise ValueError("SQLite backup SHA256 mismatch")
+    _verify_sqlite_database(backup)
+    return actual
 
 
-def restore_sqlite_ledger(backup_path: str | Path, destination_path: str | Path) -> None:
-    """Restore a verified backup atomically without deleting ledger history."""
+def restore_sqlite_ledger(
+    backup_path: str | Path,
+    destination_path: str | Path,
+    *,
+    expected_backup_sha256: str,
+) -> None:
+    """Restore a verified backup to a new path without overwrite semantics."""
     backup = Path(backup_path).resolve(strict=True)
     destination = Path(destination_path).resolve()
-    verify_sqlite_backup(destination if destination.exists() else backup, backup)
-    temporary = destination.with_name(destination.name + ".restore.tmp")
-    if temporary.exists():
-        temporary.unlink()
-    backup_connection = sqlite3.connect(f"file:{backup}?mode=ro", uri=True)
-    destination_connection = sqlite3.connect(temporary)
+    if destination.exists():
+        raise FileExistsError(f"destination ledger already exists: {destination}")
+    verify_sqlite_backup(backup, expected_backup_sha256)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f"{destination.name}.restore-", dir=destination.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    backup_connection = None
+    destination_connection = None
     try:
+        backup_connection = sqlite3.connect(f"file:{backup}?mode=ro", uri=True)
+        destination_connection = sqlite3.connect(temporary)
+        destination_connection.execute("PRAGMA journal_mode=DELETE")
         backup_connection.backup(destination_connection)
         destination_connection.commit()
-    finally:
         destination_connection.close()
+        destination_connection = None
         backup_connection.close()
-    try:
-        os.replace(temporary, destination)
-    except PermissionError:
-        # Windows cannot atomically replace an existing SQLite file in every
-        # filesystem configuration; remove only the explicitly named ledger
-        # after all connections are closed, then complete the restore.
-        destination.unlink(missing_ok=True)
-        os.replace(temporary, destination)
+        backup_connection = None
+        _verify_sqlite_database(temporary)
+        # Hard-link publication is atomic on the destination filesystem and
+        # fails if another process creates the destination first. Unlike
+        # os.replace(), it can never overwrite an authoritative ledger.
+        os.link(temporary, destination)
+    finally:
+        if destination_connection is not None:
+            destination_connection.close()
+        if backup_connection is not None:
+            backup_connection.close()
+        _cleanup_sqlite_sidecars(temporary)
+        temporary.unlink(missing_ok=True)
 
 
 def _canonical_sha256(value: Any) -> str:

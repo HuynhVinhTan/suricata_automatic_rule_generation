@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import sqlite3
@@ -22,6 +23,7 @@ from netids.eve_worker import (
     restore_sqlite_ledger,
     verify_sqlite_backup,
 )
+from netids import eve_worker
 from netids import hybrid_provenance
 
 
@@ -615,6 +617,7 @@ def test_ledger_low_space_stops_before_processing_next_cycle(tmp_path, monkeypat
 def test_sqlite_backup_is_hash_verified_and_restores_authoritative_rows(tmp_path):
     source = tmp_path / "ledger.sqlite3"
     backup = tmp_path / "backup.sqlite3"
+    restored = tmp_path / "restored.sqlite3"
     path = tmp_path / "eve.json"
     path.write_text(json.dumps(flow_event()) + "\n", encoding="utf-8")
     worker = StreamingInferenceWorker(
@@ -623,13 +626,93 @@ def test_sqlite_backup_is_hash_verified_and_restores_authoritative_rows(tmp_path
     )
     assert worker.run_once().processed_events == 1
     evidence = backup_sqlite_ledger(source, backup)
-    assert evidence["backup_sha256"] == verify_sqlite_backup(source, backup)
+    assert evidence["backup_sha256"] == verify_sqlite_backup(backup, evidence["backup_sha256"])
     connection = sqlite3.connect(source)
     try:
         connection.execute("DELETE FROM events")
         connection.commit()
     finally:
         connection.close()
-    restore_sqlite_ledger(backup, source)
-    with sqlite3.connect(source) as connection:
+    restore_sqlite_ledger(backup, restored, expected_backup_sha256=evidence["backup_sha256"])
+    with sqlite3.connect(restored) as connection:
         assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+
+def test_restore_new_destination_preserves_event_and_hybrid_replay_ledgers(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    backup = tmp_path / "backup.sqlite3"
+    destination = tmp_path / "recovered" / "ledger.sqlite3"
+    path = tmp_path / "eve.json"
+    event = flow_event()
+    signed_hybrid(event, "restore-run", monkeypatch)
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(),
+        output_path=tmp_path / "out.jsonl", ledger_path=source, run_id="restore-run",
+    )
+    assert worker.run_once().processed_events == 1
+    evidence = backup_sqlite_ledger(source, backup)
+    restore_sqlite_ledger(backup, destination, expected_backup_sha256=evidence["backup_sha256"])
+    with sqlite3.connect(destination) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM hybrid_replay").fetchone()[0] == 1
+        assert {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")} >= {
+            "events", "hybrid_replay", "source_cursor"
+        }
+
+
+def test_restore_refuses_existing_destination_without_modifying_it(tmp_path):
+    backup = tmp_path / "backup.sqlite3"
+    destination = tmp_path / "ledger.sqlite3"
+    destination.write_bytes(b"authoritative")
+    backup.write_bytes(b"not-a-database")
+    with pytest.raises(FileExistsError, match="destination ledger already exists"):
+        restore_sqlite_ledger(backup, destination, expected_backup_sha256="0" * 64)
+    assert destination.read_bytes() == b"authoritative"
+
+
+def test_restore_rejects_wrong_expected_backup_hash(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    backup = tmp_path / "backup.sqlite3"
+    destination = tmp_path / "recovered.sqlite3"
+    path = tmp_path / "eve.json"
+    path.write_text(json.dumps(flow_event()) + "\n", encoding="utf-8")
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(),
+        output_path=tmp_path / "out.jsonl", ledger_path=source, run_id="wrong-hash",
+    )
+    worker.run_once()
+    backup_sqlite_ledger(source, backup)
+    with pytest.raises(ValueError, match="backup SHA256 mismatch"):
+        restore_sqlite_ledger(backup, destination, expected_backup_sha256="0" * 64)
+    assert not destination.exists()
+
+
+def test_restore_rejects_corrupt_backup_and_cleans_temporary_files(tmp_path):
+    backup = tmp_path / "backup.sqlite3"
+    destination = tmp_path / "recovered.sqlite3"
+    backup.write_bytes(b"corrupt sqlite")
+    digest = hashlib.sha256(backup.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="SQLite backup"):
+        restore_sqlite_ledger(backup, destination, expected_backup_sha256=digest)
+    assert not destination.exists()
+    assert not list(tmp_path.glob("recovered.sqlite3.restore-*"))
+
+
+def test_restore_cleans_temporary_file_when_publish_is_interrupted(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    backup = tmp_path / "backup.sqlite3"
+    destination = tmp_path / "recovered.sqlite3"
+    path = tmp_path / "eve.json"
+    path.write_text(json.dumps(flow_event()) + "\n", encoding="utf-8")
+    worker = StreamingInferenceWorker(
+        reader=JsonlEveReader(path), model=real_model_adapter(),
+        output_path=tmp_path / "out.jsonl", ledger_path=source, run_id="interrupted-restore",
+    )
+    worker.run_once()
+    evidence = backup_sqlite_ledger(source, backup)
+    monkeypatch.setattr(eve_worker.os, "link", lambda *_args: (_ for _ in ()).throw(OSError("interrupted publish")))
+    with pytest.raises(OSError, match="interrupted publish"):
+        restore_sqlite_ledger(backup, destination, expected_backup_sha256=evidence["backup_sha256"])
+    assert not destination.exists()
+    assert not list(tmp_path.glob("recovered.sqlite3.restore-*"))
