@@ -6,7 +6,7 @@ does not convert unit-test evidence into runtime acceptance.
 
 | ID | Required behavior | Code path / evidence | Tests | Status | Acceptance gap |
 |---|---|---|---|---|---|
-| EVE-01 | Incremental JSONL consumption | `src/netids/eve_worker.py:JsonlEveReader` bounded chunk/line parsing | `tests/test_eve_worker.py` partial-line, malformed-line, large-file tests | IMPLEMENTED / UNIT_TESTED | Live Suricata stream not observed in this environment |
+| EVE-01 | Incremental JSONL consumption | `src/netids/eve_worker.py:JsonlEveReader` bounded chunk/line parsing; real VM1 snapshot SHA256 `2a8083ca1aeadad8df25bd623c41cb6c68520799be0e9d8149454b57fd1f8533` parsed locally | `tests/test_eve_worker.py` partial-line, malformed-line, large-file tests; parse-only real-EVE run accepted 27,619 events to exact EOF | INTEGRATION TESTED | Continuous VM3 deployment remains unavailable because its checkout lacks `eve_worker`; no ML inference claimed |
 | EVE-02 | Rotation and duplicate handling | `JsonlEveReader` records fstat device/inode on each pending record; acknowledgements persist that source identity and offset in SQLite `source_cursor` | rotation, dedupe, restart cursor, and read/rotate/ack race tests | IMPLEMENTED / INTEGRATION_TESTED | Live multi-process rotation recovery not observed |
 | EVE-03 | Bounded processing and graceful shutdown | `StreamingInferenceWorker` bounded synchronous processing, committed reader acknowledgements, SQLite crash ledger, stop event, window expiry/capacity | oversized-input, bounded-cycle, slow-consumer/restart, time-budget, retention, eviction and active-shutdown tests | IMPLEMENTED / INTEGRATION_TESTED | No live long-running Suricata load test |
 | LEDGER-01 | Durable replay/audit state | Indexed SQLite event/replay tables, `(capture_run_id, sequence)` query index, compact SQL lookups, source cursor, immutable audit rows; output projection is archival-only; configurable free-space preflight/monitoring, safe low-space stop, expected-hash/schema/integrity-checked SQLite backup and no-overwrite recovery helpers | 2,000 ordinary-event ledger stress; 256 signed-Hybrid replay stress; query-plan/restart tests; free-space, backup, new-destination, wrong-hash, corrupt-backup, interrupted-publish and replay-preservation tests | CODED / INTEGRATION_TESTED | Total disk-capacity acceptance is BLOCKED; no live long-run backup/restore drill has been exercised |
@@ -14,7 +14,7 @@ does not convert unit-test evidence into runtime acceptance.
 | EVE-04 | Compatible EVE model inference | `FlowModelAdapter`, `suricata_eve_to_features`, `validate_feature_matrix`; VM1 read-only audit found 894 complete and 57 incomplete/non-TCP/UDP flow records | test-only RandomForest integration tests; VM1 EVE contract counts | BLOCKED | No verified CTU artifact with SHA/schema/preprocessing/threshold provenance is available; the VM3 SYN model has a different five-feature contract and the available UNSW bundles are development/calibration artifacts |
 | HYB-01 | Hybrid protocol verification | `src/netids/hybrid_provenance.py` Ed25519 envelope verifier with event ID, strict integer sequence watermark, nested schema validation and persisted replay ledger; production trust anchor intentionally unprovisioned | missing-anchor, two-events-per-capture, 256 signed events, malformed nested payload, modified-payload, signature, replay, fingerprint, timestamp, boolean/invalid-sequence and restart tests | BLOCKED | No independently pinned producer key is provisioned; all ordinary/untrusted EVE telemetry remains unavailable |
 | MODEL-01 | Provenance-bound decision threshold | `FlowModelAdapter.decision_threshold`, strict typed structured artifact threshold provenance | threshold default/non-default/missing/invalid/mismatch, bool/NaN/infinity, empty-field and calibration-digest tests | IMPLEMENTED / UNIT_TESTED | No verified production CTU artifact is available to execute this gate |
-| EVID-01 | Structured anomaly provenance | `netids_stream_anomaly_v1` output with event/model/run hashes | output provenance assertions | IMPLEMENTED / INTEGRATION_TESTED | No live EVE evidence hash recorded |
+| EVID-01 | Structured anomaly provenance | `netids_stream_anomaly_v1` output with event/model/run hashes; parse-only real-EVE evidence is hash-linked but contains no model decisions | output provenance assertions; real-EVE reader accounting | IMPLEMENTED / INTEGRATION_TESTED | No trusted compatible model was loaded and no anomaly decision was emitted |
 | ORCH-01 | One guarded laboratory entry point | `scripts/run_lab_workflow.py`, `src/netids/lab_workflow.py` one-shot smoke mode | workflow gate test | TESTED / UNIT_TESTED | One poll is explicitly not continuous runtime acceptance; candidate generation, owner approval, staging, activation and rollback are BLOCKED |
 | LAT-01 | Monotonic latency instrumentation | `LatencyTrace` integrated by `run_streaming_lab_workflow` | workflow latency assertions | IMPLEMENTED / UNIT_TESTED | T0–T11 live runtime timings are not measured |
 | RULE-01 | Safe rule-generation semantics | Existing `src/netids/rulegen.py` and review-only lifecycle retained | existing rule-generation/security suite | IMPLEMENTED / UNIT_TESTED | The historical SID 9103012 remains rejected; no new passing candidate was produced |
@@ -81,6 +81,59 @@ or relabel that holdout.
    stored by this project.
 
 Overall status for this matrix: **BLOCKED**, not complete.
+
+## Runtime gates — 2026-11-13
+
+### VM3 environment and model loading boundary
+
+The existing `/home/tanhv/suricata-ai-venv` is present and usable: Python
+3.14.4, pip 25.1.1, `netids` 0.1.0, scikit-learn 1.9.1, NumPy 2.5.4 and
+joblib 1.6.0. It contains no model bundle. The deployed VM3 checkout is on
+`9b93be48e1fd0cbce680c2cf704e15a2fef51743` and does not contain
+`netids.eve_worker`, so no application code was installed or modified there.
+
+The only private lab model found was the five-feature SYN-window experiment
+`lab_syn_anomaly_v0_1/models.joblib`, SHA256
+`206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d`.
+Available four-feature artifacts are UNSW-NB15 development/calibration files;
+no trusted CTU model directory with loader metadata, preprocessing metadata and
+threshold provenance was found. No model was deserialized.
+
+### Real EVE parse-only accounting and ELK correlation
+
+An immutable VM1 snapshot was copied to an isolated temporary path and verified
+with SHA256 before parsing. The current branch reader accepted 27,619 events to
+offset 155,437,470, with 239 duplicate events, 3 malformed lines, 2,371
+incomplete-line observations and zero rotations in the static snapshot. Counts
+were: stats 16,870; flow 3,932; mDNS 3,870; SSH 809; HTTP 740; alert 699;
+fileinfo 699. This is parse-only evidence, not ML inference.
+
+For the corresponding VM1 EVE timestamp window
+`2026-11-06T10:26:10.462149Z` through `2026-11-07T01:15:05.715041Z`,
+Elasticsearch returned: alert 335, fileinfo 397, flow 951, HTTP 397, SSH 82,
+mDNS 671 and stats 5,409. The exact alert, fileinfo, flow, HTTP and SSH counts
+match the source EVE counts; mDNS and stats differ by 12 and 3 respectively.
+This establishes transport correlation with bounded indexing variance, not
+perfect one-to-one accounting. No Filebeat, Suricata or ELK configuration was
+changed.
+
+### Cohort independence and offline readiness
+
+The VM2 `fresh-holdouts-20261111` cases are not independent of SID9103012.
+Their PCAP hashes exactly match the historical rejected cohort: Attack-01
+`7eb27fe774c8d889480662eaaea1e68b2336cc04c943ff06be399a24e4c0bbb5`, Attack-02
+`80b118068f89f0939d9a3c9ba72c977b08f95eff74a04e65b31cd548e0258f61`, Attack-03
+`837dd0b52f3472ce620baf9479f7f44da7515901455f54e2fe907277648a3343`, Normal-01
+`a4500b006908c26ffeed932244148c7372f2be2cb8abeb954cfe17ad3cda0fe7`, Normal-02
+`aad42d5710eb1006b76b744983744f47322137b2703126537b46787e34b01aaf` and
+Normal-03 `5a61ae059d8f25a2aa6bf1672f82d66c36f3e64de8d9d01dde6afca5081a2468`.
+No new candidate holdout may use these cases.
+
+VM1 Suricata 8.0.3 exposes native offline `-r` replay support and the
+dedicated output-directory workflow is technically ready for a future
+candidate. `tcpreplay` is absent. No offline replay, packet injection or rule
+activation was executed because candidate-specific authorization and an
+independent accepted cohort are still missing.
 
 ## Read-only three-VM audit — 2026-11-13
 
