@@ -21,18 +21,24 @@ def main() -> None:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--window-seconds", type=int, default=10)
     parser.add_argument("--max-queue-size", type=int, default=1024)
+    parser.add_argument("--max-chunk-bytes", type=int, default=64 * 1024)
+    parser.add_argument("--max-line-bytes", type=int, default=1_000_000)
+    parser.add_argument("--window-retention-seconds", type=int)
+    parser.add_argument("--max-active-windows", type=int, default=10_000)
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument("--once", action="store_true", help="Process currently complete lines and exit")
     args = parser.parse_args()
 
     model, metadata = load_ml_artifact(args.model_dir)
     worker = StreamingInferenceWorker(
-        reader=JsonlEveReader(args.input),
+        reader=JsonlEveReader(args.input, max_chunk_bytes=args.max_chunk_bytes, max_line_bytes=args.max_line_bytes),
         model=FlowModelAdapter(model, metadata),
         output_path=args.output,
         run_id=args.run_id,
         window_seconds=args.window_seconds,
         max_queue_size=args.max_queue_size,
+        window_retention_seconds=args.window_retention_seconds,
+        max_active_windows=args.max_active_windows,
     )
     if args.once:
         result = worker.run_once()

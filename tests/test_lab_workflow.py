@@ -21,7 +21,9 @@ def test_lab_workflow_records_runtime_gates_without_claiming_activation(tmp_path
     report = run_streaming_lab_workflow(worker, evidence)
 
     assert report["overall_status"] == "BLOCKED"
-    assert report["stages"]["continuous_inference"]["status"] == "ACCEPTED"
+    assert report["stages"]["continuous_ingestion"]["status"] == "TESTED"
+    assert report["stages"]["continuous_inference"]["status"] == "TESTED"
+    assert report["stages"]["continuous_inference"]["processed_events"] == 1
     assert report["stages"]["isolated_activation"]["status"] == "BLOCKED"
     assert report["stages"]["rollback"]["status"] == "BLOCKED"
     assert report["latency"]["schema_version"] == "latency_trace_v1"

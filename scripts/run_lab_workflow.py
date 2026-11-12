@@ -27,7 +27,10 @@ def main() -> None:
     )
     report = run_streaming_lab_workflow(worker, args.evidence)
     print(f"overall_status={report['overall_status']}")
-    print(f"processed_events={report['stages']['continuous_inference']['status']}")
+    inference = report["stages"]["continuous_inference"]
+    print(f"processed_events={inference['processed_events']}")
+    print(f"rejected_events={inference['rejected_events']}")
+    print(f"dropped_events={inference['dropped_events']}")
     print(f"evidence={args.evidence}")
 
 
