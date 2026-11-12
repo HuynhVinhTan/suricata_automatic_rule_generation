@@ -105,7 +105,8 @@ def _signed_envelope(monkeypatch, *, private=None, event_id="capture-a-event-1",
     fingerprint = hybrid_provenance.public_key_sha256(public)
     monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM", public)
     monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_SHA256", fingerprint)
-    value = {"schema_version": "hybrid_telemetry_v1", "producer_identity": "producer-a", "capture_run_id": "capture-a", "telemetry_event_id": event_id, "sequence": sequence, "source_pcap_sha256": "a" * 64, "timestamp_provenance": {"first_timestamp": "2026-11-13T09:00:00+00:00", "last_timestamp": "2026-11-13T11:00:00+00:00"}, "producer_key_sha256": fingerprint, "payload": {"rst_evidence": {}, "port_evidence": {}, "handshake_evidence": {}, "thresholds": {}}}
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_IDENTITY", "producer-a")
+    value = {"schema_version": "hybrid_telemetry_v1", "producer_identity": "producer-a", "capture_run_id": "capture-a", "telemetry_event_id": event_id, "sequence": sequence, "source_pcap_sha256": "a" * 64, "timestamp_provenance": {"first_timestamp": "2026-11-13T09:00:00+00:00", "last_timestamp": "2026-11-13T11:00:00+00:00"}, "producer_key_sha256": fingerprint, "payload": {"rst_evidence": {"capture_integrity": {"capture_complete": True}, "max_rst_count_per_window": 1}, "port_evidence": {"max_window_distinct_ports": 1}, "handshake_evidence": {"initial_syn_packets": 1, "flows_with_confirmed_handshake": 0, "flows_with_bidirectional_payload": 0}, "thresholds": {"min_unique_destination_ports": 1, "min_rst_count_per_window": 1, "max_handshake_failure_count": 1}}}
     value["signature"] = base64.b64encode(private.sign(hybrid_provenance.canonical_payload(value))).decode()
     return value
 

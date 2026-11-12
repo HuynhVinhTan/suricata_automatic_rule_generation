@@ -23,6 +23,7 @@ from netids.lab_runtime import sha256
 
 PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM: bytes | None = None
 PINNED_HYBRID_PRODUCER_SHA256: str | None = None
+PINNED_HYBRID_PRODUCER_IDENTITY: str | None = None
 
 
 def canonical_payload(payload: dict[str, Any]) -> bytes:
@@ -44,6 +45,26 @@ def _timestamp(value: Any) -> datetime:
     if parsed.utcoffset() is None:
         raise ValueError("Hybrid timestamp must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def validate_hybrid_payload(payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict) or set(payload) != {"rst_evidence", "port_evidence", "handshake_evidence", "thresholds"}:
+        raise ValueError("Hybrid evidence payload is incomplete")
+    rst, ports, handshake, thresholds = (payload[name] for name in ("rst_evidence", "port_evidence", "handshake_evidence", "thresholds"))
+    if not isinstance(rst, dict) or not isinstance(rst.get("capture_integrity"), dict) or type(rst["capture_integrity"].get("capture_complete")) is not bool:
+        raise ValueError("Invalid RST evidence schema")
+    if type(rst.get("max_rst_count_per_window")) is not int or rst["max_rst_count_per_window"] < 0:
+        raise ValueError("Invalid RST counter")
+    if not isinstance(ports, dict) or type(ports.get("max_window_distinct_ports")) is not int or ports["max_window_distinct_ports"] < 0:
+        raise ValueError("Invalid port evidence schema")
+    required_handshake = {"initial_syn_packets", "flows_with_confirmed_handshake", "flows_with_bidirectional_payload"}
+    if not isinstance(handshake, dict) or set(handshake) != required_handshake or any(type(handshake[name]) is not int or handshake[name] < 0 for name in required_handshake):
+        raise ValueError("Invalid handshake evidence schema")
+    if handshake["flows_with_confirmed_handshake"] > handshake["initial_syn_packets"] or handshake["flows_with_bidirectional_payload"] > handshake["flows_with_confirmed_handshake"]:
+        raise ValueError("Inconsistent handshake evidence")
+    required_thresholds = {"min_unique_destination_ports", "min_rst_count_per_window", "max_handshake_failure_count"}
+    if not isinstance(thresholds, dict) or set(thresholds) != required_thresholds or any(type(thresholds[name]) is not int or thresholds[name] < 0 for name in required_thresholds):
+        raise ValueError("Invalid Hybrid thresholds")
 
 
 def verify_envelope(
@@ -80,7 +101,8 @@ def verify_envelope(
         raise ValueError("Hybrid telemetry sequence is out of order")
     if envelope["capture_run_id"] != expected_run_id:
         raise ValueError("Hybrid capture/run identity mismatch")
-    if not isinstance(envelope["producer_identity"], str) or not envelope["producer_identity"]:
+    if (not isinstance(envelope["producer_identity"], str) or not envelope["producer_identity"] or
+            PINNED_HYBRID_PRODUCER_IDENTITY is None or envelope["producer_identity"] != PINNED_HYBRID_PRODUCER_IDENTITY):
         raise ValueError("Hybrid producer identity is required")
     if not re.fullmatch(r"[0-9a-f]{64}", str(envelope["source_pcap_sha256"])):
         raise ValueError("Hybrid PCAP hash is invalid")
@@ -91,8 +113,7 @@ def verify_envelope(
     if lower > upper or not lower <= event_time <= upper:
         raise ValueError("Hybrid timestamp is outside the signed capture range")
     payload = envelope["payload"]
-    if not isinstance(payload, dict) or set(payload) != {"rst_evidence", "port_evidence", "handshake_evidence", "thresholds"}:
-        raise ValueError("Hybrid evidence payload is incomplete")
+    validate_hybrid_payload(payload)
     try:
         signature = base64.b64decode(envelope["signature"], validate=True)
         key = serialization.load_pem_public_key(PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM)

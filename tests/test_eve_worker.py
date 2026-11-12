@@ -56,6 +56,7 @@ def real_model_adapter(threshold=0.5):
         "model_name": "random_forest",
         "status": "test_only",
         "decision_threshold": threshold,
+        "threshold_provenance": {"decision_threshold": threshold, "contract": "test_only"},
     }
     return FlowModelAdapter(model, metadata, allow_test_model=True)
 
@@ -82,6 +83,7 @@ def signed_hybrid(event, run_id, monkeypatch):
     fingerprint = hybrid_provenance.public_key_sha256(public)
     monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM", public)
     monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_SHA256", fingerprint)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_IDENTITY", "test-producer")
     payload = {
         "rst_evidence": {"capture_integrity": {"capture_complete": True}, "max_rst_count_per_window": 24},
         "port_evidence": {"max_window_distinct_ports": 24},
@@ -373,6 +375,9 @@ def test_sqlite_ledger_bounds_output_projection_and_memory(tmp_path):
     while worker.reader.offset < path.stat().st_size:
         worker.run_once()
     assert len(output.read_text(encoding="utf-8").splitlines()) == 3
+    assert worker.projection_rebuilds == 1
+    assert worker.projection_writes == 30
+    assert worker.projection_rotations > 0
     with sqlite3.connect(ledger) as connection:
         assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 30
     restarted = StreamingInferenceWorker(reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output, ledger_path=ledger, output_max_records=3, run_id="retained")

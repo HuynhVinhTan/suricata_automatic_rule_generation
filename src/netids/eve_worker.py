@@ -13,6 +13,7 @@ import json
 import re
 import sqlite3
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -62,6 +63,32 @@ class ReaderStats:
 class _PendingRecord:
     event: dict | None
     end_offset: int
+
+
+class _ReplayEventIndex:
+    def __init__(self, worker):
+        self.worker = worker
+
+    def __contains__(self, event_id: str) -> bool:
+        with self.worker._connect_ledger() as connection:
+            return connection.execute("SELECT 1 FROM hybrid_replay WHERE telemetry_event_id = ?", (event_id,)).fetchone() is not None
+
+    def add(self, event_id: str) -> None:
+        # The durable insert is committed with the event record.
+        return None
+
+
+class _ReplaySequenceWatermarks:
+    def __init__(self, worker):
+        self.worker = worker
+
+    def get(self, capture_id: str, default: int = -1) -> int:
+        with self.worker._connect_ledger() as connection:
+            row = connection.execute("SELECT MAX(sequence) FROM hybrid_replay WHERE capture_run_id = ?", (capture_id,)).fetchone()
+        return default if row is None or row[0] is None else int(row[0])
+
+    def __setitem__(self, capture_id: str, sequence: int) -> None:
+        return None
 
 
 class JsonlEveReader:
@@ -258,8 +285,14 @@ class FlowModelAdapter:
         if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(float(threshold)) or not 0 <= float(threshold) <= 1:
             raise ValueError("Model decision threshold is invalid")
         provenance = metadata.get("threshold_provenance")
-        if isinstance(provenance, dict) and provenance.get("decision_threshold") is not None and float(provenance["decision_threshold"]) != float(threshold):
+        if not isinstance(provenance, dict):
+            raise ValueError("Model threshold provenance is invalid")
+        if provenance.get("decision_threshold") is not None and float(provenance["decision_threshold"]) != float(threshold):
             raise ValueError("Model threshold provenance mismatch")
+        if metadata.get("status") != "test_only":
+            required = {"decision_threshold", "calibration_method", "calibration_version", "calibration_manifest_sha256", "status"}
+            if set(provenance) != required or provenance.get("status") != "verified" or not isinstance(provenance.get("calibration_method"), str) or not isinstance(provenance.get("calibration_version"), str) or not re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("calibration_manifest_sha256"))):
+                raise ValueError("Model threshold provenance is incomplete")
         self.decision_threshold = float(threshold)
         classes = list(getattr(model, "classes_", []))
         if classes != [0, 1]:
@@ -363,10 +396,14 @@ class StreamingInferenceWorker:
         self._stop = threading.Event()
         self._output_lock = threading.Lock()
         self._rejected = 0
-        self._seen_capture_ids: set[str] = set()
-        self._last_hybrid_sequences: dict[str, int] = {}
+        self._seen_capture_ids = _ReplayEventIndex(self)
+        self._last_hybrid_sequences = _ReplaySequenceWatermarks(self)
         self._initialize_ledger()
-        self._load_hybrid_replay_state()
+        self._restore_source_cursor()
+        self.projection_rebuilds = 0
+        self.projection_writes = 0
+        self.projection_rotations = 0
+        self._projection_count = 0
         self._rebuild_output_projection()
 
     @property
@@ -419,12 +456,32 @@ class StreamingInferenceWorker:
         with self._connect_ledger() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS events (detection_id TEXT PRIMARY KEY, event_sha256 TEXT NOT NULL, record_json TEXT NOT NULL, created_utc REAL NOT NULL)")
             connection.execute("CREATE TABLE IF NOT EXISTS hybrid_replay (capture_run_id TEXT NOT NULL, telemetry_event_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, producer_key_sha256 TEXT NOT NULL)")
+            connection.execute("CREATE TABLE IF NOT EXISTS source_cursor (source_path TEXT PRIMARY KEY, device TEXT NOT NULL, inode TEXT NOT NULL, committed_offset INTEGER NOT NULL)")
 
-    def _load_hybrid_replay_state(self) -> None:
+    def _restore_source_cursor(self) -> None:
+        try:
+            stat = self.reader.path.stat()
+        except FileNotFoundError:
+            return
         with self._connect_ledger() as connection:
-            for capture_id, event_id, sequence in connection.execute("SELECT capture_run_id, telemetry_event_id, sequence FROM hybrid_replay"):
-                self._seen_capture_ids.add(event_id)
-                self._last_hybrid_sequences[capture_id] = max(sequence, self._last_hybrid_sequences.get(capture_id, -1))
+            row = connection.execute("SELECT device, inode, committed_offset FROM source_cursor WHERE source_path = ?", (str(self.reader.path),)).fetchone()
+        if row and str(row[0]) == str(stat.st_dev) and str(row[1]) == str(stat.st_ino) and 0 <= row[2] <= stat.st_size:
+            self.reader.offset = row[2]
+            self.reader._read_offset = row[2]
+            self.reader._identity = (int(row[0]), int(row[1]))
+
+    def _acknowledge(self, event: dict) -> None:
+        self.reader.acknowledge(event)
+        try:
+            stat = self.reader.path.stat()
+        except FileNotFoundError:
+            return
+        with self._connect_ledger() as connection:
+            connection.execute(
+                "INSERT INTO source_cursor(source_path, device, inode, committed_offset) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(source_path) DO UPDATE SET device=excluded.device, inode=excluded.inode, committed_offset=excluded.committed_offset",
+                (str(self.reader.path), str(stat.st_dev), str(stat.st_ino), self.reader.offset),
+            )
 
     def _ledger_contains(self, detection_id: str) -> bool:
         with self._connect_ledger() as connection:
@@ -437,6 +494,20 @@ class StreamingInferenceWorker:
         with self.output_path.open("w", encoding="utf-8") as stream:
             for (record_json,) in reversed(rows):
                 stream.write(record_json + "\n")
+        self._projection_count = len(rows)
+        self.projection_rebuilds += 1
+
+    def _append_projection(self, record: dict) -> None:
+        if self._projection_count >= self.output_max_records:
+            archive = self.output_path.with_name(self.output_path.name + ".1")
+            if self.output_path.exists():
+                os.replace(self.output_path, archive)
+            self._projection_count = 0
+            self.projection_rotations += 1
+        with self._output_lock, self.output_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+        self._projection_count += 1
+        self.projection_writes += 1
 
     def _commit_record(self, record: dict) -> bool:
         detection_id = record["detection_id"]
@@ -454,7 +525,7 @@ class StreamingInferenceWorker:
                     "INSERT OR IGNORE INTO hybrid_replay(capture_run_id, telemetry_event_id, sequence, producer_key_sha256) VALUES (?, ?, ?, ?)",
                     (hybrid["capture_run_id"], hybrid["telemetry_event_id"], hybrid["sequence"], hybrid["producer_key_sha256"]),
                 )
-        self._rebuild_output_projection()
+        self._append_projection(record)
         return True
 
     def _emit(self, event: dict) -> None:
@@ -521,15 +592,15 @@ class StreamingInferenceWorker:
                          time.monotonic() - started >= self.processing_time_budget_seconds)):
                     break
                 if self._ledger_contains(self._detection_id(event)):
-                    self.reader.acknowledge(event)
+                    self._acknowledge(event)
                     continue
                 try:
                     self._process(event)
-                    self.reader.acknowledge(event)
+                    self._acknowledge(event)
                     result.processed_events += 1
                 except (KeyError, TypeError, ValueError, OverflowError):
                     self._rejected += 1
-                    self.reader.acknowledge(event)
+                    self._acknowledge(event)
                     result.rejected_events += 1
                 except TransientProcessingError:
                     return result
