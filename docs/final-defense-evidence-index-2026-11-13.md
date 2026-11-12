@@ -17,7 +17,7 @@ available to the authorized reviewer under
 | Historical SID 9103003 | `docs/documented-rule-recovery-2026-11-12.md` and historical private evidence | Separate historical run | PASS where documented | Historical ET snapshot/metadata not recovered |
 | Baseline comparison | `docs/baseline-comparison-evidence-2026-11-12.md` | New copied VM1 ruleset | PASS as NEW baseline | Not the unavailable historical snapshot |
 | Review-only lifecycle | `src/netids/candidate_record.py`, `scripts/operate_isolated_once.py` | Focused security tests | PASS for fail-closed code | No live activation or rollback |
-| CI and source | PR #3 branch | Final SHA and exact CI link supplied in release closeout | PASS when exact-head run succeeds | CI is not VM1 runtime evidence |
+| CI and source | PR #3 branch | Commit `68faf5989f974105c8b9f65e9f1017507092ed08`; [Actions run 43281660270](https://github.com/HuynhVinhTan/suricata_automatic_rule_generation/actions/runs/43281660270) | PASS: dataset-and-lifecycle and unit-handoff succeeded | CI is not VM1 runtime evidence |
 
 ## Reproduction
 

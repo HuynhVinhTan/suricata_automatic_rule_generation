@@ -35,7 +35,7 @@ provenance.
 | Review-only safety | PASS | Lifecycle, provenance and approval tests | Deployment flags remain false |
 | Security negative paths | PASS | Lifecycle, replay, wrong-host/interface, collision and stale-signature tests | Runtime activation itself remains unperformed |
 | Final reporting and defense script | PASS | `docs/final-defense-report-2026-11-11.md`, checklist and demo script | Live activation section is correctly blocked |
-| CI and local verification | PASS | Final implementation commit and exact-head GitHub Actions run are recorded in the evidence index; local suite, compileall and diff-check are rerun before delivery | CI validates code paths, not VM1 activation |
+| CI and local verification | PASS | Commit `68faf5989f974105c8b9f65e9f1017507092ed08`; Actions run `43281660270` passed both jobs; local suite was 385 passed, 6 skipped, plus compileall and diff-check | CI validates code paths, not VM1 activation |
 | SID 9103012 independent replay safety gate | FAIL | `data/private/sid-9103012-validation-20261113-p3/summary.tsv`, replay `replay-20261113-04`; fresh EVE hashes and five pinned PCAP hashes | All three Normal sessions alerted; candidate remains rejected |
 
 ## Explicit non-claims
