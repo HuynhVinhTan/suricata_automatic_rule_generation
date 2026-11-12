@@ -121,9 +121,14 @@ def resolve_manifest_pcap_path(
     return resolved
 
 
-def _run(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+def _run(
+    argv: list[str], *, timeout: int, cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        result = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, check=False,
+            cwd=str(cwd) if cwd is not None else None,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CandidateReplayError("Suricata command failed or timed out") from exc
     if result.returncode != 0:
@@ -252,7 +257,7 @@ def attest_candidate_replay(
     _run([
         suricata_binary, "-T", "--init-errors-fatal", "-c", str(isolated_yaml),
         "-S", str(rule_path), "-l", str(syntax_dir),
-    ], timeout=120)
+    ], timeout=120, cwd=Path(isolated_yaml).parent)
     threshold_match = _THRESHOLD.search(candidate["rule"])
     if not threshold_match:
         raise CandidateReplayError("Candidate rule has no measurable detection threshold")
@@ -264,7 +269,7 @@ def attest_candidate_replay(
             suricata_binary, "-r", case["resolved_pcap_path"],
             "-k", "none", "--init-errors-fatal", "-c", str(isolated_yaml),
             "-S", str(rule_path), "-l", str(case_dir),
-        ], timeout=300)
+        ], timeout=300, cwd=Path(isolated_yaml).parent)
         alerts, events, eve_sha = _read_eve(case_dir / "eve.json", candidate["sid"])
         if (case["scenario"] == "attack" and alerts < 1) or (case["scenario"] == "normal" and alerts != 0):
             raise CandidateReplayError("Candidate Attack/Normal safety gate failed")
