@@ -87,10 +87,19 @@ def resolve_manifest_pcap_path(
     manifest_path: str, *, pcap_root: Path, manifest_prefix: str,
 ) -> Path:
     """Map one reviewed repository path into an approved VM PCAP root."""
+    if not isinstance(manifest_prefix, str) or not manifest_prefix:
+        raise CandidateReplayError("Manifest prefix must be non-empty")
+    if (
+        "\\" in manifest_prefix
+        or manifest_prefix.startswith("/")
+        or re.match(r"^[A-Za-z]:", manifest_prefix)
+        or any(part in {"", ".", ".."} for part in manifest_prefix.split("/"))
+    ):
+        raise CandidateReplayError("Manifest prefix must be a strict relative POSIX path")
     if not isinstance(manifest_path, str) or not manifest_path or "\\" in manifest_path:
         raise CandidateReplayError("Manifest PCAP path must be a relative POSIX path")
     raw = PurePosixPath(manifest_path)
-    prefix = PurePosixPath(manifest_prefix.strip("/"))
+    prefix = PurePosixPath(manifest_prefix)
     if raw.is_absolute() or prefix.is_absolute() or re.match(r"^[A-Za-z]:", manifest_path) or ".." in raw.parts:
         raise CandidateReplayError("Absolute or traversal PCAP path rejected")
     if len(raw.parts) <= len(prefix.parts) or raw.parts[:len(prefix.parts)] != prefix.parts:

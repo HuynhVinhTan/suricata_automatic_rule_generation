@@ -163,6 +163,12 @@ def test_manifest_path_resolution_rejects_absolute_traversal_outside_missing_and
     ):
         with pytest.raises(CandidateReplayError):
             resolve_manifest_pcap_path(bad, pcap_root=root, manifest_prefix=prefix)
+    for bad_prefix in ("", "/data/private", "C:/data/private", "data\\private", ".", "..", "data/./private", "data/../private"):
+        with pytest.raises(CandidateReplayError, match="prefix"):
+            resolve_manifest_pcap_path(
+                f"{prefix}/attack-holdout-02/traffic.pcap", pcap_root=root,
+                manifest_prefix=bad_prefix,
+            )
     outside = tmp_path / "outside.pcap"
     outside.write_bytes(b"outside")
     escaped = root / "normal-holdout-01" / "traffic.pcap"
