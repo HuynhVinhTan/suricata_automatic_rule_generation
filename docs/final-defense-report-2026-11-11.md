@@ -120,18 +120,29 @@ were respectively 0/0/0/0 and 1/1/1/0. This is a NEW baseline evaluation, not
 proof about the unrecovered historical ET snapshot. Full provenance is in
 `docs/baseline-comparison-evidence-2026-11-12.md`.
 
-A separate new pipeline run `lineage-new-generated-20261112-02` executed frozen
+A separate new pipeline run `lineage-new-generated-20261112-04` executed frozen
 feature extraction, IF/AE inference, calibrated Hybrid review, eligibility,
 automatic rule generation and artifact validation. It generated review-only
-SID `9103011`; canonical rule SHA is
-`8b2391f922cd45566d776f60ceabfceee061c548567d5e76515a2284cf94a0af`, metadata
-file SHA is `a81974e69b2ceb46e1b3bfcd80e6538d137fdce5476cb140a227568dd2a74d00`,
+SID `9103012`; canonical rule SHA is
+`bd7ac80605988c5a35fa5180380b3f35c2b2870613cf20fa274a0fdd0fbd24d3`, metadata
+file SHA is `3e8633330ff7080f0dc491b56c2cb9a144598082235c9e323d4b2ee2bc6a4704`,
 and full rule-file SHA is
-`9c60db6cddabbe6e8d8b1df8ac4f109b902be3f2761de3168e23c2b5c530c805`. Its
+`d86c9222744bcf4aa88d2995354116a1149b772e3a5fe653d2d0ce3112af0e14`. Its
 source PCAP SHA is `7eb27fe7...` and frozen model SHA is
 `206dadaf...`. The run remains `needs_review`; no approval or deployment flags
 were changed. Its latency trace is SHA
-`7c30561d145f139c9cfd0e1ccf96772db24c96158c5e3ff294c68d08f2b65f2a`.
+`4e695e95e3f11ec29e5c846ba57579c25d895903703ded2b4db88aeed096dc94`.
+
+An additive fresh Suricata 8.0.3 validation then tested SID 9103011 against the
+same six pinned sessions. `-T` passed, but replay produced TP=3, FP=3, FN=0,
+TN=0, Precision=0.500, Recall=1.000, F1=0.667 and FPR=1.000. The candidate
+was rejected and remains neither approved nor deployable. The private report
+is `data/private/sid-9103011-validation-20261112-e7a1895/report.json` with
+SHA-256 `6d4623546262ebc08394f8825c42c4d0b3acd6e5d4c43c50317f382c1e702fc5`.
+The 0.023 ms legacy lineage value is decision-call latency only; current
+instrumentation separately measures RST, port diversity, handshake, full
+Hybrid evidence and pure Hybrid decision. Suricata syntax timing is reported
+separately from local artifact/hash validation.
 
 The first same-input pipeline attempt is preserved as a separate failed
 execution because missing capture-integrity metadata correctly prevented rule
@@ -165,6 +176,7 @@ deterministic rules-directory manifest SHA-256 is
 | Review-only RST proxy rule | **Met: validated_for_review, SID 9103003** |
 | Complete hybrid logic in Suricata | **Not met by design** |
 | Baseline versus augmented Suricata comparison | **Met for NEW VM1 baseline**: baseline 0/3 Attack and 0/3 Normal reconnaissance verdicts; augmented 3/3 Attack and 0/3 Normal |
+| New SID 9103011 candidate safety | **Not met: rejected**: 3 false-positive Normal sessions, FPR 1.0 |
 | Production safety | Preserved |
 | tcpdump capability cleanup | **Met: no capability reported** |
 | Real replay Ed25519 attestation | **Met with real evidence** | Attestation SHA-256 recorded above; independent pinned-key verification passed |

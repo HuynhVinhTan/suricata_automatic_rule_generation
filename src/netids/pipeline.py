@@ -263,11 +263,12 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         if event.src_ip == src and event.dst_ip == dst
     ]
 
-    findings = analyze_port_diversity(
-        syn_events,
-        window_seconds=60,
-        min_distinct_ports=8,
-    )
+    with latency.stage("port_diversity_extraction"):
+        findings = analyze_port_diversity(
+            syn_events,
+            window_seconds=60,
+            min_distinct_ports=8,
+        )
 
     finding = findings[0] if findings else None
 
@@ -307,11 +308,12 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
     # Protocol evidence is separate from ML and Port-Diversity.
     # A complete bidirectional TCP exchange is a benign-like
     # pattern, NOT proof that traffic is benign.
-    tcp_summary = summarize_tcp_handshake(
-        pcap,
-        source_ip=src,
-        destination_ip=dst,
-    )
+    with latency.stage("tcp_handshake_extraction"):
+        tcp_summary = summarize_tcp_handshake(
+            pcap,
+            source_ip=src,
+            destination_ip=dst,
+        )
 
     if tcp_summary["initial_syn_packets"] != len(syn_events):
         raise ValueError(
@@ -364,14 +366,16 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
 
     if hybrid_references:
         hybrid_thresholds = calibrate_hybrid_thresholds(hybrid_references)
-        rst_evidence = analyze_rst_evidence(
-            pcap,
-            source_ip=src,
-            destination_ip=dst,
-            window_seconds=60,
-            capture_metadata=_complete_capture_metadata(capture_metadata),
-        )
-        with latency.stage("hybrid_review"):
+        with latency.stage("hybrid_evidence_extraction"):
+            with latency.stage("rst_evidence_extraction"):
+                rst_evidence = analyze_rst_evidence(
+                    pcap,
+                    source_ip=src,
+                    destination_ip=dst,
+                    window_seconds=60,
+                    capture_metadata=_complete_capture_metadata(capture_metadata),
+                )
+        with latency.stage("hybrid_decision_only"):
             hybrid_result = evaluate_hybrid(
                 ml_consensus=flagged > 0,
                 rst_evidence=rst_evidence,
@@ -388,6 +392,9 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
             "calibration_provenance": calibration_provenance,
         }
     else:
+        latency.record("hybrid_evidence_extraction", status="not_measured")
+        latency.record("rst_evidence_extraction", status="not_measured")
+        latency.record("hybrid_decision_only", status="not_measured")
         review["hybrid_review"] = {
             "schema_version": "hybrid_review_v1",
             "classification": "unavailable_missing_calibration",
@@ -498,13 +505,15 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
             if generated["rule"] is not None:
                 write_ml_rule_artifacts(output_dir, generated)
 
-    with latency.stage("rule_validation"):
-        if generated and generated.get("rule"):
+    if generated and generated.get("rule"):
+        with latency.stage("local_artifact_validation"):
             if len(collect_sids([generated["rule"]])) != 1:
                 raise ValueError("Generated rule did not contain exactly one SID")
             rule_bytes = (output_dir / "ml-generated.rules").read_bytes()
             if generated["metadata"].get("rule_sha256") != hashlib.sha256(rule_bytes[:-1]).hexdigest():
                 raise ValueError("Generated rule artifact SHA256 mismatch")
+    else:
+        latency.record("local_artifact_validation", status="not_measured")
 
     review.update({
         "schema_version": "lab_rule_review_v0_2",
