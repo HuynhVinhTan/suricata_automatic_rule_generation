@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -170,6 +171,37 @@ def verify_pinned_rule_artifact(rule_file: Path, *, expected_sid: int, expected_
         raise ReplayGateError("Rule is not the approved alert-only TCP signature")
     return hashlib.sha256(raw_rule).hexdigest()
 
+
+def create_exclusive_replay_run_dir(root: Path) -> tuple[str, Path]:
+    """Create a fresh additive signing run while preserving prior evidence.
+
+    Existing replay-evidence directories are expected: earlier unsigned runs
+    must remain untouched. Each invocation gets a cryptographically random,
+    exclusive child directory; partial failed attempts are never overwritten.
+    """
+    root = Path(root).resolve()
+    evidence_root = _under(root / "replay-evidence", root)
+    if evidence_root.exists():
+        if not evidence_root.is_dir():
+            raise ReplayGateError("Existing replay-evidence path is not a directory")
+    else:
+        evidence_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+
+    runs_root = _under(evidence_root / "signing-runs", root)
+    if runs_root.exists():
+        if not runs_root.is_dir():
+            raise ReplayGateError("Existing signing-runs path is not a directory")
+    else:
+        runs_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+
+    replay_run_id = secrets.token_hex(16)
+    run_root = _under(runs_root / replay_run_id, root)
+    try:
+        run_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise ReplayGateError("Replay signing run ID collision; stop and inspect") from exc
+    return replay_run_id, run_root
+
 def attest_six_holdouts(
     *,
     manifest_path: Path,
@@ -249,10 +281,7 @@ def attest_six_holdouts(
     version = _run([suricata_binary, "-V"], timeout=30).stdout.strip()
     if "8.0.3" not in version:
         raise ReplayGateError("Suricata 8.0.3 required")
-    run_root = _under(root / "replay-evidence", root)
-    if run_root.exists():
-        raise ReplayGateError("Replay evidence directory exists; never overwrite it")
-    run_root.mkdir(mode=0o700, parents=False)
+    replay_run_id, run_root = create_exclusive_replay_run_dir(root)
     syntax_dir = run_root / "syntax"
     syntax_dir.mkdir(mode=0o700)
     _run([
@@ -277,6 +306,7 @@ def attest_six_holdouts(
             "scenario": label,
             "pcap_sha256": digest,
             "eve_sha256": sha256_file(case_dir / "eve.json"),
+            "eve_relative_path": str((case_dir / "eve.json").relative_to(root)),
             "events": events,
             "candidate_sid_alerts": count,
         })
@@ -294,6 +324,8 @@ def attest_six_holdouts(
         "calibration_sha256": CAL_SHA,
         "decision_manifest_sha256": DECISION_SHA,
         "manifest_sha256": expected_manifest_sha256,
+        "replay_run_id": replay_run_id,
+        "replay_evidence_relative_path": str(run_root.relative_to(root)),
         "isolated_config_sha256": config_sha,
         "suricata_version": version,
         "syntax_authenticated": True,
