@@ -8,9 +8,10 @@ import hashlib
 import json
 import os
 import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from netids.candidate_record import verify_candidate_record
+from netids.candidate_record import expected_candidate_runtime_id, verify_candidate_record
 from netids.key_pins import require_pinned_role_keys
 from netids.lifecycle_ed25519 import sha256_file
 from scripts.approve_isolated_activation import build_candidate_owner_authorization
@@ -43,6 +44,19 @@ def main(argv: list[str] | None = None) -> int:
     owner_public = args.owner_public.read_bytes()
     require_pinned_role_keys(replay_public, owner_public)
     print(f"Candidate {candidate['candidate_id']} / SID {candidate['sid']}")
+    root = str(args.isolated_root.resolve())
+    expected_runtime = expected_candidate_runtime_id(
+        candidate, target_vm=args.target_vm, interface=args.interface, isolated_root=root,
+    )
+    if args.runtime_id != expected_runtime:
+        parser.error("Runtime ID does not match the independently derived candidate scope")
+    expires_preview = datetime.now(timezone.utc) + timedelta(minutes=15)
+    print(f"Canonical rule SHA: {candidate['rule_sha256']}")
+    print(f"Runtime ID: {expected_runtime}")
+    print(f"Target VM / interface: {args.target_vm} / {args.interface}")
+    print(f"Isolated root: {root}")
+    print(f"Approval expiration: {expires_preview.isoformat()}")
+    print("Mandatory rollback: yes; maximum activation window: 300 seconds")
     print("No action is performed until explicit owner confirmation.")
     if input(f"Type exactly '{PROMPT}' to authorize signing: ").strip() != PROMPT:
         parser.error("Owner confirmation was not given")
@@ -52,8 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         owner_private_pem=args.owner_private.read_bytes(), owner_private_password=password,
         owner_public_pem=owner_public, approver_identity=args.approver_identity,
         candidate_record_sha256=sha256_file(args.candidate), runtime_id=args.runtime_id,
-        target_vm=args.target_vm, interface=args.interface,
-        isolated_root=str(args.isolated_root.resolve()), nonce=secrets.token_hex(16),
+        target_vm=args.target_vm, interface=args.interface, isolated_root=root,
+        nonce=secrets.token_hex(16),
     )
     args.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

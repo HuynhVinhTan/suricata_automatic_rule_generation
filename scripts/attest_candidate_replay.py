@@ -33,7 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifact-dir", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--baseline-rules", type=Path, required=True)
-    parser.add_argument("--cases", type=Path, required=True, help="JSON list of independently pinned cases")
+    parser.add_argument("--case-manifest", type=Path, required=True)
+    parser.add_argument("--case-manifest-sha256", required=True)
     parser.add_argument("--isolated-yaml", type=Path, required=True)
     parser.add_argument("--isolated-root", type=Path, required=True)
     parser.add_argument("--replay-private", type=Path, required=True)
@@ -43,14 +44,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
-        cases = json.loads(args.cases.read_text(encoding="utf-8"))
-        if not isinstance(candidate, dict) or not isinstance(cases, list):
-            raise ValueError("Candidate and cases must be JSON object/list")
+        if not isinstance(candidate, dict):
+            raise ValueError("Candidate must be a JSON object")
         password = getpass.getpass("Candidate replay signing key passphrase: ").encode()
         evidence = attest_candidate_replay(
             candidate=candidate, artifact_dir=args.artifact_dir,
             calibration_manifest=args.calibration, baseline_rules=args.baseline_rules,
-            cases=cases, isolated_yaml=args.isolated_yaml, isolated_root=args.isolated_root,
+            case_manifest=args.case_manifest,
+            expected_case_manifest_sha256=args.case_manifest_sha256,
+            isolated_yaml=args.isolated_yaml, isolated_root=args.isolated_root,
             private_key_pem=args.replay_private.read_bytes(), private_key_password=password,
             replay_public_pem=args.replay_public.read_bytes(), suricata_binary=args.suricata,
         )

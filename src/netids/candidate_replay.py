@@ -35,6 +35,50 @@ _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _THRESHOLD = re.compile(r"detection_filter\s*:\s*track\s+by_src\s*,\s*count\s+(\d+)\s*,", re.I)
 
 
+def load_independent_case_manifest(
+    path: Path, expected_sha256: str, candidate: dict,
+) -> tuple[dict, list[dict]]:
+    """Load the reviewed case inventory; caller-supplied inventories are rejected."""
+    manifest_path = Path(path)
+    if not _HEX.fullmatch(str(expected_sha256)) or manifest_path.is_symlink() or not manifest_path.is_file():
+        raise CandidateReplayError("Pinned independent case manifest is required")
+    if sha256_file(manifest_path) != expected_sha256:
+        raise CandidateReplayError("Independent case manifest hash mismatch")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CandidateReplayError("Independent case manifest is invalid") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != "candidate_independent_replay_manifest_v1"
+        or manifest.get("candidate_id") != candidate.get("candidate_id")
+        or manifest.get("sid") != candidate.get("sid")
+        or manifest.get("discovery_pcap_sha256") != candidate.get("pcap_sha256")
+        or manifest.get("discovery_excluded") is not True
+        or type(manifest.get("minimum_attack_cases")) is not int
+        or type(manifest.get("minimum_normal_cases")) is not int
+        or not isinstance(manifest.get("cases"), list)
+    ):
+        raise CandidateReplayError("Independent case manifest identity or exclusion gate failed")
+    cases = manifest["cases"]
+    if len(cases) != 5 or manifest["minimum_attack_cases"] != 2 or manifest["minimum_normal_cases"] != 3:
+        raise CandidateReplayError("Frozen independent cohort must contain exactly 2 Attack and 3 Normal cases")
+    counts = {"attack": 0, "normal": 0}
+    ids: set[str] = set()
+    for case in cases:
+        if not isinstance(case, dict) or not _ID.fullmatch(str(case.get("id", ""))):
+            raise CandidateReplayError("Independent manifest contains an invalid case ID")
+        if case["id"] in ids or case.get("scenario") not in counts or not _HEX.fullmatch(str(case.get("pcap_sha256"))):
+            raise CandidateReplayError("Independent manifest contains a duplicate or invalid case")
+        if case["pcap_sha256"] == candidate["pcap_sha256"]:
+            raise CandidateReplayError("Discovery PCAP is present in independent manifest")
+        ids.add(case["id"])
+        counts[case["scenario"]] += 1
+    if counts != {"attack": 2, "normal": 3}:
+        raise CandidateReplayError("Independent manifest does not meet the minimum evaluation cohort")
+    return manifest, cases
+
+
 def _run(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess:
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
@@ -112,7 +156,8 @@ def _verify_candidate_sources(
 
 def attest_candidate_replay(
     *, candidate: dict, artifact_dir: Path, calibration_manifest: Path,
-    baseline_rules: Path, cases: list[dict], isolated_yaml: Path,
+    baseline_rules: Path, case_manifest: Path, expected_case_manifest_sha256: str,
+    isolated_yaml: Path,
     isolated_root: Path, private_key_pem: bytes, private_key_password: bytes,
     replay_public_pem: bytes, suricata_binary: str = "/usr/bin/suricata",
 ) -> dict:
@@ -124,8 +169,9 @@ def attest_candidate_replay(
     root = Path(isolated_root).resolve()
     if root.is_symlink() or not root.is_dir():
         raise CandidateReplayError("Candidate isolated root is missing or unsafe")
-    if not isinstance(cases, list) or not cases:
-        raise CandidateReplayError("Independent replay cases are required")
+    manifest, cases = load_independent_case_manifest(
+        case_manifest, expected_case_manifest_sha256, candidate,
+    )
     seen: set[str] = set()
     observations: list[dict] = []
     for case in cases:
@@ -192,6 +238,10 @@ def attest_candidate_replay(
         "calibration_sha256": candidate["calibration_sha256"],
         "decision_manifest_sha256": candidate["decision_manifest_sha256"],
         "baseline_rules_sha256": candidate["baseline_rules_sha256"],
+        "case_manifest_sha256": expected_case_manifest_sha256,
+        "case_manifest_schema": manifest["schema_version"],
+        "minimum_attack_cases": manifest["minimum_attack_cases"],
+        "minimum_normal_cases": manifest["minimum_normal_cases"],
         "isolated_config_sha256": config_sha, "suricata_version": version,
         "syntax_authenticated": True, "attack_replay_passed": True,
         "normal_replay_passed": True, "normal_false_positive_count": 0,

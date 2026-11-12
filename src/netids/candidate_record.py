@@ -49,6 +49,14 @@ def _candidate_id(record: dict) -> str:
     return _sha_bytes(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
+def expected_candidate_runtime_id(candidate: dict, *, target_vm: str, interface: str, isolated_root: str) -> str:
+    """Derive the reviewed runtime identity from candidate and exact scope."""
+    if target_vm != "suricata-vm1" or interface != "lo":
+        raise CandidateRecordError("Candidate runtime is restricted to VM1 loopback")
+    root_sha = _sha_bytes(isolated_root.encode("utf-8"))[:12]
+    return f"{target_vm}:candidate-{candidate['sid']}-{candidate['candidate_id'][:12]}-{root_sha}:{interface}"
+
+
 def _read_json(path: Path, name: str) -> dict:
     if path.is_symlink() or not path.is_file():
         raise CandidateRecordError(f"Missing or unsafe {name}")
@@ -180,18 +188,27 @@ def verify_signed_replay_evidence(candidate: dict, evidence: dict, public_key: b
         return False
     if evidence.get("syntax_authenticated") is not True:
         return False
+    if (
+        evidence.get("case_manifest_schema") != "candidate_independent_replay_manifest_v1"
+        or not _HEX.fullmatch(evidence.get("case_manifest_sha256", ""))
+        or evidence.get("minimum_attack_cases") != 2
+        or evidence.get("minimum_normal_cases") != 3
+    ):
+        return False
     cases = evidence.get("cases")
-    if not isinstance(cases, list) or not cases:
+    if not isinstance(cases, list) or len(cases) != 5:
         return False
     labels = {case.get("scenario") for case in cases if isinstance(case, dict)}
     if not {"attack", "normal"}.issubset(labels):
         return False
     replay_pcaps = []
+    counts = {"attack": 0, "normal": 0}
     for case in cases:
         if not isinstance(case, dict):
             return False
         if case.get("scenario") not in {"attack", "normal"}:
             return False
+        counts[case["scenario"]] += 1
         if not _HEX.fullmatch(case.get("pcap_sha256", "")) or not _HEX.fullmatch(case.get("eve_sha256", "")):
             return False
         if case["pcap_sha256"] == candidate["pcap_sha256"]:
@@ -202,4 +219,4 @@ def verify_signed_replay_evidence(candidate: dict, evidence: dict, public_key: b
         alerts = case.get("candidate_sid_alerts")
         if type(alerts) is not int or (case["scenario"] == "attack" and alerts < 1) or (case["scenario"] == "normal" and alerts != 0):
             return False
-    return len(replay_pcaps) == len(set(replay_pcaps))
+    return counts == {"attack": 2, "normal": 3} and len(replay_pcaps) == len(set(replay_pcaps))

@@ -92,9 +92,15 @@ def test_signed_replay_evidence_must_bind_candidate_and_real_eve_hashes(tmp_path
         )},
         "suricata_version": "8.0.3 RELEASE",
         "syntax_authenticated": True,
+        "case_manifest_schema": "candidate_independent_replay_manifest_v1",
+        "case_manifest_sha256": "e" * 64,
+        "minimum_attack_cases": 2, "minimum_normal_cases": 3,
         "cases": [
             {"scenario": "attack", "pcap_sha256": "1" * 64, "eve_sha256": "2" * 64, "events": 2, "candidate_sid_alerts": 1},
-            {"scenario": "normal", "pcap_sha256": "3" * 64, "eve_sha256": "4" * 64, "events": 2, "candidate_sid_alerts": 0},
+            {"scenario": "attack", "pcap_sha256": "3" * 64, "eve_sha256": "4" * 64, "events": 2, "candidate_sid_alerts": 1},
+            {"scenario": "normal", "pcap_sha256": "5" * 64, "eve_sha256": "6" * 64, "events": 2, "candidate_sid_alerts": 0},
+            {"scenario": "normal", "pcap_sha256": "7" * 64, "eve_sha256": "8" * 64, "events": 2, "candidate_sid_alerts": 0},
+            {"scenario": "normal", "pcap_sha256": "9" * 64, "eve_sha256": "a" * 64, "events": 2, "candidate_sid_alerts": 0},
         ],
     }
     signed = sign_record(evidence, private, b"candidate-test-password", domain="isolated-replay-v1")
@@ -115,9 +121,15 @@ def test_signed_replay_rejects_discovery_pcap_as_independent_case(tmp_path):
         )},
         "suricata_version": "8.0.3 RELEASE",
         "syntax_authenticated": True,
+        "case_manifest_schema": "candidate_independent_replay_manifest_v1",
+        "case_manifest_sha256": "e" * 64,
+        "minimum_attack_cases": 2, "minimum_normal_cases": 3,
         "cases": [
             {"scenario": "attack", "pcap_sha256": candidate["pcap_sha256"], "eve_sha256": "2" * 64, "events": 2, "candidate_sid_alerts": 1},
-            {"scenario": "normal", "pcap_sha256": "3" * 64, "eve_sha256": "4" * 64, "events": 2, "candidate_sid_alerts": 0},
+            {"scenario": "attack", "pcap_sha256": "3" * 64, "eve_sha256": "4" * 64, "events": 2, "candidate_sid_alerts": 1},
+            {"scenario": "normal", "pcap_sha256": "5" * 64, "eve_sha256": "6" * 64, "events": 2, "candidate_sid_alerts": 0},
+            {"scenario": "normal", "pcap_sha256": "7" * 64, "eve_sha256": "8" * 64, "events": 2, "candidate_sid_alerts": 0},
+            {"scenario": "normal", "pcap_sha256": "9" * 64, "eve_sha256": "a" * 64, "events": 2, "candidate_sid_alerts": 0},
         ],
     }
     signed = sign_record(evidence, private, b"candidate-test-password", domain="isolated-replay-v1")

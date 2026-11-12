@@ -25,7 +25,10 @@ from netids.isolated_suricata_runtime import (
     ROOT, VM1_HOST, IsolatedSuricataRuntime, is_verified_vm1_host,
 )
 from netids.rule_lifecycle import RuleLifecycle, LifecycleError
-from netids.candidate_record import verify_candidate_record, verify_signed_replay_evidence
+from netids.candidate_record import (
+    expected_candidate_runtime_id, verify_candidate_record,
+    verify_signed_replay_evidence,
+)
 from netids.trusted_replay import (
     SID, RULE_SHA, MODEL_SHA, CAL_SHA, EXPECTED_CASES,
     validate_documented_rule_provenance,
@@ -46,6 +49,22 @@ def _read_json(path: Path) -> dict:
     if not isinstance(data, dict):
         raise OperationError("Evidence must be an object")
     return data
+
+
+def _write_failure_report(path: Path, report: dict) -> None:
+    if path.exists() or path.is_symlink():
+        raise OperationError("Failure report already exists; refusing overwrite")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(report, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _systemd(service: str) -> tuple[str, str]:
@@ -175,6 +194,7 @@ def _verify_candidate_inputs(
     candidate: dict, replay: dict, approval: dict, *, candidate_file: Path,
     replay_public: bytes, owner_public: bytes, isolated_root: Path,
     runtime_id: str, target_vm: str, interface: str,
+    attack_sha256: str, normal_sha256: str,
 ) -> None:
     if not verify_candidate_record(candidate) or candidate.get("state") not in (None, "PROPOSED"):
         raise OperationError("Candidate record is not valid candidate_record_v1")
@@ -203,6 +223,24 @@ def _verify_candidate_inputs(
         raise OperationError("Candidate, replay or exact owner scope mismatch")
     if interface != "lo" or target_vm != VM1_HOST:
         raise OperationError("Candidate operation is restricted to VM1 loopback")
+    try:
+        expected_runtime = expected_candidate_runtime_id(
+            candidate, target_vm=target_vm, interface=interface,
+            isolated_root=str(isolated_root),
+        )
+    except ValueError as exc:
+        raise OperationError("Candidate runtime identity policy rejected scope") from exc
+    if runtime_id != expected_runtime:
+        raise OperationError("Candidate runtime identity is not independently validated")
+    cases = replay.get("cases")
+    if not isinstance(cases, list):
+        raise OperationError("Signed replay cases are missing")
+    probes = {
+        "attack": {case.get("pcap_sha256") for case in cases if case.get("scenario") == "attack"},
+        "normal": {case.get("pcap_sha256") for case in cases if case.get("scenario") == "normal"},
+    }
+    if attack_sha256 not in probes["attack"] or normal_sha256 not in probes["normal"]:
+        raise OperationError("Runtime probe PCAP hash is not bound to signed replay cases")
 
 
 def execute_one_time(
@@ -307,6 +345,7 @@ def execute_candidate_one_time(
     production_yaml: Path, production_rules: Path, isolated_yaml: Path,
     isolated_root: Path, attack_pcap: Path, attack_sha256: str,
     normal_pcap: Path, normal_sha256: str, audit_path: Path,
+    failure_path: Path,
     replay_private_pem: bytes, replay_private_password: bytes,
 ) -> dict:
     """Candidate-specific one-shot operator; no historical SID constants are used."""
@@ -328,28 +367,32 @@ def execute_candidate_one_time(
         candidate, replay, approval, candidate_file=Path(candidate_file),
         replay_public=replay_public, owner_public=owner_public,
         isolated_root=root, runtime_id=runtime_id, target_vm=target_vm,
-        interface=interface,
+        interface=interface, attack_sha256=attack_sha256, normal_sha256=normal_sha256,
     )
     if any(candidate.get(flag) is not False for flag in ("approved", "deployable", "deployed")):
         raise OperationError("Candidate must remain review-only")
-    before = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
-    lifecycle = RuleLifecycle(
-        audit_path, isolated_root=root, replay_verification_key=replay_public,
-        owner_verification_key=owner_public, attestation_mode="ed25519",
-    )
-    proposed = lifecycle.create_candidate(candidate)
-    lifecycle.transition(proposed, "VALIDATING")
-    lifecycle.record_validation(proposed, replay)
-    lifecycle.transition(proposed, "AWAITING_APPROVAL")
-    lifecycle.approve(proposed, approval)
-    runtime = IsolatedSuricataRuntime(
-        config=isolated_yaml, attack_pcap=attack_pcap, attack_sha256=attack_sha256,
-        normal_pcap=normal_pcap, normal_sha256=normal_sha256,
-        candidate_sid=candidate["sid"], candidate_rule_sha256=candidate["rule_sha256"],
-        root=root,
-    )
+    before = None
+    after = None
+    lifecycle = None
+    runtime = None
     started = datetime.now(timezone.utc)
     try:
+        before = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+        lifecycle = RuleLifecycle(
+            audit_path, isolated_root=root, replay_verification_key=replay_public,
+            owner_verification_key=owner_public, attestation_mode="ed25519",
+        )
+        proposed = lifecycle.create_candidate(candidate)
+        lifecycle.transition(proposed, "VALIDATING")
+        lifecycle.record_validation(proposed, replay)
+        lifecycle.transition(proposed, "AWAITING_APPROVAL")
+        lifecycle.approve(proposed, approval)
+        runtime = IsolatedSuricataRuntime(
+            config=isolated_yaml, attack_pcap=attack_pcap, attack_sha256=attack_sha256,
+            normal_pcap=normal_pcap, normal_sha256=normal_sha256,
+            candidate_sid=candidate["sid"], candidate_rule_sha256=candidate["rule_sha256"],
+            root=root,
+        )
         staged = lifecycle.stage(proposed, root / "rules", activate=True, runtime=runtime)
         if staged.get("status") != "active_in_isolated_lab":
             raise OperationError("Candidate runtime did not verify active state")
@@ -358,9 +401,44 @@ def execute_candidate_one_time(
             raise OperationError("Candidate runtime rollback was not verified")
         if (datetime.now(timezone.utc) - started).total_seconds() > 300:
             raise OperationError("Candidate operation exceeded 300 seconds")
+        after = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+    except Exception as exc:
+        if runtime is not None:
+            try:
+                runtime.shutdown()
+            except Exception:
+                pass
+        cleanup_verified = bool(
+            runtime is None or runtime.process is None or runtime.process.poll() is not None
+        )
+        try:
+            if after is None and before is not None:
+                after = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+        except Exception:
+            after = None
+        audit_records = None
+        if lifecycle is not None:
+            try:
+                audit_records = lifecycle.verify_audit()
+            except Exception:
+                audit_records = None
+        audit_sha = sha256_file(audit_path) if audit_path.is_file() else None
+        _write_failure_report(failure_path, {
+            "schema_version": "isolated_runtime_failure_v1",
+            "candidate_record_schema": "candidate_record_v1",
+            "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
+            "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
+            "failure_reason": str(exc), "rollback_verified": False,
+            "production_before": before, "production_after": after,
+            "lifecycle_audit_records": audit_records,
+            "lifecycle_audit_sha256": audit_sha,
+            "cleanup_status": "verified_process_stopped" if cleanup_verified else "cleanup_unverified",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        raise
     finally:
-        runtime.shutdown()
-    after = production_snapshot(production_yaml, production_rules, forbidden_sid=candidate["sid"])
+        if runtime is not None:
+            runtime.shutdown()
     if before != after:
         raise OperationError("Production before/after evidence differs; fail acceptance")
     record = {

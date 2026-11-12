@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
         "replay-public-file", "owner-public-file", "production-yaml",
         "production-rules", "isolated-yaml", "isolated-root", "attack-pcap",
         "attack-sha256", "normal-pcap", "normal-sha256", "audit-path",
-        "replay-private-file", "evidence-output",
+        "replay-private-file", "evidence-output", "failure-output",
     ):
         parser.add_argument("--" + name, required=True, type=Path if not name.endswith("sha256") else str)
     args = parser.parse_args(argv)
@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         attack_pcap=args.attack_pcap, attack_sha256=args.attack_sha256,
         normal_pcap=args.normal_pcap, normal_sha256=args.normal_sha256,
         audit_path=args.audit_path, replay_private_pem=args.replay_private_file.read_bytes(),
-        replay_private_password=password,
+        failure_path=args.failure_output, replay_private_password=password,
     )
     args.evidence_output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(args.evidence_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

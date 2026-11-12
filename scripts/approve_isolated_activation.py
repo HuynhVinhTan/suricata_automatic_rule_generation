@@ -26,7 +26,10 @@ from netids.trusted_replay import (
     SID, RULE_SHA, MODEL_SHA, CAL_SHA, DECISION_SHA,
     validate_documented_rule_provenance,
 )
-from netids.candidate_record import verify_candidate_record, verify_signed_replay_evidence
+from netids.candidate_record import (
+    expected_candidate_runtime_id, verify_candidate_record,
+    verify_signed_replay_evidence,
+)
 
 PROMPT = "AUTHORIZE ISOLATED SID 9103003 ONE TIME AND ROLLBACK"
 ISOLATED_ROOT = "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103003"
@@ -51,6 +54,11 @@ def build_candidate_owner_authorization(
         raise ValueError("Runtime identity and authorization scope are required")
     if interface != "lo":
         raise ValueError("Candidate activation is restricted to loopback")
+    expected_runtime_id = expected_candidate_runtime_id(
+        candidate, target_vm=target_vm, interface=interface, isolated_root=isolated_root,
+    )
+    if runtime_id != expected_runtime_id:
+        raise ValueError("Runtime identity is not the reviewed candidate scope")
     if not isinstance(approver_identity, str) or not approver_identity.strip():
         raise ValueError("Approver identity is required")
     if len(nonce) != 32 or any(char not in "0123456789abcdef" for char in nonce):

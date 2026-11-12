@@ -20,6 +20,13 @@ attestation, approval, or deployment.
 The record state is `PROPOSED`; `approved`, `deployable`, and `deployed` are
 all false. SID collision checking against the copied VM1 ruleset passed.
 
+The independently reviewed replay manifest is
+`configs/suricata/isolated-candidate-9103012-independent-cases.json`, SHA-256
+`57aa92f0a63bd2f8fe037904d0aecb2e2414031d5b9af8f08e5c9bbf73eddeba`. It fixes
+the cohort at two independent Attack cases (02/03) and three Normal cases,
+with Attack-01 explicitly excluded because it generated this rule. No missing
+third Attack capture is synthesized.
+
 ## Validation status
 
 The local workstation has no Suricata binary (`SURICATA_NOT_AVAILABLE`). The
@@ -30,6 +37,13 @@ three Normal hashes already pinned in the baseline evidence. No syntax result,
 EVE result, replay signature, owner approval, or activation result is claimed
 for SID 9103012. Attack-01 remains the discovery PCAP and is excluded from the
 independent Attack set.
+
+The candidate operator derives a reviewed runtime identity from the candidate,
+target `suricata-vm1`, loopback `lo`, and isolated-root scope. It binds live
+probe hashes to signed replay cases. Any activation or rollback failure writes
+a separate unsigned failure report containing the reason, best-effort
+production-after snapshot, lifecycle audit count/hash, and cleanup status; it
+cannot be interpreted as successful rollback evidence.
 
 The existing Ed25519 lifecycle tests cover invalid/expired signatures, wrong
 candidate/run provenance, host/interface gates, rollback failure, and activation
