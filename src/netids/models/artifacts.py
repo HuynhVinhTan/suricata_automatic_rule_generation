@@ -131,6 +131,11 @@ def save_ml_artifact(
         "created_utc": datetime.now(
             timezone.utc
         ).isoformat(),
+        "decision_threshold": 0.5,
+        "threshold_provenance": {
+            "decision_threshold": 0.5,
+            "status": "development_only",
+        },
         "model_sha256": _sha256(model_path),
     }
 

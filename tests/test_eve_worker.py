@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -39,7 +40,7 @@ def flow_event(flow_id=1, *, timestamp="2026-11-13T10:00:00+00:00"):
     }
 
 
-def real_model_adapter():
+def real_model_adapter(threshold=0.5):
     model = RandomForestClassifier(n_estimators=4, random_state=7)
     X = np.array([[1, 0, 0, 0], [1, 1, 1, 1], [0, 2, 2, 2], [0, 3, 3, 3]])
     model.fit(pd.DataFrame(X, columns=[
@@ -54,8 +55,25 @@ def real_model_adapter():
         "model_sha256": "a" * 64,
         "model_name": "random_forest",
         "status": "test_only",
+        "decision_threshold": threshold,
     }
     return FlowModelAdapter(model, metadata, allow_test_model=True)
+
+
+def test_model_decision_threshold_is_validated_and_used():
+    assert real_model_adapter().decision_threshold == 0.5
+    assert real_model_adapter(0.9).decision_threshold == 0.9
+    with pytest.raises(ValueError, match="threshold"):
+        real_model_adapter(float("nan"))
+    adapter = real_model_adapter()
+    missing = dict(adapter.metadata)
+    missing.pop("decision_threshold")
+    with pytest.raises(ValueError, match="threshold"):
+        FlowModelAdapter(adapter.model, missing, allow_test_model=True)
+    mismatch = dict(adapter.metadata)
+    mismatch["threshold_provenance"] = {"decision_threshold": 0.9}
+    with pytest.raises(ValueError, match="mismatch"):
+        FlowModelAdapter(adapter.model, mismatch, allow_test_model=True)
 
 
 def signed_hybrid(event, run_id, monkeypatch):
@@ -72,7 +90,8 @@ def signed_hybrid(event, run_id, monkeypatch):
     }
     envelope = {
         "schema_version": "hybrid_telemetry_v1", "producer_identity": "test-producer",
-        "capture_run_id": run_id, "source_pcap_sha256": "b" * 64,
+        "capture_run_id": run_id, "telemetry_event_id": f"{run_id}-event-1", "sequence": 1,
+        "source_pcap_sha256": "b" * 64,
         "timestamp_provenance": {"first_timestamp": "2026-11-13T09:00:00+00:00", "last_timestamp": "2026-11-13T11:00:00+00:00"},
         "producer_key_sha256": fingerprint, "payload": payload,
     }
@@ -327,3 +346,35 @@ def test_shutdown_leaves_unprocessed_records_for_restart_without_duplicates(tmp_
     records = output.read_text(encoding="utf-8").splitlines()
     assert len(records) == 12
     assert len({json.loads(line)["detection_id"] for line in records}) == 12
+
+
+def test_processing_time_budget_preserves_records_for_next_cycle(tmp_path, monkeypatch):
+    path = tmp_path / "eve.json"
+    path.write_text("".join(json.dumps(flow_event(i)) + "\n" for i in range(6)), encoding="utf-8")
+    worker = StreamingInferenceWorker(reader=JsonlEveReader(path), model=real_model_adapter(), output_path=tmp_path / "out.jsonl", run_id="budget", processing_time_budget_seconds=0.025)
+    original = worker.model.infer
+    def slow(event):
+        time.sleep(0.01)
+        return original(event)
+    monkeypatch.setattr(worker.model, "infer", slow)
+    first = worker.run_once()
+    assert first.processed_events < 6
+    while worker.reader.offset < path.stat().st_size:
+        worker.run_once()
+    assert len((tmp_path / "out.jsonl").read_text(encoding="utf-8").splitlines()) == 6
+
+
+def test_sqlite_ledger_bounds_output_projection_and_memory(tmp_path):
+    path = tmp_path / "eve.json"
+    path.write_text("".join(json.dumps(flow_event(i)) + "\n" for i in range(30)), encoding="utf-8")
+    output = tmp_path / "out.jsonl"
+    ledger = tmp_path / "events.sqlite3"
+    worker = StreamingInferenceWorker(reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output, ledger_path=ledger, output_max_records=3, run_id="retained", max_records_per_cycle=4)
+    while worker.reader.offset < path.stat().st_size:
+        worker.run_once()
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 3
+    with sqlite3.connect(ledger) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 30
+    restarted = StreamingInferenceWorker(reader=JsonlEveReader(path), model=real_model_adapter(), output_path=output, ledger_path=ledger, output_max_records=3, run_id="retained")
+    restarted.run_once()
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 3

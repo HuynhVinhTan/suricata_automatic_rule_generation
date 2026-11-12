@@ -52,12 +52,14 @@ def verify_envelope(
     expected_run_id: str,
     event_time: datetime,
     seen_capture_ids: set[str],
+    last_sequences: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Return the exact trusted evidence payload or raise ``ValueError``."""
     if PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM is None or not PINNED_HYBRID_PRODUCER_SHA256:
         raise ValueError("Hybrid producer trust anchor is not provisioned")
     required = {
-        "schema_version", "producer_identity", "capture_run_id", "source_pcap_sha256",
+        "schema_version", "producer_identity", "capture_run_id", "telemetry_event_id", "sequence",
+        "source_pcap_sha256",
         "timestamp_provenance", "producer_key_sha256", "payload", "signature",
     }
     if not required.issubset(envelope):
@@ -68,8 +70,14 @@ def verify_envelope(
         raise ValueError("Hybrid producer key fingerprint mismatch")
     if public_key_sha256(PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM) != PINNED_HYBRID_PRODUCER_SHA256:
         raise ValueError("Pinned Hybrid producer key is inconsistent")
-    if envelope["capture_run_id"] in seen_capture_ids:
-        raise ValueError("Hybrid capture replay detected")
+    if not isinstance(envelope["telemetry_event_id"], str) or not envelope["telemetry_event_id"].strip():
+        raise ValueError("Hybrid telemetry event identity is required")
+    if not isinstance(envelope["sequence"], int) or envelope["sequence"] < 0:
+        raise ValueError("Hybrid telemetry sequence is invalid")
+    if envelope["telemetry_event_id"] in seen_capture_ids:
+        raise ValueError("Hybrid telemetry event replay detected")
+    if last_sequences is not None and envelope["sequence"] <= last_sequences.get(envelope["capture_run_id"], -1):
+        raise ValueError("Hybrid telemetry sequence is out of order")
     if envelope["capture_run_id"] != expected_run_id:
         raise ValueError("Hybrid capture/run identity mismatch")
     if not isinstance(envelope["producer_identity"], str) or not envelope["producer_identity"]:
@@ -94,7 +102,9 @@ def verify_envelope(
         key.verify(signature, canonical_payload(signed))
     except (ValueError, InvalidSignature, KeyError) as exc:
         raise ValueError("Hybrid telemetry signature verification failed") from exc
-    seen_capture_ids.add(envelope["capture_run_id"])
+    seen_capture_ids.add(envelope["telemetry_event_id"])
+    if last_sequences is not None:
+        last_sequences[envelope["capture_run_id"]] = envelope["sequence"]
     return payload
 
 

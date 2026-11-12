@@ -99,13 +99,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from netids import hybrid_provenance
 
 
-def _signed_envelope(monkeypatch):
-    private = Ed25519PrivateKey.generate()
+def _signed_envelope(monkeypatch, *, private=None, event_id="capture-a-event-1", sequence=1):
+    private = private or Ed25519PrivateKey.generate()
     public = private.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
     fingerprint = hybrid_provenance.public_key_sha256(public)
     monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM", public)
     monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_SHA256", fingerprint)
-    value = {"schema_version": "hybrid_telemetry_v1", "producer_identity": "producer-a", "capture_run_id": "capture-a", "source_pcap_sha256": "a" * 64, "timestamp_provenance": {"first_timestamp": "2026-11-13T09:00:00+00:00", "last_timestamp": "2026-11-13T11:00:00+00:00"}, "producer_key_sha256": fingerprint, "payload": {"rst_evidence": {}, "port_evidence": {}, "handshake_evidence": {}, "thresholds": {}}}
+    value = {"schema_version": "hybrid_telemetry_v1", "producer_identity": "producer-a", "capture_run_id": "capture-a", "telemetry_event_id": event_id, "sequence": sequence, "source_pcap_sha256": "a" * 64, "timestamp_provenance": {"first_timestamp": "2026-11-13T09:00:00+00:00", "last_timestamp": "2026-11-13T11:00:00+00:00"}, "producer_key_sha256": fingerprint, "payload": {"rst_evidence": {}, "port_evidence": {}, "handshake_evidence": {}, "thresholds": {}}}
     value["signature"] = base64.b64encode(private.sign(hybrid_provenance.canonical_payload(value))).decode()
     return value
 
@@ -141,3 +141,18 @@ def test_hybrid_replay_and_missing_trust_anchor_are_rejected(monkeypatch):
     monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM", None)
     with pytest.raises(ValueError, match="trust anchor"):
         hybrid_provenance.verify_envelope(value, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=set())
+
+
+def test_multiple_events_from_one_capture_and_sequence_policy(monkeypatch):
+    private = Ed25519PrivateKey.generate()
+    first = _signed_envelope(monkeypatch, private=private, event_id="event-1", sequence=1)
+    second = _signed_envelope(monkeypatch, private=private, event_id="event-2", sequence=2)
+    state, sequences = set(), {}
+    event_time = datetime.fromisoformat("2026-11-13T10:00:00+00:00")
+    hybrid_provenance.verify_envelope(first, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+    hybrid_provenance.verify_envelope(second, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+    with pytest.raises(ValueError, match="replay"):
+        hybrid_provenance.verify_envelope(second, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+    third = _signed_envelope(monkeypatch, private=private, event_id="event-3", sequence=2)
+    with pytest.raises(ValueError, match="out of order"):
+        hybrid_provenance.verify_envelope(third, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)

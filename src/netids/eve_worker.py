@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
+import math
 import threading
 import time
 from collections import deque
@@ -252,6 +254,13 @@ class FlowModelAdapter:
               not metadata.get("preprocessing") or
               not metadata.get("threshold_provenance")):
             raise ValueError("Model requires verified production provenance")
+        threshold = metadata.get("decision_threshold")
+        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(float(threshold)) or not 0 <= float(threshold) <= 1:
+            raise ValueError("Model decision threshold is invalid")
+        provenance = metadata.get("threshold_provenance")
+        if isinstance(provenance, dict) and provenance.get("decision_threshold") is not None and float(provenance["decision_threshold"]) != float(threshold):
+            raise ValueError("Model threshold provenance mismatch")
+        self.decision_threshold = float(threshold)
         classes = list(getattr(model, "classes_", []))
         if classes != [0, 1]:
             raise ValueError("Model must expose binary classes [0, 1]")
@@ -267,7 +276,7 @@ class FlowModelAdapter:
         score = float(scores[0, 1])
         if not 0 <= score <= 1:
             raise ValueError("Model returned an invalid probability")
-        return {"features": features, "score": score, "anomalous": score >= 0.5}
+        return {"features": features, "score": score, "anomalous": score >= self.decision_threshold}
 
 
 class _WindowAggregator:
@@ -331,9 +340,11 @@ class StreamingInferenceWorker:
     def __init__(self, *, reader: JsonlEveReader, model: FlowModelAdapter, output_path: str | Path,
                  run_id: str, window_seconds: int = 10, max_bytes_per_cycle: int = 4 * 1024 * 1024,
                  max_records_per_cycle: int = 1024, processing_time_budget_seconds: float | None = None,
-                 window_retention_seconds: int | None = None, max_active_windows: int = 10_000):
+                 window_retention_seconds: int | None = None, max_active_windows: int = 10_000,
+                 ledger_path: str | Path | None = None, output_max_records: int = 10_000):
         if (not run_id.strip() or max_bytes_per_cycle < 1 or max_records_per_cycle < 1 or
-                (processing_time_budget_seconds is not None and processing_time_budget_seconds <= 0)):
+                (processing_time_budget_seconds is not None and processing_time_budget_seconds <= 0) or
+                output_max_records < 1):
             raise ValueError("run_id and cycle bounds are required")
         self.reader = reader
         self.model = model
@@ -342,6 +353,8 @@ class StreamingInferenceWorker:
         self.max_bytes_per_cycle = max_bytes_per_cycle
         self.max_records_per_cycle = max_records_per_cycle
         self.processing_time_budget_seconds = processing_time_budget_seconds
+        self.ledger_path = Path(ledger_path) if ledger_path is not None else self.output_path.with_suffix(".ledger.sqlite3")
+        self.output_max_records = output_max_records
         self._windows = _WindowAggregator(
             window_seconds,
             window_seconds if window_retention_seconds is None else window_retention_seconds,
@@ -351,7 +364,10 @@ class StreamingInferenceWorker:
         self._output_lock = threading.Lock()
         self._rejected = 0
         self._seen_capture_ids: set[str] = set()
-        self._emitted_detection_ids = self._load_emitted_detection_ids()
+        self._last_hybrid_sequences: dict[str, int] = {}
+        self._initialize_ledger()
+        self._load_hybrid_replay_state()
+        self._rebuild_output_projection()
 
     @property
     def active_window_count(self) -> int:
@@ -373,32 +389,73 @@ class StreamingInferenceWorker:
         try:
             evidence = hybrid_provenance.verify_envelope(
                 telemetry, expected_run_id=self.run_id, event_time=_event_time(event),
-                seen_capture_ids=self._seen_capture_ids,
+                seen_capture_ids=self._seen_capture_ids, last_sequences=self._last_hybrid_sequences,
             )
         except ValueError:
             return {"schema_version": "hybrid_review_v1", "classification": "unavailable_invalid_telemetry_provenance",
                     "requires_manual_review": True, "approved": False, "deployable": False}
-        return evaluate_hybrid(
+        decision = evaluate_hybrid(
             ml_consensus=anomalous,
             rst_evidence=evidence["rst_evidence"],
             port_evidence=evidence["port_evidence"],
             handshake_evidence=evidence["handshake_evidence"],
             thresholds=evidence["thresholds"],
         )
+        return {
+            **decision,
+            "capture_run_id": telemetry["capture_run_id"],
+            "telemetry_event_id": telemetry["telemetry_event_id"],
+            "sequence": telemetry["sequence"],
+            "producer_key_sha256": telemetry["producer_key_sha256"],
+        }
 
-    def _load_emitted_detection_ids(self) -> set[str]:
-        if not self.output_path.exists():
-            return set()
-        ids = set()
-        with self.output_path.open(encoding="utf-8") as stream:
-            for line in stream:
-                try:
-                    value = json.loads(line).get("detection_id")
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(value, str):
-                    ids.add(value)
-        return ids
+    def _connect_ledger(self):
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.ledger_path)
+        connection.execute("PRAGMA journal_mode=WAL")
+        return connection
+
+    def _initialize_ledger(self) -> None:
+        with self._connect_ledger() as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS events (detection_id TEXT PRIMARY KEY, event_sha256 TEXT NOT NULL, record_json TEXT NOT NULL, created_utc REAL NOT NULL)")
+            connection.execute("CREATE TABLE IF NOT EXISTS hybrid_replay (capture_run_id TEXT NOT NULL, telemetry_event_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, producer_key_sha256 TEXT NOT NULL)")
+
+    def _load_hybrid_replay_state(self) -> None:
+        with self._connect_ledger() as connection:
+            for capture_id, event_id, sequence in connection.execute("SELECT capture_run_id, telemetry_event_id, sequence FROM hybrid_replay"):
+                self._seen_capture_ids.add(event_id)
+                self._last_hybrid_sequences[capture_id] = max(sequence, self._last_hybrid_sequences.get(capture_id, -1))
+
+    def _ledger_contains(self, detection_id: str) -> bool:
+        with self._connect_ledger() as connection:
+            return connection.execute("SELECT 1 FROM events WHERE detection_id = ?", (detection_id,)).fetchone() is not None
+
+    def _rebuild_output_projection(self) -> None:
+        with self._connect_ledger() as connection:
+            rows = connection.execute("SELECT record_json FROM events ORDER BY created_utc DESC LIMIT ?", (self.output_max_records,)).fetchall()
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.output_path.open("w", encoding="utf-8") as stream:
+            for (record_json,) in reversed(rows):
+                stream.write(record_json + "\n")
+
+    def _commit_record(self, record: dict) -> bool:
+        detection_id = record["detection_id"]
+        event_sha = record["provenance"]["event_sha256"]
+        with self._connect_ledger() as connection:
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO events(detection_id, event_sha256, record_json, created_utc) VALUES (?, ?, ?, ?)",
+                (detection_id, event_sha, json.dumps(record, sort_keys=True, ensure_ascii=False), time.time()),
+            ).rowcount
+            if not inserted:
+                return False
+            hybrid = record.get("hybrid", {})
+            if hybrid.get("telemetry_event_id"):
+                connection.execute(
+                    "INSERT OR IGNORE INTO hybrid_replay(capture_run_id, telemetry_event_id, sequence, producer_key_sha256) VALUES (?, ?, ?, ?)",
+                    (hybrid["capture_run_id"], hybrid["telemetry_event_id"], hybrid["sequence"], hybrid["producer_key_sha256"]),
+                )
+        self._rebuild_output_projection()
+        return True
 
     def _emit(self, event: dict) -> None:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -433,8 +490,7 @@ class StreamingInferenceWorker:
                 "source": "suricata_eve_jsonl",
             },
         }
-        self._emit(record)
-        self._emitted_detection_ids.add(record["detection_id"])
+        self._commit_record(record)
 
     def _detection_id(self, event: dict) -> str:
         return hashlib.sha256(f"{self.run_id}:{_canonical_sha256(event)}".encode()).hexdigest()
@@ -460,9 +516,11 @@ class StreamingInferenceWorker:
                     break
                 continue
             for event in batch:
-                if self._stop.is_set():
+                if (self._stop.is_set() or
+                        (self.processing_time_budget_seconds is not None and
+                         time.monotonic() - started >= self.processing_time_budget_seconds)):
                     break
-                if self._detection_id(event) in self._emitted_detection_ids:
+                if self._ledger_contains(self._detection_id(event)):
                     self.reader.acknowledge(event)
                     continue
                 try:
