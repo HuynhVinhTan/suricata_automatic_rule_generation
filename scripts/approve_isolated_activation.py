@@ -15,6 +15,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from netids.key_pins import require_pinned_role_keys
 from netids.lifecycle_ed25519 import (
     sha256_file,
     sign_record,
@@ -147,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Approval file exists: never overwrite or replay an approval")
     replay_record = json.loads(args.replay_attestation.read_text(encoding="utf-8"))
     replay_public = args.replay_public.read_bytes()
+    owner_public = args.owner_public.read_bytes()
+    require_pinned_role_keys(replay_public, owner_public)
     if not verify_record(replay_record, replay_public, domain="isolated-replay-v1"):
         parser.error("Replay attestation is unsigned or not trusted")
     print("One-time OWNER authorization request")
@@ -166,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         replay_public_pem=replay_public,
         owner_private_pem=args.owner_private.read_bytes(),
         owner_private_password=password,
-        owner_public_pem=args.owner_public.read_bytes(),
+        owner_public_pem=owner_public,
         approver_identity=args.approver_identity,
         candidate_id=args.candidate_id,
         run_id=args.run_id,
