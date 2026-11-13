@@ -48,9 +48,16 @@ def visualization(title: str, kind: str, field: str | None = None, query: str = 
 
 
 def main() -> None:
-    request("PUT", f"/api/saved_objects/index-pattern/{DATA_VIEW_ID}?overwrite=true", {
-        "attributes": {"title": INDEX, "name": "Suricata AI Showcase", "timeFieldName": "event_time"},
-    })
+    try:
+        request("POST", "/api/data_views/data_view", {"data_view": {
+            "id": DATA_VIEW_ID, "title": INDEX, "name": "Suricata AI Showcase", "timeFieldName": "event_time",
+        }, "override": True})
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        request("PUT", f"/api/saved_objects/index-pattern/{DATA_VIEW_ID}?overwrite=true", {
+            "attributes": {"title": INDEX, "name": "Suricata AI Showcase", "timeFieldName": "event_time"},
+        })
     specs = [
         ("Showcase total flow predictions", "metric", None, ""),
         ("Showcase normal predictions", "metric", None, "ml.anomalous:false"),
