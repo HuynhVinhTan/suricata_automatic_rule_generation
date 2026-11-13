@@ -34,6 +34,7 @@ test "$(cat "$root/runtime/source-commit.txt")" = "$expected_commit"
 rm -f "$archive"
 '@
         $remoteCommand = $remoteCommand.Replace('__ARCHIVE__', "/tmp/suricata-showcase-$commit.tar").Replace('__ROOT__', $root).Replace('__COMMIT__', $commit).Replace('__SHA__', $sha)
+        $remoteCommand = $remoteCommand -replace "`r`n", "`n"
         ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $alias $remoteCommand
         if ($LASTEXITCODE -ne 0) { throw "Cannot verify source on $alias" }
         Write-Host "$alias deployed commit $commit; archive SHA256 $sha"
