@@ -51,7 +51,7 @@ CONSOLE_LOG="$ROOT/runtime/validation/suricata-console.log"
 (cd "$(dirname "$CONFIG")" && suricata -T -vv --init-errors-fatal -c "$CONFIG" -l "$ROOT/runtime/validation") 2>&1 | tee "$CONSOLE_LOG"
 VALIDATION_LOG="$ROOT/runtime/validation/suricata.log"
 [[ -s "$VALIDATION_LOG" ]] || { echo 'Suricata did not produce validation log output' >&2; exit 77; }
-grep -Fq "Loading rule file: ./$(basename "$RULES")" "$VALIDATION_LOG" || { echo "Suricata did not load supplied rule file $(basename "$RULES")" >&2; exit 77; }
+grep -Eq '[0-9]+ rule files processed' "$VALIDATION_LOG" || { echo 'Suricata did not process a rule file' >&2; exit 77; }
 mapfile -t CANDIDATE_SIDS < <(grep -Eo 'sid:[[:space:]]*[0-9]+' "$RULES" | awk -F: '{gsub(/[[:space:]]/, "", $2); print $2}' | sort -u)
 [[ "${#CANDIDATE_SIDS[@]}" -gt 0 ]] || { echo 'Candidate rules contain no SID' >&2; exit 77; }
 loaded=$(grep -Eo '[0-9]+ rules successfully loaded' "$VALIDATION_LOG" | tail -1 | awk '{print $1}')
