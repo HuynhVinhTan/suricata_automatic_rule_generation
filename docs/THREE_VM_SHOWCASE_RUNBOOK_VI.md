@@ -31,13 +31,13 @@ Trên Windows cần:
 Kiểm tra và mở ba terminal:
 
 ```powershell
-.scriptsdemowindowsConnect-ThreeVMs.ps1 -OpenTerminals
+.\scripts\demo\windows\Connect-ThreeVMs.ps1 -OpenTerminals
 ```
 
 Triển khai đúng commit hiện tại vào thư mục user-owned trên cả ba VM:
 
 ```powershell
-.scriptsdemowindowsStart-Showcase.ps1
+.\scripts\demo\windows\Start-Showcase.ps1
 ```
 
 Lệnh này dùng `git archive`, lưu SHA commit và SHA archive trên từng VM, không ghi đè checkout cũ.
@@ -45,7 +45,7 @@ Lệnh này dùng `git archive`, lưu SHA commit và SHA archive trên từng VM
 ## Kiểm tra trạng thái
 
 ```powershell
-.scriptsdemowindowsShow-Status.ps1
+.\scripts\demo\windows\Show-Status.ps1
 ```
 
 Hoặc trong từng terminal:
@@ -64,7 +64,7 @@ Hoặc trong từng terminal:
 Relay chỉ đọc EVE production và ghi vào vùng shadow có giới hạn 128 MiB:
 
 ```powershell
-.scriptsdemowindowsStart-Eve-Relay.ps1
+.\scripts\demo\windows\Start-Eve-Relay.ps1
 ```
 
 Lưu PID và log Windows do lệnh in ra. Không dùng `truncate`, `sed -i`, `rm` hoặc restart trên EVE production.
@@ -78,13 +78,21 @@ ssh suricata-vm3 /home/tanhv/suricata-ai-showcase/current/scripts/demo/vm3-statu
 
 ## Normal và Attack traffic
 
-Trước khi tạo traffic, xác nhận port 80 và các port đóng thực sự đúng với preflight. Chỉ chạy trong mạng `192.168.10.0/24`.
+Trước khi tạo traffic, khởi động HTTP service user-owned ở port unprivileged `18080`. Chỉ chạy trong mạng `192.168.10.0/24`.
+
+Trên VM1:
+
+```bash
+ssh suricata-vm1 /home/tanhv/suricata-ai-showcase/current/scripts/demo/vm1-start-normal-service.sh 18080
+```
 
 Normal:
 
 ```bash
 ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-generate-normal.sh
 ```
+
+Lệnh chỉ thành công khi đủ 24 lần thử và có đúng 22 HTTP 200; nếu không, session bị từ chối là calibration evidence.
 
 Attack thử nghiệm tốc độ thấp:
 
@@ -159,18 +167,24 @@ Kiểm tra read-only:
 ssh suricata-vm3 /home/tanhv/suricata-ai-showcase/current/scripts/demo/vm3-show-dashboard.sh
 ```
 
-URL mặc định là `http://127.0.0.1:5601/app/discover`; từ Windows cần mở qua phiên/forward đã được owner cấu hình. Index showcase dự kiến là `suricata-ai-showcase-*`. Không ghi vào các index lịch sử.
+Từ Windows, mở local forward tường minh rồi truy cập `http://127.0.0.1:5601/app/discover`:
+
+```powershell
+ssh -N -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -L 5601:127.0.0.1:5601 suricata-vm3
+```
+
+Index showcase là `suricata-ai-showcase-*`. Không ghi vào các index lịch sử.
 
 ## Dừng an toàn
 
 ```powershell
-.scriptsdemowindowsStop-Showcase.ps1
+.\scripts\demo\windows\Stop-Showcase.ps1
 ```
 
-Sau đó dừng relay Windows bằng PID đã in bởi `Start-Eve-Relay.ps1`. Kiểm tra lại:
+`Stop-Showcase.ps1` dừng relay Windows theo PID file đã ghi bởi `Start-Eve-Relay.ps1`. Kiểm tra lại:
 
 ```powershell
-.scriptsdemowindowsShow-Status.ps1
+.\scripts\demo\windows\Show-Status.ps1
 ```
 
 Production Suricata/Filebeat phải còn cùng PID và cùng checksum trước/sau.
