@@ -69,6 +69,12 @@ Relay chỉ đọc EVE production và ghi vào vùng shadow có giới hạn 128
 
 Lưu PID và log Windows do lệnh in ra. Không dùng `truncate`, `sed -i`, `rm` hoặc restart trên EVE production.
 
+Relay giữ các record có newline hoàn chỉnh, rotate thành các file đánh số và
+fail-closed khi tổng shadow storage đạt 512 MiB (`RELAY_STORAGE_CAP_REACHED`).
+Relay hiện là best-effort: `tail -F -n 0` không có durable source cursor/ack,
+vì vậy interruption có thể bỏ qua dữ liệu giữa các phiên; không gọi đây là
+no-loss/no-duplicate delivery.
+
 Quan sát EVE đã được khử thông tin nhạy cảm:
 
 ```bash
@@ -158,6 +164,12 @@ ssh suricata-vm1 /home/tanhv/suricata-ai-showcase/current/scripts/demo/vm1-isola
 ```
 
 Không chạy các lệnh này với `/etc/suricata`, production rules, production PID hoặc production EVE.
+
+Validator chỉ PASS khi config reference đúng canonical candidate rule file,
+Suricata báo đã xử lý rule file và số rule loaded bao phủ các SID ứng viên.
+Rollback chỉ PASS với evidence mới, bound vào candidate ID/SID, rule và PCAP
+SHA256, run ID, post-rollback timestamp, zero candidate alerts và invariant
+YAML/rules/PID production; offline evidence không được gọi là live rollback.
 
 ## Kibana và ELK
 

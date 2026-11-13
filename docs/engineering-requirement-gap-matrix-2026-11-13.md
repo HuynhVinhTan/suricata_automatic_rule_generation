@@ -196,3 +196,24 @@ are recorded. The Windows stop command records and stops the relay PID and
 only showcase-owned VM processes. Local verification passed: `446 passed,
 7 skipped`; no live VM rehearsal was possible from this checkout, so the
 runtime gates above remain unchanged.
+
+## Live three-VM rehearsal — 2026-11-13
+
+Exact commit `d326141c03460a366c1e8aa51d3c7b7cc4d2b042` was deployed to VM1,
+VM2 and VM3 with archive SHA256
+`1b08748ed890a577f38cd0ab59f1d9026428640c8c6794c769e9b6e16de89eb4`.
+The corrected Normal session ran `00:57:30Z–00:58:16Z`: 24 attempts, 22 HTTP
+200 responses on `/health:18080`, and two documented RST-refused controls.
+The independent Attack session ran `00:58:31Z–00:59:17Z`: 24/24 RST-refused
+responses. With the Windows relay active, VM3 shadow storage increased from
+`1,437,999` to `1,639,950` bytes.
+
+The candidate validator loaded SID `9900999` from the exact canonical rule
+file; a valid config that did not reference that file returned `77`. Worker
+launch remained `ML_BLOCKED` with exit `77`, correctly producing no synthetic
+prediction. Start/Stop was repeated; the second Stop was safe. Production
+Suricata PID `2164`, Filebeat PID `1222`, YAML SHA256
+`6224bc7d0bc04d97c4282f54a71e0736341341aa82c530fe22aed3da28814d72`, and
+rules-set SHA256 `a147881f721e735c02ef790f507e2233f28321e9ff90fd7ba4a087a3034f0a5f`
+were unchanged before/after. HTTP, relay and worker PID files were absent after
+Stop; Suricata and Filebeat remained active.
