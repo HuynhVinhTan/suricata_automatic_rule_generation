@@ -219,5 +219,28 @@ Production Suricata/Filebeat phải còn cùng PID và cùng checksum trước/s
 - Candidate activation/rollback: BLOCKED.
 - T0–T11 đầy đủ: NOT_MEASURED.
 
+## Showcase EVE-native đã được chấp nhận ở mức demo (2026-11-13)
+
+Artifact `showcase_demo` dùng đúng bốn feature EVE: `protocol_tcp`,
+`duration_log`, `packets_log`, `bytes_log`. Model chỉ được huấn luyện trên
+development; threshold chỉ được chọn trên calibration. Các attempt Normal
+`rst_refused` là `negative_control`, có `label=null` và bị loại khỏi mọi metric
+nhị phân; chỉ HTTP 200 là Normal nhị phân.
+
+Cohort độc lập mới gồm 3 Attack và 3 Normal: mỗi Attack 24/24 RST, mỗi Normal
+22 HTTP 200 và 2 RST control. Correlation yêu cầu đúng five-tuple, flow ID,
+event hash và bounded flow timestamps. Split overlap theo session, attempt hoặc
+canonical EVE event hash đều bị từ chối trước khi fit.
+
+Kết quả holdout độc lập ở mức flow: TP=72, FN=0, FP=0, TN=66; precision=1.0,
+recall=1.0, F1=1.0, FPR=0.0. Ở mức session: Attack detection rate=3/3,
+Normal false-alert rate=0/3. Đây là cohort demo được kiểm soát, không phải
+bằng chứng zero-day hoặc production model.
+
+Index thực tế là `suricata-ai-showcase-2026.11.13`; 607 documents đều có
+profile, demo-only, model/data/calibration lineage, các cờ approved/deployable/
+deployed=false và `REVIEW_ONLY`. Dashboard showcase không ghi vào production
+ELK/Filebeat; mở bằng SSH local forwarding `-L 5601:127.0.0.1:5601`.
+
 Vì vậy runbook này là khung showcase an toàn và fail-closed; chỉ gọi là `SHOWCASE_READY` sau khi chạy thực tế các bước tương ứng, không gọi là `RESEARCH_ACCEPTED`.
 

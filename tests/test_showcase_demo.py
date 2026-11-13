@@ -7,7 +7,7 @@ import pytest
 from netids.models.ml import make_ml_pipeline
 from netids.showcase_demo import ShowcaseDemoFlowModelAdapter, load_showcase_demo_artifact
 from scripts.build_showcase_dataset import correlate_sessions
-from scripts.train_showcase_model import validate_split_disjointness
+from scripts.train_showcase_model import session_metrics, validate_split_disjointness
 
 
 def _model_and_metadata(tmp_path):
@@ -114,3 +114,13 @@ def test_split_disjointness_rejects_session_attempt_and_event_overlap():
         validate_split_disjointness({"development": [base], "calibration": [{**base, "run_id": "run-b", "event_sha256": "b" * 64}]})
     with pytest.raises(ValueError, match="event"):
         validate_split_disjointness({"development": [base], "calibration": [{**base, "run_id": "run-b", "attempt_id": "attempt-b"}]})
+
+
+def test_session_metrics_keep_control_records_out_of_binary_rate():
+    rows = [{"run_id": "attack-1", "scenario": "ATTACK", "binary_eligible": True},
+            {"run_id": "normal-1", "scenario": "NORMAL", "binary_eligible": True},
+            {"run_id": "normal-1", "scenario": "NORMAL", "binary_eligible": False}]
+    assert session_metrics(rows, [0.9, 0.1, 0.9], 0.5) == {
+        "attack_sessions": 1, "attack_detected": 1, "attack_session_detection_rate": 1.0,
+        "normal_sessions": 1, "normal_false_alerts": 0, "normal_session_false_alert_rate": 0.0,
+    }

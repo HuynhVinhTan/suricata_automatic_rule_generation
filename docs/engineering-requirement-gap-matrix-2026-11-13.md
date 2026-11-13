@@ -11,10 +11,10 @@ does not convert unit-test evidence into runtime acceptance.
 | EVE-03 | Bounded processing and graceful shutdown | `StreamingInferenceWorker` bounded synchronous processing, committed reader acknowledgements, SQLite crash ledger, stop event, window expiry/capacity | oversized-input, bounded-cycle, slow-consumer/restart, time-budget, retention, eviction and active-shutdown tests | IMPLEMENTED / INTEGRATION_TESTED | No live long-running Suricata load test |
 | LEDGER-01 | Durable replay/audit state | Indexed SQLite event/replay tables, `(capture_run_id, sequence)` query index, compact SQL lookups, source cursor, immutable audit rows; output projection is archival-only; configurable free-space preflight/monitoring, safe low-space stop, expected-hash/schema/integrity-checked SQLite backup and no-overwrite recovery helpers | 2,000 ordinary-event ledger stress; 256 signed-Hybrid replay stress; query-plan/restart tests; free-space, backup, new-destination, wrong-hash, corrupt-backup, interrupted-publish and replay-preservation tests | CODED / INTEGRATION_TESTED | Total disk-capacity acceptance is BLOCKED; no live long-run backup/restore drill has been exercised |
 | OUT-01 | Bounded output projection and recovery | Incremental append, bounded `.1` rotation, startup rebuild from ledger | retention, restart and projection-write/rotation tests | IMPLEMENTED / INTEGRATION_TESTED | Projection is not the authoritative audit store; SQLite ledger is authoritative |
-| EVE-04 | Compatible EVE model inference | `FlowModelAdapter`, `suricata_eve_to_features`, `validate_feature_matrix`; VM1 read-only audit found 894 complete and 57 incomplete/non-TCP/UDP flow records | test-only RandomForest integration tests; VM1 EVE contract counts | BLOCKED | No verified CTU artifact with SHA/schema/preprocessing/threshold provenance is available; the VM3 SYN model has a different five-feature contract and the available UNSW bundles are development/calibration artifacts |
+| EVE-04 | Compatible EVE model inference | Production path remains strict; isolated `ShowcaseDemoFlowModelAdapter` uses exact four-feature EVE schema and fresh VM3 EVE records | showcase adapter/provenance tests; exact 607-document ELK audit | SHOWCASE DEMO ACCEPTED / PRODUCTION BLOCKED | No verified CTU production artifact; demo model is explicitly `demo_only` and rejected by the production loader |
 | HYB-01 | Hybrid protocol verification | `src/netids/hybrid_provenance.py` Ed25519 envelope verifier with event ID, strict integer sequence watermark, nested schema validation and persisted replay ledger; production trust anchor intentionally unprovisioned | missing-anchor, two-events-per-capture, 256 signed events, malformed nested payload, modified-payload, signature, replay, fingerprint, timestamp, boolean/invalid-sequence and restart tests | BLOCKED | No independently pinned producer key is provisioned; all ordinary/untrusted EVE telemetry remains unavailable |
 | MODEL-01 | Provenance-bound decision threshold | `FlowModelAdapter.decision_threshold`, strict typed structured artifact threshold provenance | threshold default/non-default/missing/invalid/mismatch, bool/NaN/infinity, empty-field and calibration-digest tests | IMPLEMENTED / UNIT_TESTED | No verified production CTU artifact is available to execute this gate |
-| EVID-01 | Structured anomaly provenance | `netids_stream_anomaly_v1` output with event/model/run hashes; parse-only real-EVE evidence is hash-linked but contains no model decisions | output provenance assertions; real-EVE reader accounting | IMPLEMENTED / INTEGRATION_TESTED | No trusted compatible model was loaded and no anomaly decision was emitted |
+| EVID-01 | Structured anomaly provenance | `netids_stream_anomaly_v1` output with event/model/run/data/calibration lineage; 607 indexed documents audited | output provenance assertions; VM3 Elasticsearch field audit | SHOWCASE DEMO ACCEPTED | Production model decision evidence remains unavailable; demo output is review-only and non-deployable |
 | ORCH-01 | One guarded laboratory entry point | `scripts/run_lab_workflow.py`, `src/netids/lab_workflow.py` one-shot smoke mode | workflow gate test | TESTED / UNIT_TESTED | One poll is explicitly not continuous runtime acceptance; candidate generation, owner approval, staging, activation and rollback are BLOCKED |
 | LAT-01 | Monotonic latency instrumentation | `LatencyTrace` integrated by `run_streaming_lab_workflow` | workflow latency assertions | IMPLEMENTED / UNIT_TESTED | T0–T11 live runtime timings are not measured |
 | RULE-01 | Safe rule-generation semantics | Existing `src/netids/rulegen.py` and review-only lifecycle retained | existing rule-generation/security suite | IMPLEMENTED / UNIT_TESTED | The historical SID 9103012 remains rejected; no new passing candidate was produced |
@@ -80,7 +80,23 @@ or relabel that holdout.
    fingerprint, or keep Hybrid unavailable; no private key is requested or
    stored by this project.
 
-Overall status for this matrix: **BLOCKED**, not complete.
+Showcase EVE-native demo acceptance update (2026-11-13): the corrected
+correlator now labels only verified Attack RST flows as binary 1 and verified
+Normal HTTP 200 flows as binary 0. Normal RST controls are retained as an
+explicit `negative_control` category and excluded from binary metrics. A new
+independent 3-Attack/3-Normal cohort was correlated with exact tuple, flow ID,
+event hash and bounded timestamps. Corrected holdout flow metrics are
+TP=72/FN=0/FP=0/TN=66, precision=1.0, recall=1.0, F1=1.0, FPR=0.0; session
+metrics are Attack detection 3/3 and Normal false-alert 0/3. The historical
+TP=72/FN=0/FP=6/TN=66 result remains preserved as secondary, non-blind evidence
+because its six false positives were the six Normal RST controls.
+
+The demo artifact remains `demo_only=true`, `profile=showcase_demo`,
+`REVIEW_ONLY`, and is rejected by the production loader. This does not change
+the production CTU, Hybrid, candidate activation, rollback, or zero-day status.
+
+Overall status for this matrix: **BLOCKED for production/research acceptance;
+SHOWCASE_READY for the explicitly bounded demo workflow**.
 
 ## Runtime gates — 2026-11-13
 

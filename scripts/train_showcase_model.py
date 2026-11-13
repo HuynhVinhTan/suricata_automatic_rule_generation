@@ -60,6 +60,24 @@ def _metrics(y, scores, threshold):
             "FPR": float(fp / (fp + tn)) if fp + tn else 0.0}
 
 
+def session_metrics(rows: list[dict], scores, threshold: float) -> dict:
+    grouped = {}
+    eligible_rows = [row for row in rows if row.get("binary_eligible") is True]
+    for row, score in zip(eligible_rows, scores):
+        item = grouped.setdefault(row["run_id"], {"scenario": row["scenario"], "max_score": 0.0})
+        item["max_score"] = max(item["max_score"], float(score))
+    attacks = [item for item in grouped.values() if item["scenario"] == "ATTACK"]
+    normals = [item for item in grouped.values() if item["scenario"] == "NORMAL"]
+    attack_detected = sum(item["max_score"] >= threshold for item in attacks)
+    normal_false_alerts = sum(item["max_score"] >= threshold for item in normals)
+    return {
+        "attack_sessions": len(attacks), "attack_detected": attack_detected,
+        "attack_session_detection_rate": attack_detected / len(attacks) if attacks else 0.0,
+        "normal_sessions": len(normals), "normal_false_alerts": normal_false_alerts,
+        "normal_session_false_alert_rate": normal_false_alerts / len(normals) if normals else 0.0,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--development", type=Path, required=True)
@@ -85,7 +103,7 @@ def main():
                   "holdout": {"sessions": sorted({row["run_id"] for row in hold_rows}), "records": len(hold_rows)}}
     report = {"schema_version": SCHEMA_VERSION, "profile": "showcase_demo", "demo_only": True,
               "split_plan": split_plan, "development": {"records": int(len(y_dev))}, "calibration": {"records": int(len(y_cal)), "threshold": threshold, "metrics": _metrics(y_cal, cal_scores, threshold)},
-              "holdout": {"records": int(len(y_hold)), "metrics": _metrics(y_hold, hold_scores, threshold)},
+              "holdout": {"records": int(len(y_hold)), "metrics": _metrics(y_hold, hold_scores, threshold), "session_metrics": session_metrics(hold_rows, hold_scores, threshold)},
               "created_utc": datetime.now(timezone.utc).isoformat()}
     args.artifact_dir.mkdir(parents=True, exist_ok=False)
     model_path = args.artifact_dir / "pipeline.joblib"
