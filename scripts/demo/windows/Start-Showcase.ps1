@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param([string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path, [switch]$OpenTerminals, [switch]$AllowDetached)
 $ErrorActionPreference = 'Stop'
-$branch = (git -C $RepositoryRoot branch --show-current).Trim()
+$branch = ((git -C $RepositoryRoot branch --show-current | Out-String).Trim())
 if ($branch -ne 'feat/complete-suricata-ai-e2e' -and -not ($AllowDetached -and [string]::IsNullOrWhiteSpace($branch))) { throw "Refusing deployment from branch '$branch'. Use the exact showcase branch or -AllowDetached for a pinned commit." }
 if (git -C $RepositoryRoot status --porcelain) { throw 'Refusing deployment with a dirty worktree.' }
 $commit = (git -C $RepositoryRoot rev-parse HEAD).Trim()
