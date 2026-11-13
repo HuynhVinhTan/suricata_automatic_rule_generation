@@ -183,3 +183,16 @@ These gates support `VM_DEPLOYED` and partial `VM_VERIFIED` showcase status;
 they do not support `SHOWCASE_READY` or `RESEARCH_ACCEPTED` until the missing
 model, capture authorization, independent cohort and candidate approval gates
 are completed.
+
+## Operator QA follow-up — commit 3576fdd
+
+The operator defect fixes are covered by `tests/test_showcase_scripts.py`:
+candidate config/rules/PCAP paths are canonicalized independently, rollback is
+fail-closed until candidate removal, negative replay evidence and production
+invariant snapshots agree, and relay rotation preserves complete JSONL records.
+The Normal path now provisions a user-owned HTTP service on port `18080` and
+rejects incomplete sessions unless all 24 attempts and 22 HTTP 200 responses
+are recorded. The Windows stop command records and stops the relay PID and
+only showcase-owned VM processes. Local verification passed: `446 passed,
+7 skipped`; no live VM rehearsal was possible from this checkout, so the
+runtime gates above remain unchanged.
