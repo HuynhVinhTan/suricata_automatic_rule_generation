@@ -98,6 +98,21 @@ the production CTU, Hybrid, candidate activation, rollback, or zero-day status.
 Overall status for this matrix: **BLOCKED for production/research acceptance;
 SHOWCASE_READY for the explicitly bounded demo workflow**.
 
+## Packet/lifecycle closeout update — 2026-11-13
+
+The permitted VM2 capture wrapper was executed without privilege escalation and
+returned `CAPTURE_BLOCKED`/exit 77 because `/usr/bin/tcpdump` lacks
+`cap_net_raw`. VM2 `eth1` exists, but no capability or sudoers change was made.
+Consequently no new PCAP SHA256, packet-completeness claim, lab producer key,
+packet-backed Hybrid envelope, or new candidate is asserted.
+
+The existing code-level Hybrid/candidate/isolated lifecycle gates were rerun:
+91 focused tests passed and 4 were skipped. Candidate SID 9103012 remains
+REJECTED and untouched; isolated SID alert/rollback remain NOT_MEASURED.
+Actual VM3 EVE-to-ledger latency for 607 records was 31.033256–358.519941 s
+(median 235.973714 s, P95 303.697609 s). This does not measure activation stages
+T8–T11.
+
 ## Runtime gates — 2026-11-13
 
 ### VM3 environment and model loading boundary

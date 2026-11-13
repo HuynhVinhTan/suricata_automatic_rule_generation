@@ -219,6 +219,22 @@ Production Suricata/Filebeat phải còn cùng PID và cùng checksum trước/s
 - Candidate activation/rollback: BLOCKED.
 - T0–T11 đầy đủ: NOT_MEASURED.
 
+## Packet evidence và các cổng nghiên cứu còn lại
+
+Evidence đã freeze được ghi trong
+`docs/final-showcase-packet-evidence-2026-11-13.md`. VM2 có `eth1`, nhưng
+`getcap /usr/bin/tcpdump` không có `cap_net_raw`; wrapper trả về
+`CAPTURE_BLOCKED` và exit 77. Không tự ý chạy sudo hoặc thay đổi capability.
+Owner chỉ chạy lệnh sau interactively sau khi phê duyệt phương thức capture:
+
+```bash
+ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh /home/kali/suricata-ai-showcase/evidence/<RUN_ID>.pcap
+```
+
+Không có PCAP mới thì không provision producer key `LAB_DEMO_ONLY`, không ký
+packet evidence, không tạo candidate mới và không gọi isolated replay/rollback
+là thành công. SID9103012 giữ nguyên trạng thái REJECTED.
+
 ## Showcase EVE-native đã được chấp nhận ở mức demo (2026-11-13)
 
 Artifact `showcase_demo` dùng đúng bốn feature EVE: `protocol_tcp`,
