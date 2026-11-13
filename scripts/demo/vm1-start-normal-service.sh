@@ -8,6 +8,7 @@ PORT_FILE="$ROOT/runtime/http-server.port"
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || { echo 'Invalid unprivileged HTTP port' >&2; exit 64; }
 mkdir -p "$SERVICE_ROOT" "$(dirname "$PID_FILE")"
 printf '%s\n' 'suricata showcase normal service' > "$SERVICE_ROOT/index.html"
+printf '%s\n' 'ok' > "$SERVICE_ROOT/health"
 if [[ -f "$PID_FILE" ]]; then
   pid=$(cat "$PID_FILE")
   if [[ -r "/proc/$pid/cmdline" ]]; then echo "Normal service already running (PID $pid)"; exit 0; fi
