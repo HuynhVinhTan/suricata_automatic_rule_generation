@@ -744,6 +744,7 @@ class StreamingInferenceWorker:
             "ml": {
                 "score": inference["score"],
                 "anomalous": inference["anomalous"],
+                **{key: inference[key] for key in ("profile", "demo_only", "approved", "deployable", "deployed", "review_state") if key in inference},
             },
             "hybrid": hybrid,
             "decision": "review_required" if inference["anomalous"] else "normal_or_insufficient_evidence",
@@ -754,6 +755,10 @@ class StreamingInferenceWorker:
                 "event_sha256": event_sha,
                 "model_sha256": self.model.metadata["model_sha256"],
                 "model_name": self.model.metadata.get("model_name"),
+                "profile": inference.get("profile", "production"),
+                "demo_only": inference.get("demo_only", False),
+                "data_lineage": inference.get("data_lineage"),
+                "calibration_lineage": inference.get("calibration_lineage"),
                 "source": "suricata_eve_jsonl",
             },
         }

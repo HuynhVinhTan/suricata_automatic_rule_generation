@@ -11,12 +11,14 @@ from pathlib import Path
 
 from netids.eve_worker import FlowModelAdapter, JsonlEveReader, StreamingInferenceWorker
 from netids.models.artifacts import load_ml_artifact
+from netids.showcase_demo import ShowcaseDemoFlowModelAdapter, load_showcase_demo_artifact
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Suricata EVE JSONL file")
     parser.add_argument("--model-dir", type=Path, required=True)
+    parser.add_argument("--profile", choices=("production", "showcase_demo"), default="production")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--window-seconds", type=int, default=10)
@@ -35,10 +37,15 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Process currently complete lines and exit")
     args = parser.parse_args()
 
-    model, metadata = load_ml_artifact(args.model_dir)
+    if args.profile == "showcase_demo":
+        model, metadata = load_showcase_demo_artifact(args.model_dir)
+        adapter = ShowcaseDemoFlowModelAdapter(model, metadata)
+    else:
+        model, metadata = load_ml_artifact(args.model_dir)
+        adapter = FlowModelAdapter(model, metadata)
     worker = StreamingInferenceWorker(
         reader=JsonlEveReader(args.input, max_chunk_bytes=args.max_chunk_bytes, max_line_bytes=args.max_line_bytes),
-        model=FlowModelAdapter(model, metadata),
+        model=adapter,
         output_path=args.output,
         run_id=args.run_id,
         window_seconds=args.window_seconds,
