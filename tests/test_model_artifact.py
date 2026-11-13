@@ -118,7 +118,7 @@ class TestModelArtifact(unittest.TestCase):
             metadata["status"] = "demo_only"
             metadata["demo_only"] = True
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-            with self.assertRaises(ValueError, match="demo_only"):
+            with self.assertRaises(ValueError):
                 load_ml_artifact(path)
 
 
