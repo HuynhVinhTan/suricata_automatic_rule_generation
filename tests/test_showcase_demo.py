@@ -7,6 +7,7 @@ import pytest
 from netids.models.ml import make_ml_pipeline
 from netids.showcase_demo import ShowcaseDemoFlowModelAdapter, load_showcase_demo_artifact
 from scripts.build_showcase_dataset import correlate_sessions
+from scripts.train_showcase_model import validate_split_disjointness
 
 
 def _model_and_metadata(tmp_path):
@@ -22,12 +23,12 @@ def _model_and_metadata(tmp_path):
     import hashlib
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     metadata = {
-        "artifact_version": 1, "status": "demo_only", "demo_only": True,
+        "artifact_version": 1, "status": "demo_only", "demo_only": True, "profile": "showcase_demo",
         "model_name": "logistic_regression", "schema_version": "flow_features_v0.1",
         "feature_columns": ["protocol_tcp", "duration_log", "packets_log", "bytes_log"],
         "model_sha256": digest, "decision_threshold": 0.5,
-        "threshold_provenance": {"decision_threshold": 0.5, "status": "demo_only", "calibration_manifest_sha256": "a" * 64},
-        "source_dataset": {"development_manifest_sha256": "b" * 64, "calibration_manifest_sha256": "c" * 64, "holdout_manifest_sha256": "d" * 64},
+        "threshold_provenance": {"decision_threshold": 0.5, "status": "demo_only", "calibration_method": "max_f1_on_calibration", "calibration_version": "showcase-calibration-v1", "calibration_manifest_sha256": "a" * 64},
+        "source_dataset": {"development_manifest_sha256": "b" * 64, "calibration_manifest_sha256": "c" * 64, "holdout_manifest_sha256": "d" * 64, "split_disjointness": "verified", "split_plan": {}},
         "calibration": {"records": 2, "method": "fixed_test"},
     }
     (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
@@ -59,6 +60,16 @@ def test_showcase_loader_rejects_non_demo_artifact(tmp_path):
         load_showcase_demo_artifact(folder)
 
 
+def test_showcase_loader_rejects_threshold_provenance_mismatch(tmp_path):
+    folder, _, _ = _model_and_metadata(tmp_path)
+    metadata_path = folder / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["threshold_provenance"]["decision_threshold"] = 0.4
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="threshold"):
+        load_showcase_demo_artifact(folder)
+
+
 def test_correlator_requires_exact_tuple_and_bounded_time(tmp_path):
     manifest = {
         "run_id": "dev-a", "scenario": "ATTACK", "attempts": [{
@@ -75,3 +86,31 @@ def test_correlator_requires_exact_tuple_and_bounded_time(tmp_path):
     assert len(correlate_sessions([manifest], [eve])) == 1
     eve["src_port"] = 40001
     assert correlate_sessions([manifest], [eve]) == []
+
+
+def test_normal_rst_control_is_not_a_binary_normal_label():
+    manifest = {"run_id": "normal-1", "scenario": "NORMAL", "attempts": [{
+        "attempt_id": "normal-1-001", "timestamp_utc": "2026-01-01T00:00:00Z",
+        "attempt_end_utc": "2026-01-01T00:00:02Z", "source_ip": "192.168.10.20",
+        "source_port": 40000, "target_ip": "192.168.10.10", "destination_port": 18100,
+        "protocol": "TCP", "result": "rst_refused", "http_status": None,
+    }]}
+    eve = {"event_type": "flow", "flow_id": 7, "timestamp": "2026-01-01T00:00:01Z",
+           "src_ip": "192.168.10.20", "src_port": 40000, "dest_ip": "192.168.10.10",
+           "dest_port": 18100, "proto": "TCP", "flow": {"start": "2026-01-01T00:00:00Z",
+           "end": "2026-01-01T00:00:01Z", "pkts_toserver": 1, "pkts_toclient": 1,
+           "bytes_toserver": 10, "bytes_toclient": 10}}
+    row = correlate_sessions([manifest], [eve])[0]
+    assert row["category"] == "negative_control"
+    assert row["binary_eligible"] is False
+    assert row["label"] is None
+
+
+def test_split_disjointness_rejects_session_attempt_and_event_overlap():
+    base = {"run_id": "run-a", "attempt_id": "attempt-a", "event_sha256": "a" * 64, "label": 0}
+    with pytest.raises(ValueError, match="session"):
+        validate_split_disjointness({"development": [base], "calibration": [{**base, "attempt_id": "attempt-b", "event_sha256": "b" * 64}]})
+    with pytest.raises(ValueError, match="attempt"):
+        validate_split_disjointness({"development": [base], "calibration": [{**base, "run_id": "run-b", "event_sha256": "b" * 64}]})
+    with pytest.raises(ValueError, match="event"):
+        validate_split_disjointness({"development": [base], "calibration": [{**base, "run_id": "run-b", "attempt_id": "attempt-b"}]})

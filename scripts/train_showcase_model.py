@@ -18,11 +18,32 @@ from netids.features.schema import FEATURE_COLUMNS, SCHEMA_VERSION
 from netids.models.ml import make_ml_pipeline
 
 
-def _read(path: Path) -> pd.DataFrame:
+def _read_rows(path: Path) -> list[dict]:
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not rows:
         raise ValueError(f"empty dataset: {path}")
-    return pd.DataFrame([row["features"] for row in rows])[list(FEATURE_COLUMNS)], np.array([row["label"] for row in rows])
+    return rows
+
+
+def validate_split_disjointness(splits: dict[str, list[dict]]) -> None:
+    for field in ("run_id", "attempt_id", "event_sha256"):
+        seen = {}
+        for split, rows in splits.items():
+            for row in rows:
+                value = row.get(field)
+                if value in seen and seen[value] != split:
+                    name = {"run_id": "session", "attempt_id": "attempt", "event_sha256": "event"}[field]
+                    raise ValueError(f"{name} overlap between {seen[value]} and {split}: {value}")
+                seen[value] = split
+
+
+def _read(path: Path) -> tuple[pd.DataFrame, np.ndarray, list[dict]]:
+    rows = _read_rows(path)
+    eligible = [row for row in rows if row.get("binary_eligible") is True and row.get("label") in (0, 1)]
+    if not eligible:
+        raise ValueError(f"no binary-eligible records: {path}")
+    return (pd.DataFrame([row["features"] for row in eligible])[list(FEATURE_COLUMNS)],
+            np.array([row["label"] for row in eligible]), rows)
 
 
 def _sha(path: Path) -> str:
@@ -47,9 +68,10 @@ def main():
     parser.add_argument("--artifact-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    X_dev, y_dev = _read(args.development)
-    X_cal, y_cal = _read(args.calibration)
-    X_hold, y_hold = _read(args.holdout)
+    X_dev, y_dev, dev_rows = _read(args.development)
+    X_cal, y_cal, cal_rows = _read(args.calibration)
+    X_hold, y_hold, hold_rows = _read(args.holdout)
+    validate_split_disjointness({"development": dev_rows, "calibration": cal_rows, "holdout": hold_rows})
     if set(y_dev) != {0, 1} or set(y_cal) != {0, 1} or set(y_hold) != {0, 1}:
         raise ValueError("each split must contain both classes")
     model = make_ml_pipeline("logistic_regression", random_state=42)
@@ -58,20 +80,24 @@ def main():
     candidates = sorted({0.0, 0.5, 1.0, *map(float, cal_scores)})
     threshold = max(candidates, key=lambda candidate: (_metrics(y_cal, cal_scores, candidate)["F1"], -candidate))
     hold_scores = model.predict_proba(X_hold)[:, 1]
+    split_plan = {"development": {"sessions": sorted({row["run_id"] for row in dev_rows}), "records": len(dev_rows)},
+                  "calibration": {"sessions": sorted({row["run_id"] for row in cal_rows}), "records": len(cal_rows)},
+                  "holdout": {"sessions": sorted({row["run_id"] for row in hold_rows}), "records": len(hold_rows)}}
     report = {"schema_version": SCHEMA_VERSION, "profile": "showcase_demo", "demo_only": True,
-              "development": {"records": int(len(y_dev))}, "calibration": {"records": int(len(y_cal)), "threshold": threshold, "metrics": _metrics(y_cal, cal_scores, threshold)},
+              "split_plan": split_plan, "development": {"records": int(len(y_dev))}, "calibration": {"records": int(len(y_cal)), "threshold": threshold, "metrics": _metrics(y_cal, cal_scores, threshold)},
               "holdout": {"records": int(len(y_hold)), "metrics": _metrics(y_hold, hold_scores, threshold)},
               "created_utc": datetime.now(timezone.utc).isoformat()}
     args.artifact_dir.mkdir(parents=True, exist_ok=False)
     model_path = args.artifact_dir / "pipeline.joblib"
     joblib.dump(model, model_path, compress=3)
     report["model_sha256"] = _sha(model_path)
-    metadata = {"artifact_version": 1, "status": "demo_only", "demo_only": True, "model_name": "logistic_regression",
+    metadata = {"artifact_version": 1, "status": "demo_only", "demo_only": True, "profile": "showcase_demo", "model_name": "logistic_regression",
                 "schema_version": SCHEMA_VERSION, "feature_columns": list(FEATURE_COLUMNS), "sklearn_version": sklearn.__version__,
                 "training_records": int(len(y_dev)), "decision_threshold": threshold, "created_utc": report["created_utc"],
                 "model_sha256": report["model_sha256"],
-                "source_dataset": {"development_manifest_sha256": _sha(args.development), "calibration_manifest_sha256": _sha(args.calibration), "holdout_manifest_sha256": _sha(args.holdout)},
-                "threshold_provenance": {"decision_threshold": threshold, "status": "demo_only", "calibration_manifest_sha256": _sha(args.calibration)}}
+                "source_dataset": {"development_manifest_sha256": _sha(args.development), "calibration_manifest_sha256": _sha(args.calibration), "holdout_manifest_sha256": _sha(args.holdout), "split_plan": split_plan, "split_disjointness": "verified"},
+                "calibration_method": "max_f1_on_calibration", "calibration_version": "showcase-calibration-v1",
+                "threshold_provenance": {"decision_threshold": threshold, "status": "demo_only", "calibration_method": "max_f1_on_calibration", "calibration_version": "showcase-calibration-v1", "calibration_manifest_sha256": _sha(args.calibration)}}
     (args.artifact_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

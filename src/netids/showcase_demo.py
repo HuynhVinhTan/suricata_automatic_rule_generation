@@ -30,7 +30,8 @@ def _sha256(path: Path) -> str:
 def load_showcase_demo_artifact(directory: str | Path) -> tuple[Pipeline, dict]:
     folder = Path(directory)
     metadata = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
-    if metadata.get("artifact_version") != 1 or metadata.get("status") != "demo_only" or metadata.get("demo_only") is not True:
+    if (metadata.get("artifact_version") != 1 or metadata.get("status") != "demo_only" or
+            metadata.get("demo_only") is not True or metadata.get("profile") != "showcase_demo"):
         raise ValueError("showcase artifact must be explicitly demo_only")
     if metadata.get("schema_version") != SCHEMA_VERSION or metadata.get("feature_columns") != list(FEATURE_COLUMNS):
         raise ValueError("showcase artifact feature schema mismatch")
@@ -50,8 +51,17 @@ def load_showcase_demo_artifact(directory: str | Path) -> tuple[Pipeline, dict]:
     if type(threshold) not in (int, float) or not math.isfinite(float(threshold)) or not 0 <= float(threshold) <= 1:
         raise ValueError("showcase threshold is invalid")
     provenance = metadata.get("threshold_provenance", {})
-    if provenance.get("status") != "demo_only" or provenance.get("calibration_manifest_sha256") is None:
-        raise ValueError("showcase calibration provenance is incomplete")
+    if (provenance.get("status") != "demo_only" or provenance.get("decision_threshold") != threshold or
+            not isinstance(provenance.get("calibration_method"), str) or
+            not isinstance(provenance.get("calibration_version"), str) or
+            not re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("calibration_manifest_sha256", "")))):
+        raise ValueError("showcase threshold/calibration provenance is incomplete")
+    source = metadata.get("source_dataset", {})
+    for key in ("development_manifest_sha256", "calibration_manifest_sha256", "holdout_manifest_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(source.get(key, ""))):
+            raise ValueError("showcase split manifest provenance is incomplete")
+    if source.get("split_disjointness") != "verified" or not isinstance(source.get("split_plan"), dict):
+        raise ValueError("showcase split disjointness evidence is incomplete")
     return pipeline, metadata
 
 
@@ -63,6 +73,8 @@ class ShowcaseDemoFlowModelAdapter:
             raise ValueError("showcase adapter requires demo_only artifact")
         if metadata.get("schema_version") != SCHEMA_VERSION or metadata.get("feature_columns") != list(FEATURE_COLUMNS):
             raise ValueError("showcase feature order mismatch")
+        if not callable(getattr(model, "predict_proba", None)):
+            raise ValueError("showcase model must expose callable predict_proba")
         self.model = model
         self.metadata = dict(metadata)
         self.decision_threshold = float(metadata["decision_threshold"])
