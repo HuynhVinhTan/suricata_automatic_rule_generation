@@ -41,7 +41,7 @@ def visualization(title: str, kind: str, field: str | None = None, query: str = 
         raise ValueError(kind)
     state = {"title": title, "type": vis_type, "params": params, "aggs": aggs}
     search = {"query": {"language": "kuery", "query": query}, "filter": [], "index": DATA_VIEW_ID}
-    return {"type": "visualization", "attributes": {
+    return {"attributes": {
         "title": title, "visState": json.dumps(state), "uiStateJSON": "{}", "description": "Showcase-only; never production ELK.",
         "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps(search)},
     }, "references": [{"name": "kibanaSavedObjectMeta.searchSourceJSON.index", "type": "index-pattern", "id": DATA_VIEW_ID}]}
