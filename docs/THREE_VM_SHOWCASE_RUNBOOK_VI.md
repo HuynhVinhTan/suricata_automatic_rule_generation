@@ -215,7 +215,7 @@ Production Suricata/Filebeat phải còn cùng PID và cùng checksum trước/s
 - EVE parse-only và EVE-to-ELK transport đã có bằng chứng hash-linked.
 - CTU production model: BLOCKED.
 - Hybrid production trust: BLOCKED.
-- Independent new cohort: BLOCKED.
+- Independent new cohort: ACCEPTED for bounded showcase demo; not a production/zero-day claim.
 - Candidate activation/rollback: BLOCKED.
 - T0–T11 đầy đủ: NOT_MEASURED.
 
