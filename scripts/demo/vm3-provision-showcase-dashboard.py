@@ -70,12 +70,12 @@ def main() -> None:
     refs = []
     for number, (title, kind, field, query) in enumerate(specs, 1):
         object_id = f"suricata-ai-showcase-viz-{number}"
-        request("POST", f"/api/saved_objects/visualization/{object_id}?overwrite=true", visualization(title, kind, field, query))
+        request("POST", f"/api/saved_objects/visualization/{object_id}", visualization(title, kind, field, query))
         refs.append({"id": object_id, "name": f"panel_{number}", "type": "visualization"})
     panels = []
     for number, reference in enumerate(refs, 1):
         panels.append({"version": "8.8.0", "type": "visualization", "gridData": {"x": ((number - 1) % 2) * 24, "y": ((number - 1) // 2) * 15, "w": 24, "h": 15, "i": str(number)}, "panelIndex": str(number), "embeddableConfig": {}, "panelRefName": reference["name"]})
-    request("POST", f"/api/saved_objects/dashboard/{DASHBOARD_ID}?overwrite=true", {"attributes": {
+    request("POST", f"/api/saved_objects/dashboard/{DASHBOARD_ID}", {"attributes": {
         "title": "Suricata AI Showcase", "description": "Seven-panel showcase_demo EVE acceptance dashboard.", "panelsJSON": json.dumps(panels), "optionsJSON": json.dumps({"useMargins": True, "hidePanelTitles": False}), "timeRestore": False, "version": 1,
         "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({"query": {"language": "kuery", "query": ""}, "filter": [], "index": DATA_VIEW_ID})},
     }, "references": [{"name": reference["name"], "type": reference["type"], "id": reference["id"]} for reference in refs] + [{"name": "kibanaSavedObjectMeta.searchSourceJSON.index", "type": "index-pattern", "id": DATA_VIEW_ID}]})
