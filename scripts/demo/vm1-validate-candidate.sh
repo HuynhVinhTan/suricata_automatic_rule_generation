@@ -15,7 +15,7 @@ canonicalize_input() {
 CONFIG=$(canonicalize_input CONFIG "$CONFIG")
 RULES=$(canonicalize_input RULES "$RULES")
 if [[ -n "$PCAP" ]]; then PCAP=$(canonicalize_input PCAP "$PCAP"); fi
-python3 - "$CONFIG" "$RULES" <<'PY'
+if ! python3 - "$CONFIG" "$RULES" <<'PY'
 from pathlib import Path
 import sys
 
@@ -45,6 +45,9 @@ resolved = {(base / item).resolve() for item in references}
 if rules not in resolved:
     raise SystemExit(f'RULES not referenced by config rule-files: {rules}')
 PY
+then
+  exit 77
+fi
 mkdir -p "$ROOT/runtime/validation"
 rm -f "$ROOT/runtime/validation/suricata.log"
 CONSOLE_LOG="$ROOT/runtime/validation/suricata-console.log"
