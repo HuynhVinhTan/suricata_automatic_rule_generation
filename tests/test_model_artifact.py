@@ -109,6 +109,18 @@ class TestModelArtifact(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_ml_artifact(path)
 
+    def test_production_loader_rejects_showcase_demo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rf_v0_1"
+            self._save(path)
+            metadata_path = path / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["status"] = "demo_only"
+            metadata["demo_only"] = True
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            with self.assertRaises(ValueError, match="demo_only"):
+                load_ml_artifact(path)
+
 
 if __name__ == "__main__":
     unittest.main()
