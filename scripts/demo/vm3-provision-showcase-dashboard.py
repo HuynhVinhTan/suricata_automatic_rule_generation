@@ -70,7 +70,10 @@ def main() -> None:
     refs = []
     for number, (title, kind, field, query) in enumerate(specs, 1):
         object_id = f"suricata-ai-showcase-viz-{number}"
-        request("POST", f"/api/saved_objects/visualization/{object_id}", visualization(title, kind, field, query))
+        try:
+            request("POST", f"/api/saved_objects/visualization/{object_id}", visualization(title, kind, field, query))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"Kibana visualization {title} failed: {exc.read().decode()}") from exc
         refs.append({"id": object_id, "name": f"panel_{number}", "type": "visualization"})
     panels = []
     for number, reference in enumerate(refs, 1):
