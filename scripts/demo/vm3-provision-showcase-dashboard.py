@@ -32,7 +32,7 @@ def visualization(title: str, kind: str, field: str | None = None, query: str = 
     if kind == "metric":
         aggs = [{"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}}]
         vis_type = "metric"
-        params = {"addLegend": False, "metric": {"colorSchema": "#00A69B", "colorLabels": []}}
+        params = {}
     elif kind == "histogram":
         aggs = [{"id": "1", "enabled": True, "type": "histogram", "schema": "segment", "params": {"field": field, "interval": "auto", "min_doc_count": 1}}]
         vis_type = "histogram"
