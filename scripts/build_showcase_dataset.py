@@ -9,6 +9,7 @@ from pathlib import Path
 
 from netids.adapters.suricata import suricata_eve_to_features
 
+FLOW_COMPLETION_GRACE_SECONDS = 2
 
 def _time(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -20,6 +21,7 @@ def correlate_sessions(manifests: list[dict], events: list[dict]) -> list[dict]:
         for attempt in manifest.get("attempts", []):
             start = _time(attempt["timestamp_utc"])
             end = _time(attempt.get("attempt_end_utc", attempt["timestamp_utc"]))
+            bounded_end = end.timestamp() + FLOW_COMPLETION_GRACE_SECONDS
             matches = []
             for event in events:
                 if event.get("event_type") != "flow":
@@ -27,8 +29,9 @@ def correlate_sessions(manifests: list[dict], events: list[dict]) -> list[dict]:
                 if (event.get("src_ip"), int(event.get("src_port", -1)), event.get("dest_ip"), int(event.get("dest_port", -1)), str(event.get("proto", "")).upper()) != (
                     attempt["source_ip"], int(attempt["source_port"]), attempt["target_ip"], int(attempt["destination_port"]), str(attempt["protocol"]).upper()):
                     continue
-                event_time = _time(event.get("timestamp", event["flow"]["start"]))
-                if start <= event_time <= end:
+                flow_start = _time(event["flow"]["start"])
+                flow_end = _time(event["flow"].get("end", event["flow"]["start"]))
+                if start.timestamp() <= flow_start.timestamp() <= bounded_end and flow_end.timestamp() <= bounded_end:
                     matches.append(event)
             if len(matches) != 1:
                 continue
