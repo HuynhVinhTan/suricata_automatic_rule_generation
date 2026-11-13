@@ -46,13 +46,17 @@ if rules not in resolved:
     raise SystemExit(f'RULES not referenced by config rule-files: {rules}')
 PY
 mkdir -p "$ROOT/runtime/validation"
-VALIDATION_LOG="$ROOT/runtime/validation/suricata-test.log"
-(cd "$(dirname "$CONFIG")" && suricata -T --init-errors-fatal -c "$CONFIG" -l "$ROOT/runtime/validation") 2>&1 | tee "$VALIDATION_LOG"
+rm -f "$ROOT/runtime/validation/suricata.log"
+CONSOLE_LOG="$ROOT/runtime/validation/suricata-console.log"
+(cd "$(dirname "$CONFIG")" && suricata -T --init-errors-fatal -c "$CONFIG" -l "$ROOT/runtime/validation") 2>&1 | tee "$CONSOLE_LOG"
+VALIDATION_LOG="$ROOT/runtime/validation/suricata.log"
+[[ -s "$VALIDATION_LOG" ]] || { echo 'Suricata did not produce validation log output' >&2; exit 77; }
+grep -Fq "Loading rule file: ./$(basename "$RULES")" "$VALIDATION_LOG" || { echo "Suricata did not load supplied rule file $(basename "$RULES")" >&2; exit 77; }
 mapfile -t CANDIDATE_SIDS < <(grep -Eo 'sid:[[:space:]]*[0-9]+' "$RULES" | awk -F: '{gsub(/[[:space:]]/, "", $2); print $2}' | sort -u)
 [[ "${#CANDIDATE_SIDS[@]}" -gt 0 ]] || { echo 'Candidate rules contain no SID' >&2; exit 77; }
-for sid in "${CANDIDATE_SIDS[@]}"; do
-  grep -Eq "(sid|SID)[^0-9]*$sid" "$VALIDATION_LOG" || { echo "Suricata output did not prove candidate SID $sid was loaded" >&2; exit 77; }
-done
+loaded=$(grep -Eo '[0-9]+ rules successfully loaded' "$VALIDATION_LOG" | tail -1 | awk '{print $1}')
+[[ "$loaded" =~ ^[0-9]+$ && "$loaded" -ge "${#CANDIDATE_SIDS[@]}" ]] || { echo 'Suricata loaded fewer rules than supplied candidate SIDs' >&2; exit 77; }
+for sid in "${CANDIDATE_SIDS[@]}"; do echo "CANDIDATE_SID_LOADED=$sid RULES=$RULES"; done
 if [[ -n "$PCAP" ]]; then
   [[ -f "$PCAP" ]] || exit 66
   suricata -k none -r "$PCAP" -c "$CONFIG" -l "$ROOT/runtime/validation/replay"
