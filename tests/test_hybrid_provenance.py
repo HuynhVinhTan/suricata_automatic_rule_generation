@@ -90,3 +90,83 @@ def test_ambiguous_label_rejects_calibration(tmp_path):
     )), encoding="utf-8")
     with pytest.raises(ValueError, match="ground-truth"):
         load_calibration_provenance(manifest, tmp_path)
+
+
+import base64
+from datetime import datetime
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from netids import hybrid_provenance
+
+
+def _signed_envelope(monkeypatch, *, private=None, event_id="capture-a-event-1", sequence=1):
+    private = private or Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    fingerprint = hybrid_provenance.public_key_sha256(public)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM", public)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_SHA256", fingerprint)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_IDENTITY", "producer-a")
+    value = {"schema_version": "hybrid_telemetry_v1", "producer_identity": "producer-a", "capture_run_id": "capture-a", "telemetry_event_id": event_id, "sequence": sequence, "source_pcap_sha256": "a" * 64, "timestamp_provenance": {"first_timestamp": "2026-11-13T09:00:00+00:00", "last_timestamp": "2026-11-13T11:00:00+00:00"}, "producer_key_sha256": fingerprint, "payload": {"rst_evidence": {"capture_integrity": {"capture_complete": True}, "max_rst_count_per_window": 1}, "port_evidence": {"max_window_distinct_ports": 1}, "handshake_evidence": {"initial_syn_packets": 1, "flows_with_confirmed_handshake": 0, "flows_with_bidirectional_payload": 0}, "thresholds": {"min_unique_destination_ports": 1, "min_rst_count_per_window": 1, "max_handshake_failure_count": 1}}}
+    value["signature"] = base64.b64encode(private.sign(hybrid_provenance.canonical_payload(value))).decode()
+    return value
+
+
+def test_signed_hybrid_envelope_is_verified(monkeypatch):
+    value = _signed_envelope(monkeypatch)
+    payload = hybrid_provenance.verify_envelope(value, expected_run_id="capture-a", event_time=datetime.fromisoformat("2026-11-13T10:00:00+00:00"), seen_capture_ids=set())
+    assert set(payload) == {"rst_evidence", "port_evidence", "handshake_evidence", "thresholds"}
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda value: value["payload"].update(rst_evidence={"tampered": True}),
+    lambda value: value.update(producer_key_sha256="b" * 64),
+    lambda value: value.update(producer_identity="spoofed-producer"),
+    lambda value: value.update(signature=base64.b64encode(b"bad").decode()),
+    lambda value: value.update(source_pcap_sha256="b" * 64),
+    lambda value: value.update(timestamp_provenance={}),
+    lambda value: value.update(payload={"rst_evidence": {}}),
+])
+def test_modified_or_incomplete_hybrid_envelope_is_rejected(monkeypatch, mutation):
+    value = _signed_envelope(monkeypatch)
+    mutation(value)
+    with pytest.raises(ValueError):
+        hybrid_provenance.verify_envelope(value, expected_run_id="capture-a", event_time=datetime.fromisoformat("2026-11-13T10:00:00+00:00"), seen_capture_ids=set())
+
+
+def test_hybrid_replay_and_missing_trust_anchor_are_rejected(monkeypatch):
+    value = _signed_envelope(monkeypatch)
+    seen = set()
+    event_time = datetime.fromisoformat("2026-11-13T10:00:00+00:00")
+    hybrid_provenance.verify_envelope(value, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=seen)
+    with pytest.raises(ValueError, match="replay"):
+        hybrid_provenance.verify_envelope(value, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=seen)
+    monkeypatch.setattr(hybrid_provenance, "PINNED_HYBRID_PRODUCER_PUBLIC_KEY_PEM", None)
+    with pytest.raises(ValueError, match="trust anchor"):
+        hybrid_provenance.verify_envelope(value, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=set())
+
+
+def test_multiple_events_from_one_capture_and_sequence_policy(monkeypatch):
+    private = Ed25519PrivateKey.generate()
+    first = _signed_envelope(monkeypatch, private=private, event_id="event-1", sequence=1)
+    second = _signed_envelope(monkeypatch, private=private, event_id="event-2", sequence=2)
+    state, sequences = set(), {}
+    event_time = datetime.fromisoformat("2026-11-13T10:00:00+00:00")
+    hybrid_provenance.verify_envelope(first, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+    hybrid_provenance.verify_envelope(second, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+    with pytest.raises(ValueError, match="replay"):
+        hybrid_provenance.verify_envelope(second, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+    third = _signed_envelope(monkeypatch, private=private, event_id="event-3", sequence=2)
+    with pytest.raises(ValueError, match="out of order"):
+        hybrid_provenance.verify_envelope(third, expected_run_id="capture-a", event_time=event_time, seen_capture_ids=state, last_sequences=sequences)
+
+
+@pytest.mark.parametrize("sequence", [True, False, -1, "2", 2.0, None])
+def test_hybrid_sequence_requires_strict_nonnegative_integer(monkeypatch, sequence):
+    value = _signed_envelope(monkeypatch, sequence=sequence)
+    with pytest.raises(ValueError, match="sequence"):
+        hybrid_provenance.verify_envelope(
+            value,
+            expected_run_id="capture-a",
+            event_time=datetime.fromisoformat("2026-11-13T10:00:00+00:00"),
+            seen_capture_ids=set(),
+        )

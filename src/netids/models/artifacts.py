@@ -131,6 +131,11 @@ def save_ml_artifact(
         "created_utc": datetime.now(
             timezone.utc
         ).isoformat(),
+        "decision_threshold": 0.5,
+        "threshold_provenance": {
+            "decision_threshold": 0.5,
+            "status": "development_only",
+        },
         "model_sha256": _sha256(model_path),
     }
 
@@ -163,6 +168,9 @@ def load_ml_artifact(
 
     if metadata.get("artifact_version") != 1:
         raise ValueError("Unsupported artifact version.")
+
+    if metadata.get("status") == "demo_only" or metadata.get("demo_only") is True:
+        raise ValueError("Production loader rejects showcase demo_only artifacts.")
 
     if metadata.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("Schema version mismatch.")
