@@ -7,8 +7,8 @@ packet payloads, private keys, or production credentials.
 
 | Item | Value |
 |---|---|
-| Deployed source | `32a6d24d7175553ad21d8461d5b7005bb9210cdd` |
-| VM archive SHA256 | `f33e7d6f46a59797fda305168c4e27378dcf0fa05e7bcade26ab149c0e6d8b0b` |
+| Deployed source | `7215f2c8e3724ea06e8957cf8c7d1fad6f581f4e` |
+| VM archive SHA256 | `9497cd8445ba9ed3ef2de62fb53187c7230bd54c1727beb3be2265ba176e345b` |
 | Corrected demo model SHA256 | `616a856fa2bdb885041a2fb127a179040120fd786cf5d26f66e4847f126fd3ab` |
 | Development dataset manifest SHA256 | `2ea06350af77c07f4e246817a8393a93ab8921204273768b08c6ef7949764e35` |
 | Calibration dataset manifest SHA256 | `fd57dd4517c976f8f1930ea82ba363376e38354ed5ad2b72d8b6d4141fdbdbcf` |
