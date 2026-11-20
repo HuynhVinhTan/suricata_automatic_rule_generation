@@ -100,21 +100,37 @@ ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-genera
 
 Lệnh chỉ thành công khi đủ 24 lần thử và có đúng 22 HTTP 200; nếu không, session bị từ chối là calibration evidence.
 
-Attack thử nghiệm tốc độ thấp:
-
-```bash
-ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-generate-attack.sh
-```
-
-Các lệnh trên tạo manifest generator nhưng chưa phải independent holdout. Không dùng kết quả đó để tune threshold.
-
-Capture mới chỉ được chạy khi `tcpdump` có capability đã được owner phê duyệt:
+Attack thử nghiệm tốc độ thấp và capture Attack-only phải dùng workflow đã được
+chuẩn bị, theo đúng thứ tự capture sẵn sàng rồi mới phát sinh traffic:
 
 ```bash
 ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh
 ```
 
-Nếu nhận `CAPTURE_BLOCKED`, dừng. Không dùng sudo, không cài tcpreplay và không đổi capability trong runbook này.
+Workflow này chỉ được owner chạy sau khi có phê duyệt riêng cho đúng VM2,
+interface `eth1`, lệnh và phạm vi. Nó kiểm tra `192.168.10.20`, dùng interactive
+`sudo` cho riêng `tcpdump`, snaplen 96, tối đa 5.000 packet, tối đa 120 giây,
+và BPF hai chiều giữa VM2/VM1 cho các port 18100–18123. Nó chờ log
+`listening on eth1` trước khi gọi generator 24 probe unprivileged. Không dùng
+`setcap`, sudoers, firewall, tcpreplay hoặc capability fallback; không overwrite
+evidence cũ. Lỗi vẫn giữ partial PCAP, log và metadata.
+
+Manifest generator không phải independent holdout và kết quả `24/24
+rst_refused` không chứng minh PCAP đã bắt đủ packet. Dùng verifier offline sau
+khi owner chuyển artifact:
+
+```bash
+python3 /home/kali/suricata-ai-showcase/current/scripts/verify_attack_evidence.py \
+  --pcap /home/kali/suricata-ai-showcase/evidence/<attack>.pcap \
+  --manifest /home/kali/suricata-ai-showcase/evidence/<attack>.json \
+  --capture-metadata /home/kali/suricata-ai-showcase/evidence/<attack>.pcap.capture.json \
+  [--eve /home/kali/suricata-ai-showcase/evidence/<eve>.jsonl]
+```
+
+PCAP Normal-only lịch sử `labcap-20261113T100057Z.pcap` (SHA256
+`b0f9459ffa2280bad876302bba66f480d0c372a928d12e806cf6b3adaf54e528`) phải
+được giữ nguyên và không được gắn nhãn Attack. Nếu EVE correlation chưa đủ,
+ghi `PARTIAL` hoặc `BLOCKED`; không sửa EVE production hay ELK.
 
 ## ML và Hybrid
 
