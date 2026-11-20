@@ -209,9 +209,87 @@ def test_eve_correlation_is_partial_when_events_are_missing(tmp_path):
 def test_manifest_result_count_does_not_prove_capture(tmp_path):
     manifest = _manifest()
     manifest.update({"rst_refused_count": 24})
-    pcap, manifest_path = _evidence(tmp_path, manifest=manifest, packets=[])
+    pcap, manifest_path = _evidence(
+        tmp_path,
+        manifest=manifest,
+        packets=[(BASE, _packet(SRC, DST, 49999, 18099, 0x02))],
+    )
 
     report = verify_attack_evidence(pcap, manifest_path)
 
     assert report["status"] == "BLOCKED"
     assert report["attack"]["matched_attempts"] == 0
+
+
+def test_packet_failure_cannot_be_downgraded_to_partial_by_eve(tmp_path):
+    manifest = _manifest()
+    pcap, manifest_path = _evidence(
+        tmp_path,
+        manifest=manifest,
+        packets=[(BASE, _packet(SRC, DST, 49999, 18099, 0x02))],
+    )
+    eve = tmp_path / "eve.jsonl"
+    eve.write_text(json.dumps({
+        "timestamp": "2026-11-21T03:00:00Z",
+        "event_type": "flow",
+        "flow_id": 1,
+        "proto": "TCP",
+        "src_ip": SRC,
+        "src_port": 49999,
+        "dest_ip": DST,
+        "dest_port": 18100,
+    }) + "\n", encoding="utf-8")
+
+    report = verify_attack_evidence(pcap, manifest_path, eve)
+
+    assert report["packet_status"] == "BLOCKED"
+    assert report["eve_status"] == "PARTIAL"
+    assert report["status"] == "BLOCKED"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: m["attempts"][0].update({"source_port": 0}),
+        lambda m: m["attempts"][0].update({"destination_port": 18199}),
+        lambda m: m["attempts"][0].update({"result": "timeout_filtered"}),
+        lambda m: m["attempts"][1].update({
+            "source_port": m["attempts"][0]["source_port"],
+            "destination_port": m["attempts"][0]["destination_port"],
+        }),
+        lambda m: m["attempts"][0].update({"timestamp_utc": "2026-11-21T03:49:00Z"}),
+    ],
+)
+def test_manifest_attempt_identity_scope_time_and_result_are_validated(tmp_path, mutate):
+    manifest = _manifest()
+    mutate(manifest)
+    pcap, manifest_path = _evidence(tmp_path, manifest=manifest)
+
+    report = verify_attack_evidence(pcap, manifest_path)
+
+    assert report["status"] == "BLOCKED"
+    assert any("manifest" in issue.lower() for issue in report["issues"])
+
+
+def test_eve_flow_and_event_hashes_are_reported_without_overstating(tmp_path):
+    pcap, manifest = _evidence(tmp_path)
+    eve = tmp_path / "eve.jsonl"
+    eve.write_text("\n".join([
+        json.dumps({
+            "timestamp": "2026-11-21T03:00:00Z", "event_type": "flow", "flow_id": 123,
+            "event_hash": "hash-1", "proto": "TCP", "src_ip": SRC, "src_port": 40000,
+            "dest_ip": DST, "dest_port": 18100,
+        }),
+        json.dumps({
+            "timestamp": "2026-11-21T03:00:00Z", "event_type": "flow", "flow_id": 999,
+            "event_hash": "hash-unmatched", "proto": "TCP", "src_ip": SRC, "src_port": 49999,
+            "dest_ip": DST, "dest_port": 18100,
+        }),
+    ]) + "\n", encoding="utf-8")
+
+    report = verify_attack_evidence(pcap, manifest, eve)
+
+    assert report["eve"]["flow_id_matches"] == 1
+    assert report["eve"]["event_hashes_observed"] == 2
+    assert report["eve"]["unmatched_records"] == 1
+    assert report["eve_status"] == "PARTIAL"

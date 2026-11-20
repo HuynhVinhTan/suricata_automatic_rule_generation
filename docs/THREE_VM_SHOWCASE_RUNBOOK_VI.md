@@ -103,17 +103,35 @@ Lệnh chỉ thành công khi đủ 24 lần thử và có đúng 22 HTTP 200; n
 Attack thử nghiệm tốc độ thấp và capture Attack-only phải dùng workflow đã được
 chuẩn bị, theo đúng thứ tự capture sẵn sàng rồi mới phát sinh traffic:
 
+Trước khi chạy trên VM2, owner phải xác minh source đã deploy đúng commit đã
+được review. Không chạy capture nếu checksum source không khớp; chỉ cập nhật
+source trên VM2 sau khi owner phê duyệt riêng việc cập nhật:
+
+```powershell
+$ExpectedCommit = '<P1.1_REVIEWED_COMMIT_SHA>'
+ssh suricata-vm2 "test `$(cat /home/kali/suricata-ai-showcase/runtime/source-commit.txt) = '$ExpectedCommit'"
+# Sau owner approval riêng cho việc cập nhật source:
+./scripts/demo/windows/Start-Showcase.ps1
+```
+
+Lệnh `Start-Showcase.ps1` chỉ là bước cập nhật source được owner phê duyệt;
+không coi nó là authorization cho capture hoặc traffic.
+
 ```bash
-ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh
+ssh -tt suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh
 ```
 
 Workflow này chỉ được owner chạy sau khi có phê duyệt riêng cho đúng VM2,
-interface `eth1`, lệnh và phạm vi. Nó kiểm tra `192.168.10.20`, dùng interactive
-`sudo` cho riêng `tcpdump`, snaplen 96, tối đa 5.000 packet, tối đa 120 giây,
-và BPF hai chiều giữa VM2/VM1 cho các port 18100–18123. Nó chờ log
-`listening on eth1` trước khi gọi generator 24 probe unprivileged. Không dùng
-`setcap`, sudoers, firewall, tcpreplay hoặc capability fallback; không overwrite
-evidence cũ. Lỗi vẫn giữ partial PCAP, log và metadata.
+interface `eth1`, lệnh và phạm vi. PTY là bắt buộc để owner nhập mật khẩu qua
+foreground `sudo -v`; sau đó tcpdump chạy non-interactive trong process group
+được giám sát. Nó kiểm tra `192.168.10.20`, snaplen 96, tối đa 5.000 packet,
+tối đa 120 giây, và BPF hai chiều giữa VM2/VM1 cho các port 18100–18123. Nó
+chờ log `listening on eth1` trước khi gọi generator 24 probe unprivileged.
+Timeout, lỗi, Ctrl-C hoặc generator failure đều dừng và reap tcpdump; không
+dùng `setcap`, sudoers, firewall, tcpreplay hoặc capability fallback; không
+overwrite evidence cũ. PCAP chỉ được rename và in `ATTACK_CAPTURE_READY` sau
+khi verifier strict trả về `PASS`; lỗi vẫn giữ partial PCAP, log, metadata và
+verification report.
 
 Manifest generator không phải independent holdout và kết quả `24/24
 rst_refused` không chứng minh PCAP đã bắt đủ packet. Dùng verifier offline sau

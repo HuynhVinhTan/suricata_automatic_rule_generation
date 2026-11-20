@@ -133,17 +133,46 @@ def _attempts(manifest: dict) -> tuple[list[dict], datetime, datetime]:
     attempts = manifest.get("attempts")
     if not isinstance(attempts, list) or len(attempts) != 24:
         raise ValueError("manifest must contain exactly 24 attempts")
+    if manifest.get("attempt_count") != 24:
+        raise ValueError("manifest attempt_count must be 24")
     normalized = []
+    identities = set()
     for attempt in attempts:
         timestamp = _utc(attempt["timestamp_utc"])
         source_port = int(attempt["source_port"])
         destination_port = int(attempt["destination_port"])
+        target_ip = attempt.get("target_ip") or attempt.get("destination_ip")
+        source_ip = attempt.get("source_ip") or manifest.get("source_ip")
+        if source_ip != SOURCE_IP or target_ip != TARGET_IP:
+            raise ValueError("manifest attempt source/target IP is outside the lab scope")
+        if not 1 <= source_port <= 65535:
+            raise ValueError("manifest attempt source_port is invalid")
+        if destination_port not in ATTACK_PORTS:
+            raise ValueError("manifest attempt destination_port is not allowlisted")
+        if attempt.get("protocol", "TCP").upper() != "TCP":
+            raise ValueError("manifest attempt protocol must be TCP")
+        if attempt.get("result") != "rst_refused":
+            raise ValueError("manifest Attack attempt result must be rst_refused")
+        if not started <= timestamp <= ended:
+            raise ValueError("manifest attempt timestamp is outside the generator window")
+        if attempt.get("attempt_end_utc"):
+            attempt_end = _utc(attempt["attempt_end_utc"])
+            if attempt_end < timestamp or attempt_end > ended:
+                raise ValueError("manifest attempt end timestamp is outside its valid window")
+        identity = (source_ip, source_port, target_ip, destination_port)
+        if identity in identities:
+            raise ValueError("manifest contains duplicate Attack attempt identity")
+        identities.add(identity)
         normalized.append({
             **attempt,
             "timestamp": timestamp,
+            "source_ip": source_ip,
+            "target_ip": target_ip,
             "source_port": source_port,
             "destination_port": destination_port,
         })
+    if len({attempt["destination_port"] for attempt in normalized}) != 24:
+        raise ValueError("manifest must contain 24 unique Attack destination ports")
     return normalized, started, ended
 
 
@@ -171,6 +200,8 @@ def verify_attack_evidence(
             "missing_rst_ports": [],
             "duplicate_syn_packets": 0,
         },
+        "packet_status": "BLOCKED",
+        "eve_status": "NOT_PROVIDED",
     }
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -254,7 +285,9 @@ def verify_attack_evidence(
         key = (attempt["source_port"], attempt["destination_port"])
         syns = [
             item for item in outbound
-            if item[1:] == key and manifest_start <= item[0] <= manifest_end
+            if item[1:] == key
+            and manifest_start <= item[0] <= manifest_end
+            and abs((item[0] - attempt["timestamp"]).total_seconds()) <= 5
         ]
         if len(syns) > 1:
             duplicate_count += len(syns) - 1
@@ -291,15 +324,27 @@ def verify_attack_evidence(
     if duplicate_count:
         issues.append(f"{duplicate_count} duplicate SYN/retransmission packets found")
 
+    packet_status = "PASS" if not issues else "BLOCKED"
     if eve_path:
-        eve = {"records": 0, "matched_records": 0, "unmatched_records": 0, "unmatched_attack_attempts": 24, "status": "BLOCKED"}
+        eve = {
+            "records": 0, "matched_records": 0, "unmatched_records": 0,
+            "unmatched_attack_attempts": 24, "flow_id_matches": 0,
+            "event_hashes_observed": 0, "event_hash_matches": 0,
+            "status": "BLOCKED",
+        }
         matched_eve_keys = set()
+        matched_flow_ids = set()
+        matched_event_hashes = set()
+        eve_issues = []
         try:
             for line_number, line in enumerate(Path(eve_path).read_text(encoding="utf-8").splitlines(), 1):
                 if not line.strip():
                     continue
                 event = json.loads(line)
                 eve["records"] += 1
+                event_hash = event.get("event_hash") or event.get("event_id") or event.get("_id")
+                if event_hash is not None:
+                    eve["event_hashes_observed"] += 1
                 if str(event.get("proto", "")).upper() != "TCP":
                     eve["unmatched_records"] += 1
                     continue
@@ -312,23 +357,35 @@ def verify_attack_evidence(
                 except (KeyError, ValueError):
                     eve["unmatched_records"] += 1
                     continue
-                if manifest_start <= event_time <= manifest_end:
+                packet_time_match = any(
+                    item[1:] == (key[1], key[3])
+                    and abs((event_time - item[0]).total_seconds()) <= 5
+                    for item in outbound
+                )
+                if manifest_start <= event_time <= manifest_end and packet_time_match:
                     eve["matched_records"] += 1
                     matched_eve_keys.add((key, event_time.date()))
+                    if event.get("flow_id") is not None:
+                        matched_flow_ids.add(event["flow_id"])
+                    if event_hash is not None:
+                        matched_event_hashes.add(event_hash)
                 else:
                     eve["unmatched_records"] += 1
         except (OSError, json.JSONDecodeError) as exc:
-            issues.append(f"invalid EVE JSONL at line {line_number if 'line_number' in locals() else '?'}: {exc}")
+            eve_issues.append(f"invalid EVE JSONL at line {line_number if 'line_number' in locals() else '?'}: {exc}")
         eve["unmatched_attack_attempts"] = max(0, len(matched) - len({key for key, _date in matched_eve_keys}))
-        eve["status"] = "PASS" if eve["unmatched_attack_attempts"] == 0 and eve["unmatched_records"] == 0 else "PARTIAL"
+        eve["flow_id_matches"] = len(matched_flow_ids)
+        eve["event_hash_matches"] = len(matched_event_hashes)
+        eve["issues"] = eve_issues
+        eve["status"] = "PASS" if not eve_issues and eve["unmatched_attack_attempts"] == 0 and eve["unmatched_records"] == 0 else "PARTIAL"
         report["eve"] = eve
+        report["eve_status"] = eve["status"]
     else:
         report["eve"] = {"status": "NOT_PROVIDED", "matched_records": 0, "unmatched_attack_attempts": len(matched)}
-
-    if not issues:
-        report["status"] = "PARTIAL" if report["eve"]["status"] == "PARTIAL" else "PASS"
-    elif report.get("eve", {}).get("status") == "PARTIAL" and len(matched) == 24:
-        report["status"] = "PARTIAL"
+    report["packet_status"] = packet_status
+    report["status"] = "BLOCKED" if packet_status != "PASS" else (
+        "PARTIAL" if report["eve_status"] == "PARTIAL" else "PASS"
+    )
     return report
 
 
