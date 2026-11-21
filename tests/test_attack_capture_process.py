@@ -61,7 +61,7 @@ while True: time.sleep(1)
 """)
     _write_executable(root / "current/scripts/demo/vm2-generate-attack.sh", """#!/usr/bin/env python3
 import os, shutil, sys, time
-time.sleep(float(os.environ.get('FAKE_GENERATOR_SLEEP', '0')))
+time.sleep(float(os.environ.get('FAKE_GENERATOR_SLEEP', '1.6')))
 shutil.copyfile(os.environ['FAKE_MANIFEST'], sys.argv[1])
 raise SystemExit(int(os.environ.get('FAKE_GENERATOR_STATUS', '0')))
 """)

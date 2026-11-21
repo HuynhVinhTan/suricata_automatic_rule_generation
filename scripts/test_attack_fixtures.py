@@ -26,11 +26,11 @@ def _write_pcap(path, packets):
 
 def write_complete_attack_fixture(directory: Path) -> tuple[Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
-    base = datetime.now(timezone.utc).replace(microsecond=0)
+    base = datetime.now(timezone.utc) + timedelta(seconds=1)
     attempts = []
     packets = []
     for index, port in enumerate(range(18100, 18124)):
-        timestamp = base + timedelta(seconds=1 + index)
+        timestamp = base + timedelta(milliseconds=index * 10)
         source_port = 40000 + index
         attempts.append({
             "timestamp_utc": timestamp.isoformat().replace("+00:00", "Z"),
@@ -47,8 +47,8 @@ def write_complete_attack_fixture(directory: Path) -> tuple[Path, Path]:
         "run_id": "process-test",
         "source_ip": "192.168.10.20",
         "target_ip": "192.168.10.10",
-        "started_at_utc": (base - timedelta(seconds=1)).isoformat().replace("+00:00", "Z"),
-        "ended_at_utc": (base + timedelta(seconds=40)).isoformat().replace("+00:00", "Z"),
+        "started_at_utc": (base - timedelta(milliseconds=100)).isoformat().replace("+00:00", "Z"),
+        "ended_at_utc": (base + timedelta(milliseconds=500)).isoformat().replace("+00:00", "Z"),
         "attempt_count": 24,
         "attempts": attempts,
     }

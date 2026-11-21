@@ -26,6 +26,7 @@ BPF="((src host $SOURCE_IP and dst host $TARGET_IP and tcp and dst portrange 181
 TCPDUMP_SUPERVISOR_PID=''
 CAPTURE_PGID=''
 TIMER_PID=''
+TIMER_PGID=''
 GENERATOR_STATUS=blocked
 CAPTURE_STATUS=not_started
 CAPTURE_WAIT_STATUS=not_waited
@@ -99,8 +100,16 @@ terminate_capture() {
   set -e
 }
 
+terminate_timer() {
+  if [[ -z "$TIMER_PID" ]]; then return; fi
+  kill -TERM -- "-$TIMER_PGID" 2>/dev/null || true
+  set +e
+  wait "$TIMER_PID" 2>/dev/null
+  set -e
+}
+
 cleanup() {
-  [[ -n "$TIMER_PID" ]] && kill "$TIMER_PID" 2>/dev/null || true
+  terminate_timer
   [[ "$FINALIZED" -eq 1 ]] || terminate_capture
   [[ -f "$LOG" ]] && write_metadata || true
 }
@@ -118,12 +127,13 @@ fi
 setsid --wait sudo -n tcpdump -i "$IFACE" -s "$SNAPLEN" -n -U -w "$PARTIAL" -c "$MAX_PACKETS" "$BPF" 2>"$LOG" &
 TCPDUMP_SUPERVISOR_PID=$!
 CAPTURE_PGID=$TCPDUMP_SUPERVISOR_PID
-(
-  sleep "$MAX_SECONDS"
-  touch "$TIMEOUT_MARKER"
-  kill -INT -- "-$CAPTURE_PGID" 2>/dev/null || true
-) &
+setsid --wait bash -c '
+  sleep "$1"
+  touch "$2"
+  kill -INT -- "-$3" 2>/dev/null || true
+' timer "$MAX_SECONDS" "$TIMEOUT_MARKER" "$CAPTURE_PGID" &
 TIMER_PID=$!
+TIMER_PGID=$TIMER_PID
 
 for _ in $(seq 1 "$READINESS_WAIT_ITERATIONS"); do
   if grep -Fq "listening on $IFACE" "$LOG" 2>/dev/null; then break; fi
@@ -136,7 +146,7 @@ for _ in $(seq 1 "$READINESS_WAIT_ITERATIONS"); do
 done
 if ! grep -Fq "listening on $IFACE" "$LOG" 2>/dev/null; then
   CAPTURE_STATUS=readiness_timeout
-  echo 'CAPTURE_BLOCKED: tcpdump did not report listening on eth1 within 15 seconds.' >&2
+  echo 'CAPTURE_BLOCKED: readiness timeout; tcpdump did not report listening on eth1 within 15 seconds.' >&2
   exit 77
 fi
 
@@ -147,8 +157,9 @@ set -e
 terminate_capture
 CAPTURE_STATUS=$CAPTURE_WAIT_STATUS
 [[ -e "$TIMEOUT_MARKER" ]] && CAPTURE_STATUS=timeout
+write_metadata
 
-if [[ "$GENERATOR_STATUS" -ne 0 || "$CAPTURE_STATUS" -ne 0 || ! -s "$PARTIAL" ]]; then
+if [[ "$GENERATOR_STATUS" -ne 0 || "$CAPTURE_STATUS" != "0" || ! -s "$PARTIAL" ]]; then
   echo "CAPTURE_PARTIAL: preserving $PARTIAL, $LOG, and $META" >&2
   exit 1
 fi
