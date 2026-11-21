@@ -98,6 +98,8 @@ def _parse_pcap(path: Path) -> dict:
         total_length = struct.unpack("!H", payload[16:18])[0]
         if ihl < 20 or len(payload) < 14 + ihl or total_length < ihl:
             raise ValueError("invalid IPv4 header")
+        if total_length > len(payload) - 14:
+            raise ValueError("truncated IPv4 payload")
         protocol = payload[23]
         src = str(ipaddress.ip_address(payload[26:30]))
         dst = str(ipaddress.ip_address(payload[30:34]))
@@ -248,16 +250,35 @@ def verify_attack_evidence(
     packets = pcap["packets"]
     capture_start = datetime.fromisoformat(report["pcap"]["first_packet_utc"].replace("Z", "+00:00"))
     capture_end = datetime.fromisoformat(report["pcap"]["last_packet_utc"].replace("Z", "+00:00"))
+    metadata_start = metadata_end = None
+    try:
+        if capture_meta.get("start_utc"):
+            metadata_start = _utc(capture_meta["start_utc"])
+        if capture_meta.get("end_utc"):
+            metadata_end = _utc(capture_meta["end_utc"])
+    except ValueError as exc:
+        issues.append(f"invalid capture metadata timestamps: {exc}")
+    capture_duration = (capture_end - capture_start).total_seconds()
+    if pcap["packet_count"] > 5000:
+        issues.append("PCAP packet count exceeds the 5000 packet capture bound")
+    if capture_duration > 120:
+        issues.append("PCAP packet timestamps exceed the 120 second capture bound")
+    if capture_meta.get("packet_count") is not None and capture_meta["packet_count"] > 5000:
+        issues.append("capture metadata packet count exceeds the 5000 packet bound")
+    if metadata_start and metadata_end and (metadata_end - metadata_start).total_seconds() > 120:
+        issues.append("capture metadata timestamps exceed the 120 second capture bound")
     if capture_end < manifest_start or capture_start > manifest_end:
         issues.append("capture and generator time windows do not overlap")
-    if capture_meta.get("start_utc") and _utc(capture_meta["start_utc"]) > manifest_start:
+    if metadata_start and metadata_start > manifest_start:
         issues.append("capture started after the generator")
-    if capture_meta.get("end_utc") and _utc(capture_meta["end_utc"]) < manifest_end:
+    if metadata_end and metadata_end < manifest_end:
         issues.append("capture ended before the generator")
 
     outbound = []
     inbound_rst = []
     out_of_scope = []
+    expected_outbound = {(attempt["source_port"], attempt["destination_port"]) for attempt in attempts}
+    expected_rst = {(attempt["destination_port"], attempt["source_port"]) for attempt in attempts}
     for packet in packets:
         ip = packet["ip"]
         if not ip or ip["protocol"] != 6 or not ip["tcp"]:
@@ -267,10 +288,14 @@ def verify_attack_evidence(
         if ip["src"] == SOURCE_IP and ip["dst"] == TARGET_IP and tcp["dst_port"] in ATTACK_PORTS:
             if tcp["flags"] & 0x02 and not tcp["flags"] & 0x10:
                 outbound.append((packet["timestamp"], tcp["src_port"], tcp["dst_port"]))
+                if (tcp["src_port"], tcp["dst_port"]) not in expected_outbound:
+                    out_of_scope.append(packet)
             else:
                 out_of_scope.append(packet)
         elif ip["src"] == TARGET_IP and ip["dst"] == SOURCE_IP and tcp["src_port"] in ATTACK_PORTS and tcp["flags"] & 0x04:
             inbound_rst.append((packet["timestamp"], tcp["src_port"], tcp["dst_port"]))
+            if (tcp["src_port"], tcp["dst_port"]) not in expected_rst:
+                out_of_scope.append(packet)
         else:
             out_of_scope.append(packet)
     if out_of_scope:

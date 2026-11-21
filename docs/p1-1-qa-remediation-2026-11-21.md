@@ -14,9 +14,14 @@ was performed.
   and before `ATTACK_CAPTURE_READY` is printed.
 - Packet and EVE verdicts are separate. Any packet validation failure remains
   `BLOCKED`, even when EVE is `PARTIAL`.
+- PCAP parsing rejects truncated IPv4 payloads, unexpected five-tuples, and
+  packet/timestamp spans beyond the 5,000-packet/120-second capture bounds.
 - Manifest attempts now require valid scoped ports/IPs, unique identities,
   in-window timestamps, TCP protocol, and `rst_refused` results.
 - EVE reporting counts tuple, flow-id, and event-hash evidence without treating
   one flow event as proof of complete packet coverage.
+- Mocked process-level tests cover foreground authentication, PTY guidance,
+  readiness, timeout, descendant cleanup, generator failure, validation failure,
+  and overwrite refusal.
 
 The SQLite 1 GiB free-space guard was not changed.

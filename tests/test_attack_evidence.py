@@ -185,6 +185,57 @@ def test_invalid_truncated_pcap_is_reported(tmp_path):
     assert any("pcap" in issue.lower() for issue in report["issues"])
 
 
+def test_truncated_ipv4_payload_is_reported(tmp_path):
+    pcap, manifest = _evidence(tmp_path, packets=[
+        (BASE, _packet(SRC, DST, 40000, 18100, 0x02)[:-1]),
+    ])
+
+    report = verify_attack_evidence(pcap, manifest)
+
+    assert report["status"] == "BLOCKED"
+    assert any("truncated" in issue.lower() for issue in report["issues"])
+
+
+def test_capture_packet_and_time_bounds_are_enforced(tmp_path):
+    packets = [
+        (BASE + timedelta(seconds=i * 7), _packet(SRC, DST, 40000 + (i % 24), PORTS[i % 24], 0x02))
+        for i in range(21)
+    ]
+    pcap, manifest = _evidence(tmp_path, packets=packets)
+
+    report = verify_attack_evidence(pcap, manifest)
+
+    assert report["status"] == "BLOCKED"
+    assert any("120" in issue for issue in report["issues"])
+
+
+def test_unexpected_allowed_port_tuple_is_out_of_scope(tmp_path):
+    packets = [
+        (BASE, _packet(SRC, DST, 49999, 18100, 0x02)),
+    ]
+    pcap, manifest = _evidence(tmp_path, packets=packets)
+
+    report = verify_attack_evidence(pcap, manifest)
+
+    assert report["status"] == "BLOCKED"
+    assert any("out-of-scope" in issue.lower() for issue in report["issues"])
+
+
+def test_invalid_capture_metadata_timestamp_is_reported(tmp_path):
+    pcap, manifest = _evidence(tmp_path)
+    metadata = tmp_path / "capture.json"
+    metadata.write_text(json.dumps({
+        "interface": "eth1", "snaplen": 96, "packet_limit": 5000,
+        "duration_limit_seconds": 120, "start_utc": "not-a-timestamp",
+        "end_utc": "2026-11-21T03:00:01Z",
+    }), encoding="utf-8")
+
+    report = verify_attack_evidence(pcap, manifest, capture_metadata_path=metadata)
+
+    assert report["status"] == "BLOCKED"
+    assert any("metadata" in issue.lower() for issue in report["issues"])
+
+
 def test_eve_correlation_is_partial_when_events_are_missing(tmp_path):
     pcap, manifest = _evidence(tmp_path)
     eve = tmp_path / "eve.jsonl"

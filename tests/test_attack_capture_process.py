@@ -48,6 +48,8 @@ import os, signal, sys, time
 args = sys.argv[1:]
 out = args[args.index('-w') + 1]
 open(os.environ['FAKE_TCPDUMP_PID'], 'w', encoding='utf-8').write(str(os.getpid()))
+if os.environ.get('FAKE_CHILD_MARKER'):
+    open(os.environ['FAKE_CHILD_MARKER'], 'w', encoding='utf-8').write(str(os.getpid()))
 if os.environ.get('FAKE_TCPDUMP_READY', '1') == '1':
     open(out, 'wb').write(open(os.environ['FAKE_PCAP'], 'rb').read())
     sys.stderr.write('listening on eth1, link-type EN10MB\\n48 packets captured\\n48 packets received by filter\\n0 packets dropped by kernel\\n')
@@ -89,6 +91,26 @@ def test_success_authenticates_in_foreground_and_cleans_capture_process(mocked_c
     assert not Path(str(out) + ".partial.pcap").exists()
     assert mocked_capture["auth"].read_text(encoding="utf-8").splitlines() == ["auth"]
     assert not _pid_exists(mocked_capture["pid"])
+
+
+def test_success_reaps_tcpdump_child_process(mocked_capture):
+    child_marker = mocked_capture["root"] / "tcpdump-child.pid"
+    (mocked_capture["bin"] / "sudo").write_text("""#!/usr/bin/env python3
+import os, subprocess, sys
+if sys.argv[1] == '-v':
+    open(os.environ['FAKE_AUTH_LOG'], 'a', encoding='utf-8').write('auth\\n')
+    raise SystemExit(0)
+args = sys.argv[1:]
+if args and args[0] == '-n': args = args[1:]
+child = subprocess.Popen(args, env=dict(os.environ, FAKE_CHILD_MARKER=os.environ['FAKE_CHILD_MARKER']))
+child.wait()
+raise SystemExit(child.returncode)
+""", encoding="utf-8")
+    mocked_capture["child"] = child_marker
+    result, _ = _run(mocked_capture, FAKE_CHILD_MARKER=str(child_marker))
+    assert result.returncode == 0, result.stderr
+    assert child_marker.exists()
+    assert not _pid_exists(child_marker)
 
 
 def test_auth_failure_never_starts_tcpdump(mocked_capture):
