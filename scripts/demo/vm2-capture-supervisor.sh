@@ -13,7 +13,7 @@ shift
 CHILD_WRAPPER_PID=''
 CAPTURE_PID=''
 WATCHDOG_PID=''
-STOP_STATUS=130
+STOP_STATUS=0
 
 write_status() { printf '%s\n' "$1" > "$STATUSFILE"; }
 child_alive() { [[ -n "$CHILD_WRAPPER_PID" ]] && kill -0 "$CHILD_WRAPPER_PID" 2>/dev/null; }
