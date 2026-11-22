@@ -18,6 +18,16 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
+def _write_test_copy(path: Path) -> None:
+    """Create a deterministic test copy; production script has no test bypass."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    text = text.replace("MAX_SECONDS=120\n", "MAX_SECONDS=1\n", 1)
+    text = text.replace("if [[ ! -t 0 || ! -t 1 ]]; then", "if false; then", 1)
+    text = text.replace("if [[ ${EUID:-$(id -u)} -eq 0 ]]; then", "if false; then", 1)
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+
+
 @pytest.fixture
 def mocked_capture(tmp_path):
     root = tmp_path / "showcase"
@@ -26,6 +36,8 @@ def mocked_capture(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fixture_pcap, fixture_manifest = write_complete_attack_fixture(tmp_path / "fixture")
+    test_script = tmp_path / "vm2-capture-session-test-copy.sh"
+    _write_test_copy(test_script)
     (root / "fixture.pcap").write_bytes(fixture_pcap.read_bytes())
     (root / "fixture.json").write_text(fixture_manifest.read_text(encoding="utf-8"), encoding="utf-8")
     (root / "current/scripts/verify_attack_evidence.py").write_bytes(
@@ -65,7 +77,7 @@ time.sleep(float(os.environ.get('FAKE_GENERATOR_SLEEP', '1.6')))
 shutil.copyfile(os.environ['FAKE_MANIFEST'], sys.argv[1])
 raise SystemExit(int(os.environ.get('FAKE_GENERATOR_STATUS', '0')))
 """)
-    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log}
+    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "script": test_script}
 
 
 def _run(fixture, name="attack.pcap", **extra):
@@ -80,7 +92,7 @@ def _run(fixture, name="attack.pcap", **extra):
         "READINESS_WAIT_ITERATIONS": "2",
     })
     env.update(extra)
-    return subprocess.run(["bash", str(SCRIPT), str(out), str(manifest)], cwd=fixture["root"], env=env, capture_output=True, text=True, timeout=20), out
+    return subprocess.run(["bash", str(fixture["script"]), str(out), str(manifest)], cwd=fixture["root"], env=env, capture_output=True, text=True, timeout=20), out
 
 
 def test_success_authenticates_in_foreground_and_cleans_capture_process(mocked_capture):
@@ -137,7 +149,7 @@ def test_generator_error_preserves_partial_and_kills_capture(mocked_capture):
 
 
 def test_timeout_preserves_partial_and_kills_capture(mocked_capture):
-    result, out = _run(mocked_capture, CAPTURE_TEST_MAX_SECONDS="1", FAKE_GENERATOR_SLEEP="3")
+    result, out = _run(mocked_capture, CAPTURE_TEST_MAX_SECONDS="120", FAKE_GENERATOR_SLEEP="3")
     assert result.returncode == 1
     assert "CAPTURE_PARTIAL" in result.stderr
     assert not out.exists() and not _pid_exists(mocked_capture["pid"])
@@ -163,6 +175,22 @@ def test_overwrite_refusal_happens_before_authentication(mocked_capture):
 def test_non_tty_instructions_are_explicit(mocked_capture):
     env = os.environ.copy()
     env.update({"SHOWCASE_ROOT": str(mocked_capture["root"]), "PATH": str(mocked_capture["bin"]) + os.pathsep + env.get("PATH", "")})
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=5)
+    assert result.returncode == 77
+    assert "ssh -tt suricata-vm2" in result.stderr
+
+
+def test_environment_overrides_cannot_bypass_production_guards(mocked_capture):
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "CAPTURE_TEST_MODE" not in text
+    assert "CAPTURE_TEST_MAX_SECONDS" not in text
+    env = os.environ.copy()
+    env.update({
+        "PATH": str(mocked_capture["bin"]) + os.pathsep + env.get("PATH", ""),
+        "SHOWCASE_ROOT": str(mocked_capture["root"]),
+        "CAPTURE_TEST_MODE": "1",
+        "CAPTURE_TEST_MAX_SECONDS": "1",
+    })
     result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=5)
     assert result.returncode == 77
     assert "ssh -tt suricata-vm2" in result.stderr

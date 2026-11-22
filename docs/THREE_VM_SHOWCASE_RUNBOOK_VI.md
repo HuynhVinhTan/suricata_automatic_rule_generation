@@ -259,13 +259,18 @@ Evidence đã freeze được ghi trong
 `docs/final-showcase-packet-evidence-2026-11-13.md`. VM2 có `eth1`, nhưng
 `getcap /usr/bin/tcpdump` không có `cap_net_raw`; wrapper trả về
 `CAPTURE_BLOCKED` và exit 77. Không tự ý chạy sudo hoặc thay đổi capability.
-Owner chỉ chạy lệnh sau interactively sau khi phê duyệt phương thức capture:
+Owner chỉ chạy workflow mới sau khi xác minh source commit đã deploy trên VM2
+khớp với commit đã review và sau khi có phê duyệt riêng cho phương thức
+capture. Không dùng lệnh SSH cũ bên dưới và không cập nhật VM2 tự động:
 
 ```bash
-ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh /home/kali/suricata-ai-showcase/evidence/<RUN_ID>.pcap
+ssh suricata-vm2 "test \$(cat /home/kali/suricata-ai-showcase/runtime/source-commit.txt) = '<P1.1_REVIEWED_COMMIT_SHA>'"
+ssh -tt suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh /home/kali/suricata-ai-showcase/evidence/<RUN_ID>.pcap
 ```
 
-Không có PCAP mới thì không provision producer key `LAB_DEMO_ONLY`, không ký
+Lệnh kiểm tra commit phải thành công trước khi gọi capture; nếu source không
+khớp thì dừng và owner mới quyết định riêng việc cập nhật bằng
+`Start-Showcase.ps1`. Không có PCAP mới thì không provision producer key `LAB_DEMO_ONLY`, không ký
 packet evidence, không tạo candidate mới và không gọi isolated replay/rollback
 là thành công. SID9103012 giữ nguyên trạng thái REJECTED.
 

@@ -41,11 +41,12 @@ CAPTURE_BLOCKED: tcpdump lacks cap_net_raw
 exit 77
 ```
 
-The owner-approved bounded command, to execute interactively only after the
-owner authorizes the existing capture method, is:
+The owner-approved bounded workflow, to execute only after verifying the
+deployed VM2 source commit and receiving separate owner authorization, is:
 
 ```bash
-ssh suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh /home/kali/suricata-ai-showcase/evidence/<RUN_ID>.pcap
+ssh suricata-vm2 "test \$(cat /home/kali/suricata-ai-showcase/runtime/source-commit.txt) = '<P1.1_REVIEWED_COMMIT_SHA>'"
+ssh -tt suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh /home/kali/suricata-ai-showcase/evidence/<RUN_ID>.pcap
 ```
 
 The wrapper restricts capture to `eth1` and hosts `192.168.10.20` and

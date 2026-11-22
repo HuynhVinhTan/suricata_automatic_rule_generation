@@ -23,5 +23,13 @@ was performed.
 - Mocked process-level tests cover foreground authentication, PTY guidance,
   readiness, timeout, descendant cleanup, generator failure, validation failure,
   and overwrite refusal.
+- Production capture limits are immutable constants; deterministic short tests
+  use a test-only copy and environment overrides cannot bypass PTY or owner
+  checks.
+- Capture metadata must show successful tcpdump and generator exit statuses,
+  packet-count agreement, bounded timestamps, and zero kernel drops. Missing
+  drop statistics are `UNVERIFIED` and cannot produce `PASS`.
+- Operator instructions require deployed VM2 commit verification before the
+  owner-approved `ssh -tt` capture command; no VM is updated automatically.
 
 The SQLite 1 GiB free-space guard was not changed.

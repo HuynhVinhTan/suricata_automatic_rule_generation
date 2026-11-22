@@ -83,6 +83,31 @@ def _evidence(tmp_path, manifest=None, packets=None):
     return pcap, manifest_path
 
 
+def _metadata(tmp_path, **overrides):
+    metadata = {
+        "interface": "eth1",
+        "source_ip": SRC,
+        "target_ip": DST,
+        "start_utc": "2026-11-21T03:00:00Z",
+        "end_utc": "2026-11-21T03:00:48Z",
+        "capture_exit_status": 0,
+        "generator_exit_status": 0,
+        "duration_limit_seconds": 120,
+        "packet_limit": 5000,
+        "snaplen": 96,
+        "packet_count": 48,
+        "drop_statistics": {
+            "packets_captured": 48,
+            "packets_received_by_filter": 48,
+            "packets_dropped_by_kernel": 0,
+        },
+    }
+    metadata.update(overrides)
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+    return path
+
+
 def test_complete_attack_capture_is_verified(tmp_path):
     pcap, manifest = _evidence(tmp_path)
 
@@ -95,6 +120,63 @@ def test_complete_attack_capture_is_verified(tmp_path):
     assert report["attack"]["matched_rst_responses"] == 24
     assert report["attack"]["duplicate_syn_packets"] == 0
     assert len(report["pcap"]["sha256"]) == 64
+
+
+def test_complete_capture_metadata_is_verified(tmp_path):
+    pcap, manifest = _evidence(tmp_path)
+    metadata = _metadata(tmp_path)
+
+    report = verify_attack_evidence(pcap, manifest, capture_metadata_path=metadata)
+
+    assert report["status"] == "PASS"
+    assert report["capture_metadata_status"] == "PASS"
+    assert report["capture"]["drop_statistics_status"] == "VERIFIED"
+
+
+@pytest.mark.parametrize(
+    "overrides, expected_issue",
+    [
+        ({"capture_exit_status": 1}, "capture exit status"),
+        ({"generator_exit_status": 7}, "generator exit status"),
+        ({"packet_count": 47}, "packet count"),
+        ({"drop_statistics": {"packets_captured": 48}}, "drop statistics"),
+        ({"drop_statistics": {"packets_captured": 48, "packets_received_by_filter": 48, "packets_dropped_by_kernel": 2}}, "dropped by kernel"),
+        ({"start_utc": "2026-11-21T03:00:00Z", "end_utc": "2026-11-21T03:03:00Z"}, "120"),
+    ],
+)
+def test_inconsistent_capture_metadata_blocks_pass(tmp_path, overrides, expected_issue):
+    pcap, manifest = _evidence(tmp_path)
+    metadata = _metadata(tmp_path, **overrides)
+
+    report = verify_attack_evidence(pcap, manifest, capture_metadata_path=metadata)
+
+    assert report["status"] == "BLOCKED"
+    assert report["packet_status"] == "BLOCKED"
+    assert any(expected_issue.lower() in issue.lower() for issue in report["issues"])
+    assert report["capture_metadata_status"] == "BLOCKED"
+
+
+def test_missing_drop_statistics_are_unverified_not_zero(tmp_path):
+    pcap, manifest = _evidence(tmp_path)
+    metadata = _metadata(tmp_path, drop_statistics={})
+
+    report = verify_attack_evidence(pcap, manifest, capture_metadata_path=metadata)
+
+    assert report["status"] == "BLOCKED"
+    assert report["capture"]["drop_statistics_status"] == "UNVERIFIED"
+    assert report["capture"]["drop_statistics"].get("packets_dropped_by_kernel") is None
+
+
+def test_missing_capture_metadata_is_blocked_for_capture_acceptance(tmp_path):
+    pcap, manifest = _evidence(tmp_path)
+
+    report = verify_attack_evidence(
+        pcap, manifest, capture_metadata_path=tmp_path / "missing-capture.json"
+    )
+
+    assert report["status"] == "BLOCKED"
+    assert report["capture_metadata_status"] == "BLOCKED"
+    assert any("metadata" in issue.lower() for issue in report["issues"])
 
 
 def test_capture_ending_before_attack_is_blocked(tmp_path):

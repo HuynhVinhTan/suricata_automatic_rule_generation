@@ -11,9 +11,6 @@ MAX_SECONDS=120
 MAX_PACKETS=5000
 SNAPLEN=96
 GENERATOR_TIMEOUT_SECONDS=90
-if [[ ${CAPTURE_TEST_MODE:-0} == 1 ]]; then
-  MAX_SECONDS=${CAPTURE_TEST_MAX_SECONDS:-$MAX_SECONDS}
-fi
 READINESS_WAIT_ITERATIONS=${READINESS_WAIT_ITERATIONS:-150}
 OUT=${1:-$ROOT/evidence/attack-$(date -u +%Y%m%dT%H%M%SZ).pcap}
 MANIFEST=${2:-$ROOT/evidence/$(basename "${OUT%.pcap}").json}
@@ -32,11 +29,11 @@ CAPTURE_STATUS=not_started
 CAPTURE_WAIT_STATUS=not_waited
 FINALIZED=0
 
-if [[ ${CAPTURE_TEST_MODE:-0} != 1 && ( ! -t 0 || ! -t 1 ) ]]; then
+if [[ ! -t 0 || ! -t 1 ]]; then
   echo 'CAPTURE_BLOCKED: interactive PTY required. Re-run as: ssh -tt suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-capture-session.sh' >&2
   exit 77
 fi
-if [[ ${CAPTURE_TEST_MODE:-0} != 1 && ${EUID:-$(id -u)} -eq 0 ]]; then
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   echo 'CAPTURE_BLOCKED: invoke as the owner user; only tcpdump may run through sudo.' >&2
   exit 77
 fi

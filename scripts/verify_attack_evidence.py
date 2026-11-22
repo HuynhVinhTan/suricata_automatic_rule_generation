@@ -204,6 +204,7 @@ def verify_attack_evidence(
         },
         "packet_status": "BLOCKED",
         "eve_status": "NOT_PROVIDED",
+        "capture_metadata_status": "NOT_PROVIDED",
     }
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -234,39 +235,72 @@ def verify_attack_evidence(
         return report
 
     capture_meta = {}
+    metadata_issues: list[str] = []
     if capture_metadata_path:
         try:
             capture_meta = json.loads(Path(capture_metadata_path).read_text(encoding="utf-8"))
+            if not isinstance(capture_meta, dict):
+                raise ValueError("capture metadata must be a JSON object")
             report["capture"] = capture_meta
             if capture_meta.get("interface") != "eth1":
-                issues.append("capture metadata interface is not eth1")
+                metadata_issues.append("capture metadata interface is not eth1")
             if capture_meta.get("snaplen") != 96:
-                issues.append("capture metadata snaplen is not 96")
+                metadata_issues.append("capture metadata snaplen is not 96")
             if capture_meta.get("packet_limit") != 5000 or capture_meta.get("duration_limit_seconds") != 120:
-                issues.append("capture metadata limits do not match the bounded workflow")
+                metadata_issues.append("capture metadata limits do not match the bounded workflow")
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            issues.append(f"invalid capture metadata: {exc}")
+            metadata_issues.append(f"invalid capture metadata: {exc}")
+            capture_meta = {}
+        report["capture_metadata_status"] = "BLOCKED" if metadata_issues else "UNVERIFIED"
 
     packets = pcap["packets"]
     capture_start = datetime.fromisoformat(report["pcap"]["first_packet_utc"].replace("Z", "+00:00"))
     capture_end = datetime.fromisoformat(report["pcap"]["last_packet_utc"].replace("Z", "+00:00"))
     metadata_start = metadata_end = None
     try:
-        if capture_meta.get("start_utc"):
+        if capture_metadata_path:
             metadata_start = _utc(capture_meta["start_utc"])
-        if capture_meta.get("end_utc"):
             metadata_end = _utc(capture_meta["end_utc"])
-    except ValueError as exc:
-        issues.append(f"invalid capture metadata timestamps: {exc}")
+    except (KeyError, TypeError, ValueError) as exc:
+        metadata_issues.append(f"invalid capture metadata timestamps: {exc}")
     capture_duration = (capture_end - capture_start).total_seconds()
     if pcap["packet_count"] > 5000:
         issues.append("PCAP packet count exceeds the 5000 packet capture bound")
     if capture_duration > 120:
         issues.append("PCAP packet timestamps exceed the 120 second capture bound")
-    if capture_meta.get("packet_count") is not None and capture_meta["packet_count"] > 5000:
-        issues.append("capture metadata packet count exceeds the 5000 packet bound")
-    if metadata_start and metadata_end and (metadata_end - metadata_start).total_seconds() > 120:
-        issues.append("capture metadata timestamps exceed the 120 second capture bound")
+    if capture_metadata_path:
+        if capture_meta.get("capture_exit_status") != 0 and capture_meta.get("capture_exit_status") != "0":
+            metadata_issues.append("capture exit status is not successful")
+        if capture_meta.get("generator_exit_status") != 0 and capture_meta.get("generator_exit_status") != "0":
+            metadata_issues.append("generator exit status is not successful")
+        if capture_meta.get("packet_count") != pcap["packet_count"]:
+            metadata_issues.append("capture metadata packet count does not match parsed PCAP packet count")
+        if not isinstance(capture_meta.get("packet_count"), int) or isinstance(capture_meta.get("packet_count"), bool):
+            metadata_issues.append("capture metadata packet count is missing or invalid")
+        drops = capture_meta.get("drop_statistics")
+        if not isinstance(drops, dict):
+            drops = {}
+        capture_meta["drop_statistics_status"] = "UNVERIFIED"
+        if drops.get("packets_captured") != pcap["packet_count"]:
+            metadata_issues.append("capture drop statistics packet count does not match parsed PCAP packet count")
+        if drops.get("packets_received_by_filter") is None or drops.get("packets_dropped_by_kernel") is None:
+            metadata_issues.append("capture drop statistics are incomplete; drop count is UNVERIFIED")
+        elif drops.get("packets_dropped_by_kernel") != 0:
+            metadata_issues.append("packets dropped by kernel is not zero")
+        else:
+            capture_meta["drop_statistics_status"] = "VERIFIED"
+        if not metadata_start or not metadata_end:
+            metadata_issues.append("capture metadata timestamps are incomplete")
+        elif metadata_end < metadata_start:
+            metadata_issues.append("capture metadata end precedes start")
+        elif (metadata_end - metadata_start).total_seconds() > 120:
+            metadata_issues.append("capture metadata timestamps exceed the 120 second capture bound")
+        if metadata_start and metadata_start > capture_start:
+            metadata_issues.append("capture metadata starts after the first parsed packet")
+        if metadata_end and metadata_end < capture_end:
+            metadata_issues.append("capture metadata ends before the last parsed packet")
+        issues.extend(metadata_issues)
+        report["capture_metadata_status"] = "PASS" if not metadata_issues else "BLOCKED"
     if capture_end < manifest_start or capture_start > manifest_end:
         issues.append("capture and generator time windows do not overlap")
     if metadata_start and metadata_start > manifest_start:
@@ -338,7 +372,7 @@ def verify_attack_evidence(
         "matched_rst_responses": matched_rst,
         "missing_rst_ports": missing_rst,
         "duplicate_syn_packets": duplicate_count,
-        "capture_drop_statistics": capture_meta.get("drop_statistics", "UNAVAILABLE"),
+        "capture_drop_statistics": capture_meta.get("drop_statistics", "UNVERIFIED"),
     }
     if len(observed_ports) != 24 or observed_ports != sorted(ATTACK_PORTS):
         issues.append("PCAP does not contain exactly the 24 allowlisted Attack destination ports")
