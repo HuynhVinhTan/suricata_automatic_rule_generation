@@ -21,7 +21,7 @@ def _write_executable(path: Path, text: str) -> None:
 def _write_test_copy(path: Path) -> None:
     """Create a deterministic test copy; production script has no test bypass."""
     text = SCRIPT.read_text(encoding="utf-8")
-    text = text.replace("MAX_SECONDS=120\n", "MAX_SECONDS=1\n", 1)
+    text = text.replace("MAX_SECONDS=120\n", "MAX_SECONDS=5\n", 1)
     text = text.replace("if [[ ! -t 0 || ! -t 1 ]]; then", "if false; then", 1)
     text = text.replace("if [[ ${EUID:-$(id -u)} -eq 0 ]]; then", "if false; then", 1)
     path.write_text(text, encoding="utf-8")
@@ -38,6 +38,12 @@ def mocked_capture(tmp_path):
     fixture_pcap, fixture_manifest = write_complete_attack_fixture(tmp_path / "fixture")
     test_script = tmp_path / "vm2-capture-session-test-copy.sh"
     _write_test_copy(test_script)
+    timeout_script = tmp_path / "vm2-capture-session-timeout-test-copy.sh"
+    timeout_script.write_text(
+        test_script.read_text(encoding="utf-8").replace("MAX_SECONDS=5\n", "MAX_SECONDS=1\n", 1),
+        encoding="utf-8",
+    )
+    timeout_script.chmod(0o755)
     (root / "fixture.pcap").write_bytes(fixture_pcap.read_bytes())
     (root / "fixture.json").write_text(fixture_manifest.read_text(encoding="utf-8"), encoding="utf-8")
     (root / "current/scripts/verify_attack_evidence.py").write_bytes(
@@ -77,10 +83,11 @@ time.sleep(float(os.environ.get('FAKE_GENERATOR_SLEEP', '1.6')))
 shutil.copyfile(os.environ['FAKE_MANIFEST'], sys.argv[1])
 raise SystemExit(int(os.environ.get('FAKE_GENERATOR_STATUS', '0')))
 """)
-    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "script": test_script}
+    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "script": test_script, "timeout_script": timeout_script}
 
 
 def _run(fixture, name="attack.pcap", **extra):
+    script = extra.pop("script", fixture["script"])
     out = fixture["root"] / "evidence" / name
     manifest = fixture["root"] / "evidence" / "attack.json"
     env = os.environ.copy()
@@ -92,7 +99,7 @@ def _run(fixture, name="attack.pcap", **extra):
         "READINESS_WAIT_ITERATIONS": "2",
     })
     env.update(extra)
-    return subprocess.run(["bash", str(fixture["script"]), str(out), str(manifest)], cwd=fixture["root"], env=env, capture_output=True, text=True, timeout=20), out
+    return subprocess.run(["bash", str(script), str(out), str(manifest)], cwd=fixture["root"], env=env, capture_output=True, text=True, timeout=20), out
 
 
 def test_success_authenticates_in_foreground_and_cleans_capture_process(mocked_capture):
@@ -149,7 +156,7 @@ def test_generator_error_preserves_partial_and_kills_capture(mocked_capture):
 
 
 def test_timeout_preserves_partial_and_kills_capture(mocked_capture):
-    result, out = _run(mocked_capture, CAPTURE_TEST_MAX_SECONDS="120", FAKE_GENERATOR_SLEEP="3")
+    result, out = _run(mocked_capture, script=mocked_capture["timeout_script"], CAPTURE_TEST_MAX_SECONDS="120", FAKE_GENERATOR_SLEEP="3")
     assert result.returncode == 1
     assert "CAPTURE_PARTIAL" in result.stderr
     assert not out.exists() and not _pid_exists(mocked_capture["pid"])
