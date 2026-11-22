@@ -20,12 +20,11 @@ META="$OUT.capture.json"
 REPORT="$OUT.verification.json"
 TIMEOUT_MARKER="$OUT.timeout"
 CAPTURE_PIDFILE="$OUT.tcpdump.pid"
+STOP_REQUEST="$OUT.stop"
+CAPTURE_STATUSFILE="$OUT.supervisor.status"
+SUPERVISOR="$ROOT/current/scripts/demo/vm2-capture-supervisor.sh"
 BPF="((src host $SOURCE_IP and dst host $TARGET_IP and tcp and dst portrange 18100-18123) or (src host $TARGET_IP and dst host $SOURCE_IP and tcp and src portrange 18100-18123))"
 TCPDUMP_SUPERVISOR_PID=''
-CAPTURE_PID=''
-CAPTURE_PGID=''
-TIMER_PID=''
-TIMER_PGID=''
 GENERATOR_STATUS=blocked
 CAPTURE_STATUS=not_started
 CAPTURE_WAIT_STATUS=not_waited
@@ -41,14 +40,13 @@ if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
 fi
 command -v ip >/dev/null || { echo 'CAPTURE_BLOCKED: ip command is unavailable.' >&2; exit 77; }
 command -v tcpdump >/dev/null || { echo 'CAPTURE_BLOCKED: tcpdump is unavailable.' >&2; exit 77; }
-command -v setsid >/dev/null || { echo 'CAPTURE_BLOCKED: setsid is unavailable for process supervision.' >&2; exit 77; }
 command -v timeout >/dev/null || { echo 'CAPTURE_BLOCKED: timeout is unavailable.' >&2; exit 77; }
 command -v sha256sum >/dev/null || { echo 'CAPTURE_BLOCKED: sha256sum is unavailable.' >&2; exit 77; }
 if ! ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$SOURCE_IP"; then
   echo "CAPTURE_BLOCKED: $IFACE does not have expected source IP $SOURCE_IP." >&2
   exit 77
 fi
-if [[ -e "$OUT" || -e "$PARTIAL" || -e "$META" || -e "$REPORT" || -e "$TIMEOUT_MARKER" || -e "$CAPTURE_PIDFILE" || -e "$MANIFEST" ]]; then
+if [[ -e "$OUT" || -e "$PARTIAL" || -e "$META" || -e "$REPORT" || -e "$TIMEOUT_MARKER" || -e "$CAPTURE_PIDFILE" || -e "$STOP_REQUEST" || -e "$CAPTURE_STATUSFILE" || -e "$MANIFEST" ]]; then
   echo 'CAPTURE_BLOCKED: refusing to overwrite existing evidence, report, or manifest.' >&2
   exit 77
 fi
@@ -79,22 +77,14 @@ PY
 
 terminate_capture() {
   if [[ -z "$TCPDUMP_SUPERVISOR_PID" ]]; then return; fi
-  if [[ -n "$CAPTURE_PGID" ]] && kill -0 "$CAPTURE_PID" 2>/dev/null; then
-    kill -INT -- "-$CAPTURE_PGID" 2>/dev/null || true
-    for _ in $(seq 1 30); do
-      kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null || break
-      sleep 0.1
-    done
-    if kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
-      kill -TERM -- "-$CAPTURE_PGID" 2>/dev/null || true
-      sleep 0.2
-    fi
-    if kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
-      kill -KILL -- "-$CAPTURE_PGID" 2>/dev/null || true
-    fi
-  fi
-  if kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
-    kill -TERM "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null || true
+  touch "$STOP_REQUEST"
+  for _ in $(seq 1 150); do
+    [[ -s "$CAPTURE_STATUSFILE" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -s "$CAPTURE_STATUSFILE" ]]; then
+    CAPTURE_WAIT_STATUS=supervisor_unresponsive
+    return
   fi
   set +e
   wait "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null
@@ -102,19 +92,10 @@ terminate_capture() {
   set -e
 }
 
-terminate_timer() {
-  if [[ -z "$TIMER_PID" ]]; then return; fi
-  kill -TERM -- "-$TIMER_PGID" 2>/dev/null || true
-  set +e
-  wait "$TIMER_PID" 2>/dev/null
-  set -e
-}
-
 cleanup() {
-  terminate_timer
   [[ "$FINALIZED" -eq 1 ]] || terminate_capture
   [[ -f "$LOG" ]] && write_metadata || true
-  rm -f "$CAPTURE_PIDFILE" 2>/dev/null || true
+  rm -f "$CAPTURE_PIDFILE" "$STOP_REQUEST" "$CAPTURE_STATUSFILE" 2>/dev/null || true
 }
 trap 'CAPTURE_STATUS=interrupted; exit 130' INT TERM
 trap cleanup EXIT
@@ -126,39 +107,27 @@ if ! sudo -v; then
   echo 'CAPTURE_BLOCKED: sudo authentication failed.' >&2
   exit 77
 fi
+if [[ ! -x "$SUPERVISOR" ]]; then
+  CAPTURE_STATUS=supervisor_missing
+  echo 'CAPTURE_BLOCKED: privileged capture supervisor is unavailable.' >&2
+  exit 77
+fi
 
-# Authenticate sudo on the owner's controlling PTY, then create the tcpdump
-# process group from inside the already-authorized sudo command.  Starting
-# setsid before sudo changes the terminal scope used by sudo timestamp tickets.
-sudo sh -c "exec setsid --wait sh -c 'printf \"%s\\n\" \"\$\$\" > \"\$1\"; shift; exec tcpdump \"\$@\"' capture-child \"\$@\"" capture-supervisor "$CAPTURE_PIDFILE" -i "$IFACE" -s "$SNAPLEN" -n -U -w "$PARTIAL" -c "$MAX_PACKETS" "$BPF" 2>"$LOG" &
+# Reuse the foreground ticket, fail closed if unavailable, and delegate all
+# privileged signal escalation and reaping to the supervisor itself.
+sudo -n "$SUPERVISOR" "$CAPTURE_PIDFILE" "$STOP_REQUEST" "$TIMEOUT_MARKER" "$CAPTURE_STATUSFILE" "$MAX_SECONDS" -- tcpdump -i "$IFACE" -s "$SNAPLEN" -n -U -w "$PARTIAL" -c "$MAX_PACKETS" "$BPF" 2>"$LOG" &
 TCPDUMP_SUPERVISOR_PID=$!
-setsid --wait bash -c '
-  sleep "$1"
-  touch "$2"
-  capture_pgid=$(cat "$3" 2>/dev/null || true)
-  if [[ "$capture_pgid" =~ ^[0-9]+$ ]]; then
-    kill -INT -- "-$capture_pgid" 2>/dev/null || true
-  fi
-' timer "$MAX_SECONDS" "$TIMEOUT_MARKER" "$CAPTURE_PIDFILE" &
-TIMER_PID=$!
-TIMER_PGID=$TIMER_PID
 
 for _ in $(seq 1 50); do
-  if [[ -s "$CAPTURE_PIDFILE" ]]; then
-    CAPTURE_PID=$(cat "$CAPTURE_PIDFILE")
-    if [[ "$CAPTURE_PID" =~ ^[0-9]+$ ]]; then
-      CAPTURE_PGID=$CAPTURE_PID
-      break
-    fi
-  fi
-  if ! kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
+  [[ -s "$CAPTURE_PIDFILE" ]] && break
+  if [[ -s "$CAPTURE_STATUSFILE" ]]; then
     CAPTURE_STATUS=readiness_failed
     echo 'CAPTURE_BLOCKED: sudo/tcpdump exited before reporting process readiness.' >&2
     exit 77
   fi
   sleep 0.1
 done
-if [[ -z "$CAPTURE_PGID" ]]; then
+if [[ ! -s "$CAPTURE_PIDFILE" ]]; then
   CAPTURE_STATUS=readiness_timeout
   echo 'CAPTURE_BLOCKED: tcpdump process-group readiness timeout.' >&2
   exit 77
@@ -166,7 +135,7 @@ fi
 
 for _ in $(seq 1 "$READINESS_WAIT_ITERATIONS"); do
   if grep -Fq "listening on $IFACE" "$LOG" 2>/dev/null; then break; fi
-  if ! kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
+  if [[ -s "$CAPTURE_STATUSFILE" ]]; then
     CAPTURE_STATUS=readiness_failed
     echo 'CAPTURE_BLOCKED: tcpdump exited before reporting readiness.' >&2
     exit 77
