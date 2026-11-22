@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -64,14 +65,21 @@ if sys.argv[1] == '-v':
     open(os.environ['FAKE_AUTH_LOG'], 'a', encoding='utf-8').write('auth\\n')
     raise SystemExit(int(os.environ.get('FAKE_SUDO_STATUS', '0')))
 args = sys.argv[1:]
-if args and args[0] == '-n' and os.environ.get('FAKE_SUDO_TERMINAL_SCOPED') == '1' and not any('vm2-capture-supervisor.sh' in item for item in args):
+is_supervisor = any('vm2-capture-supervisor.sh' in item for item in args)
+if args and args[0] == '-n' and os.environ.get('FAKE_SUDO_TERMINAL_SCOPED') == '1' and not is_supervisor:
     sys.stderr.write('sudo: a password is required\\n')
+    raise SystemExit(1)
+if os.environ.get('FAKE_UNPRIVILEGED_SIGNAL_EPERM') == '1' and not is_supervisor:
+    sys.stderr.write('kill: Operation not permitted\\n')
     raise SystemExit(1)
 if args and args[0] == '-n': args = args[1:]
 if os.environ.get('FAKE_SUDO_TERMINAL_SCOPED') == '1' and not os.path.exists(os.environ['FAKE_AUTH_LOG']):
     sys.stderr.write('sudo: a password is required\\n')
     raise SystemExit(1)
-os.execvp(args[0], args)
+if is_supervisor and os.environ.get('FAKE_UNPRIVILEGED_SIGNAL_EPERM') == '1':
+    open(os.environ['FAKE_PRIVILEGED_SUPERVISOR_MARKER'], 'w', encoding='utf-8').write('privileged-supervisor\\n')
+    os.environ['FAKE_PRIVILEGED_SUPERVISOR'] = '1'
+os.execvpe(args[0], args, os.environ)
 """)
     _write_executable(bin_dir / "tcpdump", """#!/usr/bin/env python3
 import os, signal, sys, time
@@ -179,15 +187,21 @@ def test_generator_error_preserves_partial_and_kills_capture(mocked_capture):
 
 
 def test_privileged_supervisor_owns_cleanup_when_parent_signals_would_be_eperm(mocked_capture):
-    result, out = _run(mocked_capture, FAKE_SUDO_TERMINAL_SCOPED="1", FAKE_UNPRIVILEGED_SIGNAL_EPERM="1", FAKE_GENERATOR_STATUS="9")
+    boundary_marker = mocked_capture["root"] / "privileged-supervisor.marker"
+    result, out = _run(
+        mocked_capture,
+        FAKE_SUDO_TERMINAL_SCOPED="1",
+        FAKE_UNPRIVILEGED_SIGNAL_EPERM="1",
+        FAKE_PRIVILEGED_SUPERVISOR_MARKER=str(boundary_marker),
+        FAKE_GENERATOR_STATUS="9",
+    )
     assert result.returncode == 1
     assert "CAPTURE_PARTIAL" in result.stderr
     assert Path(str(out) + ".partial.pcap").exists()
     assert not _pid_exists(mocked_capture["pid"])
+    assert boundary_marker.read_text(encoding="utf-8").strip() == "privileged-supervisor"
     parent = SCRIPT.read_text(encoding="utf-8")
-    assert 'kill -INT -- "-$CAPTURE_PGID"' not in parent
-    assert 'kill -TERM -- "-$CAPTURE_PGID"' not in parent
-    assert 'kill -KILL -- "-$CAPTURE_PGID"' not in parent
+    assert re.search(r"(?m)^\s*(?:command\s+)?kill\b", parent) is None
     assert "-n" in mocked_capture["sudo_log"].read_text(encoding="utf-8")
 
 
