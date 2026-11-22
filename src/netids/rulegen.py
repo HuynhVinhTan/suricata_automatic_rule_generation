@@ -13,7 +13,7 @@ TEST_NETWORKS = (
     ip_network("203.0.113.0/24"),
 )
 
-REJECTED_SIDS = frozenset({9102001, 9102002, 9103001, 9103002})
+REJECTED_SIDS = frozenset({9102001, 9102002, 9103001, 9103002, 9103012})
 ML_SID_START = 9103000
 _SID_PATTERN = re.compile(r"\bsid\s*:\s*(\d+)\s*;")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")

@@ -18,7 +18,7 @@ from netids.rule_lifecycle import RuleLifecycle
 def _fixture(tmp_path):
     artifact = tmp_path / "lineage"
     artifact.mkdir()
-    rule = 'alert tcp any any -> 192.168.10.10 any (detection_filter:track by_src,count 3,seconds 10; sid:9103012; rev:1;)\n'
+    rule = 'alert tcp any any -> 192.168.10.10 any (detection_filter:track by_src,count 3,seconds 10; sid:9103013; rev:1;)\n'
     (artifact / "ml-generated.rules").write_text(rule, encoding="utf-8", newline="\n")
     model = "b" * 64
     pcap = "a" * 64
@@ -35,7 +35,7 @@ def _fixture(tmp_path):
         "schema_version": "lab_rule_review_v0_2",
         "source_pcap_sha256": pcap,
         "model_sha256": model,
-        "generated_rule_sid": 9103012,
+        "generated_rule_sid": 9103013,
         "status": "needs_review",
         "rule_generated_in_this_run": True,
         "approved": False, "deployable": False, "deployed": False,
@@ -52,7 +52,7 @@ def _fixture(tmp_path):
 def test_candidate_record_binds_new_lineage_and_is_review_only(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
     record = build_candidate_record(artifact, calibration, baseline)
-    assert record["sid"] == 9103012
+    assert record["sid"] == 9103013
     assert record["decision_manifest_sha256"] == "d" * 64
     identity = {key: record[key] for key in (
         "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256",
@@ -77,7 +77,7 @@ def test_candidate_record_rejects_tampered_identity(tmp_path, field):
 
 def test_candidate_record_rejects_sid_collision(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
-    baseline.write_text("alert tcp any any -> any any (sid:9103012; rev:1;)\n", encoding="utf-8")
+    baseline.write_text("alert tcp any any -> any any (sid:9103013; rev:1;)\n", encoding="utf-8")
     with pytest.raises(CandidateRecordError, match="collision"):
         build_candidate_record(artifact, calibration, baseline)
 
@@ -104,7 +104,7 @@ def test_candidate_record_rejects_malformed_source_hashes(tmp_path, value):
 def test_candidate_record_rejects_tampered_rule_with_recomputed_identity(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
     record = build_candidate_record(artifact, calibration, baseline)
-    record["rule"] = record["rule"].replace("sid:9103012", "sid:9103013")
+    record["rule"] = record["rule"].replace("sid:9103013", "sid:9103014")
     record["rule_sha256"] = hashlib.sha256(record["rule"].encode()).hexdigest()
     identity = {key: record[key] for key in (
         "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256",
@@ -119,7 +119,7 @@ def test_candidate_record_rejects_tampered_rule_with_recomputed_identity(tmp_pat
 def test_candidate_record_rejects_sid_not_matching_embedded_rule(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
     record = build_candidate_record(artifact, calibration, baseline)
-    record["sid"] = 9103013
+    record["sid"] = 9103014
     identity = {key: record[key] for key in (
         "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256",
         "calibration_sha256", "decision_manifest_sha256",

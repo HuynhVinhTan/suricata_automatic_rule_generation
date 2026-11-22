@@ -12,6 +12,18 @@ def test_allocates_fresh_sid_away_from_rejected_and_existing_sids():
     assert rulegen.allocate_sid({9103000, 9103001, 9103002, 9102001, 9102002}) == 9103003
 
 
+def test_historical_rejected_sid_9103012_is_never_allocated_or_accepted():
+    assert 9103012 in rulegen.REJECTED_SIDS
+    assert rulegen.allocate_sid(set(range(9103000, 9103013))) == 9103013
+    with pytest.raises(ValueError, match="Rejected historical SID"):
+        rulegen._build_ml_syn_rule(
+            destination_ip="192.0.2.10",
+            threshold=3,
+            window_seconds=10,
+            sid=9103012,
+        )
+
+
 def test_generates_rule_and_provenance_metadata_from_evidence(tmp_path):
     result = rulegen.generate_ml_rule(
         run_id="recon-001",
