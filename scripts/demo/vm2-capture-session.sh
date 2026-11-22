@@ -19,8 +19,10 @@ LOG="$OUT.tcpdump.log"
 META="$OUT.capture.json"
 REPORT="$OUT.verification.json"
 TIMEOUT_MARKER="$OUT.timeout"
+CAPTURE_PIDFILE="$OUT.tcpdump.pid"
 BPF="((src host $SOURCE_IP and dst host $TARGET_IP and tcp and dst portrange 18100-18123) or (src host $TARGET_IP and dst host $SOURCE_IP and tcp and src portrange 18100-18123))"
 TCPDUMP_SUPERVISOR_PID=''
+CAPTURE_PID=''
 CAPTURE_PGID=''
 TIMER_PID=''
 TIMER_PGID=''
@@ -46,7 +48,7 @@ if ! ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | cut -d/ -f1 | grep -Fx
   echo "CAPTURE_BLOCKED: $IFACE does not have expected source IP $SOURCE_IP." >&2
   exit 77
 fi
-if [[ -e "$OUT" || -e "$PARTIAL" || -e "$META" || -e "$REPORT" || -e "$TIMEOUT_MARKER" || -e "$MANIFEST" ]]; then
+if [[ -e "$OUT" || -e "$PARTIAL" || -e "$META" || -e "$REPORT" || -e "$TIMEOUT_MARKER" || -e "$CAPTURE_PIDFILE" || -e "$MANIFEST" ]]; then
   echo 'CAPTURE_BLOCKED: refusing to overwrite existing evidence, report, or manifest.' >&2
   exit 77
 fi
@@ -77,7 +79,7 @@ PY
 
 terminate_capture() {
   if [[ -z "$TCPDUMP_SUPERVISOR_PID" ]]; then return; fi
-  if kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
+  if [[ -n "$CAPTURE_PGID" ]] && kill -0 "$CAPTURE_PID" 2>/dev/null; then
     kill -INT -- "-$CAPTURE_PGID" 2>/dev/null || true
     for _ in $(seq 1 30); do
       kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null || break
@@ -90,6 +92,9 @@ terminate_capture() {
     if kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
       kill -KILL -- "-$CAPTURE_PGID" 2>/dev/null || true
     fi
+  fi
+  if kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
+    kill -TERM "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null || true
   fi
   set +e
   wait "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null
@@ -109,6 +114,7 @@ cleanup() {
   terminate_timer
   [[ "$FINALIZED" -eq 1 ]] || terminate_capture
   [[ -f "$LOG" ]] && write_metadata || true
+  rm -f "$CAPTURE_PIDFILE" 2>/dev/null || true
 }
 trap 'CAPTURE_STATUS=interrupted; exit 130' INT TERM
 trap cleanup EXIT
@@ -121,16 +127,42 @@ if ! sudo -v; then
   exit 77
 fi
 
-setsid --wait sudo -n tcpdump -i "$IFACE" -s "$SNAPLEN" -n -U -w "$PARTIAL" -c "$MAX_PACKETS" "$BPF" 2>"$LOG" &
+# Authenticate sudo on the owner's controlling PTY, then create the tcpdump
+# process group from inside the already-authorized sudo command.  Starting
+# setsid before sudo changes the terminal scope used by sudo timestamp tickets.
+sudo sh -c "exec setsid --wait sh -c 'printf \"%s\\n\" \"\$\$\" > \"\$1\"; shift; exec tcpdump \"\$@\"' capture-child \"\$@\"" capture-supervisor "$CAPTURE_PIDFILE" -i "$IFACE" -s "$SNAPLEN" -n -U -w "$PARTIAL" -c "$MAX_PACKETS" "$BPF" 2>"$LOG" &
 TCPDUMP_SUPERVISOR_PID=$!
-CAPTURE_PGID=$TCPDUMP_SUPERVISOR_PID
 setsid --wait bash -c '
   sleep "$1"
   touch "$2"
-  kill -INT -- "-$3" 2>/dev/null || true
-' timer "$MAX_SECONDS" "$TIMEOUT_MARKER" "$CAPTURE_PGID" &
+  capture_pgid=$(cat "$3" 2>/dev/null || true)
+  if [[ "$capture_pgid" =~ ^[0-9]+$ ]]; then
+    kill -INT -- "-$capture_pgid" 2>/dev/null || true
+  fi
+' timer "$MAX_SECONDS" "$TIMEOUT_MARKER" "$CAPTURE_PIDFILE" &
 TIMER_PID=$!
 TIMER_PGID=$TIMER_PID
+
+for _ in $(seq 1 50); do
+  if [[ -s "$CAPTURE_PIDFILE" ]]; then
+    CAPTURE_PID=$(cat "$CAPTURE_PIDFILE")
+    if [[ "$CAPTURE_PID" =~ ^[0-9]+$ ]]; then
+      CAPTURE_PGID=$CAPTURE_PID
+      break
+    fi
+  fi
+  if ! kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
+    CAPTURE_STATUS=readiness_failed
+    echo 'CAPTURE_BLOCKED: sudo/tcpdump exited before reporting process readiness.' >&2
+    exit 77
+  fi
+  sleep 0.1
+done
+if [[ -z "$CAPTURE_PGID" ]]; then
+  CAPTURE_STATUS=readiness_timeout
+  echo 'CAPTURE_BLOCKED: tcpdump process-group readiness timeout.' >&2
+  exit 77
+fi
 
 for _ in $(seq 1 "$READINESS_WAIT_ITERATIONS"); do
   if grep -Fq "listening on $IFACE" "$LOG" 2>/dev/null; then break; fi

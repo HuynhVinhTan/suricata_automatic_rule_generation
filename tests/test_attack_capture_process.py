@@ -51,14 +51,23 @@ def mocked_capture(tmp_path):
     )
     marker = tmp_path / "tcpdump.pid"
     auth_log = tmp_path / "sudo-auth.log"
+    sudo_log = tmp_path / "sudo.log"
     _write_executable(bin_dir / "ip", "#!/usr/bin/env python3\nprint('2: eth1 inet 192.168.10.20/24')\n")
     _write_executable(bin_dir / "sudo", """#!/usr/bin/env python3
 import os, sys
+if os.environ.get('FAKE_SUDO_LOG'):
+    open(os.environ['FAKE_SUDO_LOG'], 'a', encoding='utf-8').write(' '.join(sys.argv[1:]) + '\\n')
 if sys.argv[1] == '-v':
     open(os.environ['FAKE_AUTH_LOG'], 'a', encoding='utf-8').write('auth\\n')
     raise SystemExit(int(os.environ.get('FAKE_SUDO_STATUS', '0')))
 args = sys.argv[1:]
+if args and args[0] == '-n' and os.environ.get('FAKE_SUDO_TERMINAL_SCOPED') == '1':
+    sys.stderr.write('sudo: a password is required\\n')
+    raise SystemExit(1)
 if args and args[0] == '-n': args = args[1:]
+if os.environ.get('FAKE_SUDO_TERMINAL_SCOPED') == '1' and not os.path.exists(os.environ['FAKE_AUTH_LOG']):
+    sys.stderr.write('sudo: a password is required\\n')
+    raise SystemExit(1)
 os.execvp(args[0], args)
 """)
     _write_executable(bin_dir / "tcpdump", """#!/usr/bin/env python3
@@ -83,7 +92,7 @@ time.sleep(float(os.environ.get('FAKE_GENERATOR_SLEEP', '1.6')))
 shutil.copyfile(os.environ['FAKE_MANIFEST'], sys.argv[1])
 raise SystemExit(int(os.environ.get('FAKE_GENERATOR_STATUS', '0')))
 """)
-    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "script": test_script, "timeout_script": timeout_script}
+    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "sudo_log": sudo_log, "script": test_script, "timeout_script": timeout_script}
 
 
 def _run(fixture, name="attack.pcap", **extra):
@@ -96,6 +105,7 @@ def _run(fixture, name="attack.pcap", **extra):
         "SHOWCASE_ROOT": str(fixture["root"]), "CAPTURE_TEST_MODE": "1",
         "FAKE_PCAP": str(fixture["pcap"]), "FAKE_MANIFEST": str(fixture["root"] / "fixture.json"),
         "FAKE_TCPDUMP_PID": str(fixture["pid"]), "FAKE_AUTH_LOG": str(fixture["auth"]),
+        "FAKE_SUDO_LOG": str(fixture["sudo_log"]),
         "READINESS_WAIT_ITERATIONS": "2",
     })
     env.update(extra)
@@ -130,6 +140,16 @@ raise SystemExit(child.returncode)
     assert result.returncode == 0, result.stderr
     assert child_marker.exists()
     assert not _pid_exists(child_marker)
+
+
+def test_terminal_scoped_sudo_authentication_is_reused_before_process_group(mocked_capture):
+    result, out = _run(mocked_capture, FAKE_SUDO_TERMINAL_SCOPED="1")
+
+    assert result.returncode == 0, result.stderr
+    assert out.is_file()
+    sudo_invocations = mocked_capture["sudo_log"].read_text(encoding="utf-8").splitlines()
+    assert sudo_invocations[0] == "-v"
+    assert all("-n tcpdump" not in invocation for invocation in sudo_invocations)
 
 
 def test_auth_failure_never_starts_tcpdump(mocked_capture):

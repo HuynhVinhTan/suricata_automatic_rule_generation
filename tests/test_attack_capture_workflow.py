@@ -11,7 +11,9 @@ def test_capture_workflow_is_bounded_and_bidirectional():
     assert "MAX_PACKETS=5000" in text
     assert "SNAPLEN=96" in text
     assert "sudo -v" in text
-    assert "sudo -n tcpdump" in text
+    assert "sudo sh -c" in text
+    assert "exec setsid --wait sh -c" in text
+    assert "setsid --wait sudo -n tcpdump" not in text
     assert "listening on $IFACE" in text
     assert "dst portrange 18100-18123" in text
     assert "src portrange 18100-18123" in text

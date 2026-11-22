@@ -7,6 +7,10 @@ was performed.
 ## Runtime-safety changes
 
 - Owner authentication is foreground `sudo -v` and requires an explicit PTY.
+- The authorized sudo command is launched from that same controlling PTY; only
+  after sudo authorization does an inner `setsid --wait` create the tcpdump
+  process group. This avoids terminal-scoped `sudo -n` failure while retaining
+  bounded group cleanup.
 - The capture is launched only after authentication, under a `setsid` process
   group; timeout, interruption, readiness failure, and generator failure reap
   the supervisor and terminate the process group.
