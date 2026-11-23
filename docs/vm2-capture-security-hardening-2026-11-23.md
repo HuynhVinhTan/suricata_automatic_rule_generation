@@ -136,9 +136,9 @@ Authorize this separately and only after G2A passes. The exact reviewed
 commit and hashes must be filled from the final pushed commit before approval:
 
 ```text
-REVIEWED_COMMIT=fe70982
-SOURCE_ARCHIVE_SHA256=7375474676534fe4a2caf723e4898b38d08f29101f4a1b6f0f6272fa741a6c5c
-HELPER_SHA256=b59bbc94b6e949e8f1be3415dfcd175312297a956309db9f9b6151f17231551e
+REVIEWED_COMMIT=0adec78d1079369ad73a980934a02cb3ca8fe035
+SOURCE_ARCHIVE_SHA256=46b685c00a7523179571381bcd066c7e0d9c1e54698871b32e3d4dcb8d84504a
+HELPER_SHA256=038a5fbca1d8c45cd08e3f5dca27980de2c5a2bf4d9a03c5cc9ba045e0f0a7a5
 ```
 
 The owner-approved installation sequence is:
