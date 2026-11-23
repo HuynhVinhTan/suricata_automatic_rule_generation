@@ -63,10 +63,15 @@ def mocked_capture(tmp_path):
     )
     supervisor_copy.write_text(supervisor_text, encoding="utf-8")
     supervisor_copy.chmod(0o755)
+    timeout_supervisor_copy = tmp_path / "vm2-capture-supervisor-timeout-test-copy.py"
+    timeout_supervisor_copy.write_text(supervisor_text.replace("MAX_SECONDS = 120", "MAX_SECONDS = 1", 1), encoding="utf-8")
+    timeout_supervisor_copy.chmod(0o755)
     _write_test_copy(test_script, supervisor_copy)
     timeout_script = tmp_path / "vm2-capture-session-timeout-test-copy.sh"
     timeout_script.write_text(
-        test_script.read_text(encoding="utf-8").replace("MAX_SECONDS=5\n", "MAX_SECONDS=1\n", 1),
+        test_script.read_text(encoding="utf-8")
+        .replace(f'SUPERVISOR="{supervisor_copy.as_posix()}"', f'SUPERVISOR="{timeout_supervisor_copy.as_posix()}"', 1)
+        .replace("MAX_SECONDS=5\n", "MAX_SECONDS=1\n", 1),
         encoding="utf-8",
     )
     timeout_script.chmod(0o755)
@@ -87,7 +92,7 @@ if sys.argv[1] == '-v':
     open(os.environ['FAKE_AUTH_LOG'], 'a', encoding='utf-8').write('auth\\n')
     raise SystemExit(int(os.environ.get('FAKE_SUDO_STATUS', '0')))
 args = sys.argv[1:]
-is_supervisor = any('vm2-capture-supervisor.py' in item for item in args)
+is_supervisor = any('vm2-capture-supervisor' in item for item in args)
 if args and args[0] == '-n' and os.environ.get('FAKE_SUDO_TERMINAL_SCOPED') == '1' and not is_supervisor:
     sys.stderr.write('sudo: a password is required\\n')
     raise SystemExit(1)
