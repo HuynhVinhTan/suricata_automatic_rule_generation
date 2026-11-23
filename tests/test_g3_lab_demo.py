@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import sqlite3
 
@@ -17,8 +18,22 @@ from netids import g3_lab_cli
 PASSWORD = b"g3-test-passphrase"
 
 
+def _manifest_sha256(manifest):
+    return hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+_RECORD_MANIFEST = {
+    "capture_interface": "eth1",
+    "capture_duration_sec": 60,
+    "pcap_sha256": "c" * 64,
+    "review_only": True,
+}
+
+
 def _record():
-    return {
+    record = {
         "schema_version": "lab_demo_attestation_v1",
         "run_id": "g3-20261123T120000Z-01",
         "event_id": "g3-event-20261123T120000Z-01",
@@ -28,19 +43,11 @@ def _record():
         "target_vm": "suricata-vm3",
         "artifact_sha256": "b" * 64,
         "source_pcap_sha256": "c" * 64,
-        "manifest_sha256": "d" * 64,
-        "manifest": {
-            "capture_interface": "eth1",
-            "capture_duration_sec": 60,
-            "pcap_sha256": "c" * 64,
-            "review_only": True,
-        },
-        "evidence": {
-            "classification": "review_only",
-            "review_only": True,
-            "window_count": 6,
-        },
+        "manifest": dict(_RECORD_MANIFEST),
+        "evidence": {"classification": "review_only", "review_only": True, "window_count": 6},
     }
+    record["manifest_sha256"] = _manifest_sha256(record["manifest"])
+    return record
 
 
 def test_lab_demo_signature_verifies_and_binds_lineage_in_sqlite(tmp_path):
@@ -61,7 +68,8 @@ def test_lab_demo_signature_verifies_and_binds_lineage_in_sqlite(tmp_path):
             "SELECT event_id, sequence, source_pcap_sha256, manifest_sha256 "
             "FROM verified_envelopes"
         ).fetchone() == (
-            "g3-event-20261123T120000Z-01", 1, "c" * 64, "d" * 64
+            "g3-event-20261123T120000Z-01", 1, "c" * 64,
+            _manifest_sha256(_RECORD_MANIFEST),
         )
 
 

@@ -70,6 +70,9 @@ def _validate_payload(record: Mapping, *, allow_attestation: bool = False) -> di
         raise G3ReplayError("LAB_DEMO_ONLY manifest must be review-only")
     if manifest.get("pcap_sha256") != payload["source_pcap_sha256"]:
         raise G3ReplayError("manifest PCAP hash does not match signed source PCAP hash")
+    expected_manifest_sha256 = hashlib.sha256(_canonical(manifest)).hexdigest()
+    if payload["manifest_sha256"] != expected_manifest_sha256:
+        raise G3ReplayError("manifest SHA256 does not match signed manifest metadata")
     evidence = payload.get("evidence")
     if not isinstance(evidence, dict) or evidence.get("review_only") is not True:
         raise G3ReplayError("LAB_DEMO_ONLY evidence must be review-only")
