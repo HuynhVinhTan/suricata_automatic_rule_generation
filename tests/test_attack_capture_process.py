@@ -79,7 +79,12 @@ def mocked_capture(tmp_path):
     supervisor_copy.write_text(supervisor_text, encoding="utf-8")
     supervisor_copy.chmod(0o755)
     timeout_supervisor_copy = tmp_path / "vm2-capture-supervisor-timeout-test-copy.py"
-    timeout_supervisor_copy.write_text(supervisor_text.replace("MAX_SECONDS = 120", "MAX_SECONDS = 1", 1), encoding="utf-8")
+    timeout_supervisor_text = supervisor_text.replace("MAX_SECONDS = 120", "MAX_SECONDS = 1", 1).replace(
+        f"INSTALL_PATH = Path({str(supervisor_copy).__repr__()})",
+        f"INSTALL_PATH = Path({str(timeout_supervisor_copy).__repr__()})",
+        1,
+    )
+    timeout_supervisor_copy.write_text(timeout_supervisor_text, encoding="utf-8")
     timeout_supervisor_copy.chmod(0o755)
     _write_test_copy(test_script, supervisor_copy)
     timeout_script = tmp_path / "vm2-capture-session-timeout-test-copy.sh"
