@@ -690,6 +690,50 @@ def test_worker_accepts_complete_provenance_chain(tmp_path, monkeypatch):
     assert _sha256(values["output_dir"] / "syn_windows.csv") == FEATURE_CSV_SHA256
 
 
+@pytest.mark.parametrize(
+    "classification",
+    ["ambiguous_incomplete_capture", "normal_or_insufficient_evidence"],
+)
+def test_worker_accepts_current_hybrid_classifications_without_approval(
+    tmp_path, monkeypatch, classification
+):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    review = _valid_review(status="no_candidate")
+    review["hybrid_review"]["classification"] = classification
+    values["processor"] = _successful_processor(review)
+
+    summary = worker.run_worker(**values)
+
+    assert summary["status"] == "succeeded"
+    assert summary["review_status"] == "no_candidate"
+    assert summary["hybrid_classification"] == classification
+    assert summary["rule_generated_in_this_run"] is False
+    assert summary["deployable"] is False
+    assert summary["deployed"] is False
+
+
+def test_worker_rejects_unknown_hybrid_classification_fail_closed(
+    tmp_path, monkeypatch
+):
+    values = _input(tmp_path)
+    _prepare_private(values["private_root"], monkeypatch)
+    review = _valid_review(status="no_candidate")
+    review["hybrid_review"]["classification"] = "unknown_future_classification"
+    values["processor"] = _successful_processor(review)
+
+    with pytest.raises(worker.WorkerProcessingError, match="hybrid classification"):
+        worker.run_worker(**values)
+
+    failure = json.loads(
+        (values["output_dir"] / "worker_summary.json").read_text(encoding="utf-8")
+    )
+    assert failure["status"] == "failed"
+    assert failure["deployable"] is False
+    assert failure["deployed"] is False
+    assert not (values["output_dir"] / ".done.json").exists()
+
+
 def test_completed_run_verifier_checks_provenance_and_review_safety(tmp_path, monkeypatch):
     values = _input(tmp_path)
     _prepare_private(values["private_root"], monkeypatch)
@@ -851,6 +895,18 @@ def test_safe_summary_preserves_validated_hybrid_classification():
     safe = worker._safe_summary_fields(summary)
 
     assert safe["hybrid_classification"] == "reconnaissance_consistent"
+
+
+@pytest.mark.parametrize(
+    "classification",
+    ["ambiguous_incomplete_capture", "normal_or_insufficient_evidence"],
+)
+def test_summary_and_review_accept_each_producer_classification(classification):
+    summary = _elasticsearch_summary(hybrid_classification=classification)
+    review = {"hybrid_review": {"classification": classification}}
+
+    assert worker.validate_hybrid_classification_match(summary, review) == classification
+    assert worker._safe_summary_fields(summary)["hybrid_classification"] == classification
 
 
 def test_safe_summary_rejects_unknown_hybrid_classification():

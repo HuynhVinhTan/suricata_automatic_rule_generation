@@ -43,6 +43,8 @@ REVIEW_STATUS_COMPATIBILITY = {
 HYBRID_CLASSIFICATIONS = frozenset({
     "reconnaissance_consistent",
     "anomalous_not_reconnaissance",
+    "ambiguous_incomplete_capture",
+    "normal_or_insufficient_evidence",
     "unavailable_missing_calibration",
 })
 
