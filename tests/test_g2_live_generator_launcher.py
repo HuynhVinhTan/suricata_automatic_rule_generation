@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import shlex
+import os
+import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -43,11 +46,11 @@ def test_corrected_script_has_separate_mkdir_and_generator_arguments():
         output_dir="/home/kali/suricata-ai-showcase/evidence/live/g2-live-attack-20261123T060000Z-0123456789abcdef",
     )
     script = launcher.build_remote_generator_script(request)
-    assert "mkdir -p -- \"$out_dir\"" in script
+    assert "mkdir -- \"$out_dir\"" in script
     assert "--target 192.168.10.10" in script
     assert "--source-ip 192.168.10.20" in script
     assert "--ports 18100,18101,18102,18103,18104,18105,18106,18107,18108,18109,18110,18111,18112,18113,18114,18115,18116,18117,18118,18119,18120,18121,18122,18123" in script
-    assert "mkdir -p -- \"$out_dir\"\nexec " in script
+    assert "mkdir -- \"$out_dir\"\nexec " in script
     assert script.count("exec /usr/bin/python3") == 1
     assert "--retry" not in script
 
@@ -94,10 +97,163 @@ def test_runner_invokes_ssh_once_and_propagates_failure():
         raise subprocess.CalledProcessError(1, argv)
 
     with pytest.raises(subprocess.CalledProcessError):
-        launcher.run_generator_once(request, runner=fail_once)
+        launcher.run_generator_once(
+            request,
+            capture_ready_confirmed=True,
+            owner_authorized=True,
+            runner=fail_once,
+        )
     assert len(calls) == 1
     assert calls[0][1]["check"] is True
     assert calls[0][1]["timeout"] == 180
+
+
+def test_runner_requires_both_live_execution_guards():
+    request = launcher.G2GeneratorRequest(
+        run_id="g2-live-attack-20261123T060005Z-0123456789abcdef",
+        seed=20261123060005,
+        output_dir="/home/kali/suricata-ai-showcase/evidence/live/g2-live-attack-20261123T060005Z-0123456789abcdef",
+    )
+    for capture_ready, owner_authorized in ((False, True), (True, False)):
+        with pytest.raises(PermissionError):
+            launcher.run_generator_once(
+                request,
+                capture_ready_confirmed=capture_ready,
+                owner_authorized=owner_authorized,
+                runner=lambda *_args, **_kwargs: pytest.fail("runner called"),
+            )
+
+
+def test_existing_run_directory_fails_before_python_and_preserves_evidence(tmp_path):
+    bash = _bash_or_skip()
+    run_dir = tmp_path / "existing-run"
+    run_dir.mkdir()
+    sentinel = tmp_path / "python-called"
+    fake_python = tmp_path / "python3"
+    fake_python.write_text(
+        "#!/bin/sh\nprintf called > \"$CALL_SENTINEL\"\n", encoding="utf-8"
+    )
+    fake_python.chmod(0o700)
+    request = launcher.G2GeneratorRequest(
+        run_id="g2-live-attack-20261123T060006Z-0123456789abcdef",
+        seed=20261123060006,
+        output_dir="/home/kali/suricata-ai-showcase/evidence/live/g2-live-attack-20261123T060006Z-0123456789abcdef",
+    )
+    script = launcher.build_remote_generator_script(request)
+    script = script.replace(
+        "out_dir=/home/kali/suricata-ai-showcase/evidence/live/"
+        "g2-live-attack-20261123T060006Z-0123456789abcdef",
+        f"out_dir={shlex.quote(str(run_dir))}",
+    ).replace("/usr/bin/python3", shlex.quote(str(fake_python)))
+    env = os.environ.copy()
+    env["CALL_SENTINEL"] = str(sentinel)
+    result = subprocess.run(
+        [bash, "-c", script], capture_output=True, text=True, check=False, env=env
+    )
+    assert result.returncode != 0
+    assert not sentinel.exists()
+    assert list(run_dir.iterdir()) == []
+
+
+def test_generated_remote_bash_passes_bash_n():
+    bash = _bash_or_skip()
+    request = launcher.G2GeneratorRequest(
+        run_id="g2-live-attack-20261123T060009Z-0123456789abcdef",
+        seed=20261123060009,
+        output_dir="/home/kali/suricata-ai-showcase/evidence/live/g2-live-attack-20261123T060009Z-0123456789abcdef",
+    )
+    result = subprocess.run(
+        [bash, "-n"],
+        input=launcher.build_remote_generator_script(request),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_mocked_bash_execution_is_one_invocation_and_exact_scope(tmp_path):
+    bash = _bash_or_skip()
+    run_dir = tmp_path / "isolated-run"
+    args_log = tmp_path / "args.log"
+    fake_python = tmp_path / "python3"
+    fake_python.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARGS_LOG\"\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    request = launcher.G2GeneratorRequest(
+        run_id="g2-live-attack-20261123T060007Z-0123456789abcdef",
+        seed=20261123060007,
+        output_dir="/home/kali/suricata-ai-showcase/evidence/live/g2-live-attack-20261123T060007Z-0123456789abcdef",
+    )
+    script = launcher.build_remote_generator_script(request)
+    script = script.replace(
+        "out_dir=/home/kali/suricata-ai-showcase/evidence/live/"
+        "g2-live-attack-20261123T060007Z-0123456789abcdef",
+        f"out_dir={shlex.quote(str(run_dir))}",
+    ).replace("/usr/bin/python3", shlex.quote(str(fake_python)))
+    env = os.environ.copy()
+    env["ARGS_LOG"] = str(args_log)
+    result = subprocess.run(
+        [bash, "-c", script], capture_output=True, text=True, check=False, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    assert run_dir.is_dir()
+    assert oct(run_dir.stat().st_mode & 0o777) == "0o700"
+    assert args_log.read_text(encoding="utf-8").splitlines() == [
+        "--run-id",
+        request.run_id,
+        "--target",
+        "192.168.10.10",
+        "--source-ip",
+        "192.168.10.20",
+        "--ports",
+        launcher.PORTS_ARG,
+        "--interval",
+        "2.0",
+        "--timeout",
+        "1.0",
+        "--seed",
+        str(request.seed),
+        "--out",
+        str(run_dir / "generator.json"),
+    ]
+
+
+def test_cli_print_only_is_explicit_and_execute_requires_guards():
+    request = [
+        sys.executable,
+        "-m",
+        "scripts.g2_live_generator_launcher",
+        "--run-id",
+        "g2-live-attack-20261123T060008Z-0123456789abcdef",
+        "--seed",
+        "20261123060008",
+        "--output-dir",
+        "/home/kali/suricata-ai-showcase/evidence/live/g2-live-attack-20261123T060008Z-0123456789abcdef",
+        "--print-only",
+    ]
+    result = subprocess.run(request, capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout.startswith("ssh ")
+    blocked = subprocess.run(
+        request[:-1] + ["--execute"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert blocked.returncode == 2
+    assert "--capture-ready-confirmed" in blocked.stderr
+
+
+def _bash_or_skip() -> str:
+    if os.name == "nt":
+        pytest.skip("POSIX Bash execution is validated in Linux CI")
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("Bash unavailable")
+    return bash
 
 
 def test_request_rejects_shell_sensitive_or_duplicate_run_ids():

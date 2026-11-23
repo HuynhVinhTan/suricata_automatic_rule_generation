@@ -8,12 +8,14 @@ readiness has been independently established.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import PurePosixPath
-from typing import Callable
+from typing import Callable, Sequence
 
 
 VM2_TARGET = "kali@192.168.10.20"
@@ -65,7 +67,7 @@ def build_remote_generator_script(request: G2GeneratorRequest) -> str:
         "umask 077",
         f"run_id={run_id}",
         f"out_dir={output_dir}",
-        'mkdir -p -- "$out_dir"',
+        'mkdir -- "$out_dir"',
         (
             f"exec /usr/bin/python3 {generator}"
             ' --run-id "$run_id"'
@@ -89,9 +91,15 @@ def build_ssh_argv(request: G2GeneratorRequest) -> list[str]:
 def run_generator_once(
     request: G2GeneratorRequest,
     *,
+    capture_ready_confirmed: bool,
+    owner_authorized: bool,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> subprocess.CompletedProcess[str]:
     """Run exactly once and propagate failure; there is intentionally no retry."""
+    if not capture_ready_confirmed:
+        raise PermissionError("independent capture readiness confirmation is required")
+    if not owner_authorized:
+        raise PermissionError("explicit owner authorization is required")
     return runner(
         build_ssh_argv(request),
         check=True,
@@ -99,6 +107,42 @@ def run_generator_once(
         text=True,
         capture_output=True,
     )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Expose one explicit, guarded invocation interface for the launcher."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--output-dir", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--print-only", action="store_true")
+    mode.add_argument("--execute", action="store_true")
+    parser.add_argument("--capture-ready-confirmed", action="store_true")
+    parser.add_argument("--owner-authorized", action="store_true")
+    args = parser.parse_args(argv)
+    if args.execute and (
+        not args.capture_ready_confirmed or not args.owner_authorized
+    ):
+        parser.error(
+            "--execute requires --capture-ready-confirmed and --owner-authorized"
+        )
+    request = G2GeneratorRequest(
+        run_id=args.run_id, seed=args.seed, output_dir=args.output_dir
+    )
+    if args.print_only:
+        print(shlex.join(build_ssh_argv(request)))
+        return 0
+    result = run_generator_once(
+        request,
+        capture_ready_confirmed=args.capture_ready_confirmed,
+        owner_authorized=args.owner_authorized,
+    )
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return 0
 
 
 __all__ = [
@@ -111,5 +155,10 @@ __all__ = [
     "SOURCE_IP",
     "build_remote_generator_script",
     "build_ssh_argv",
+    "main",
     "run_generator_once",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
