@@ -17,6 +17,7 @@ import time
 
 INSTALL_PATH = Path("/usr/local/libexec/suricata-ai-showcase/vm2-capture-supervisor")
 INSTALLATION_OWNER_UID = 0
+INSTALLATION_VALIDATION_BOUNDARY: Path | None = None
 EVIDENCE_ROOT = Path("/home/kali/suricata-ai-showcase/evidence")
 TCPDUMP = "/usr/bin/tcpdump"
 IFACE = "eth1"
@@ -43,7 +44,7 @@ def validate_privileged_origin(
     *,
     install_path: Path = INSTALL_PATH,
     expected_uid: int = INSTALLATION_OWNER_UID,
-    stop_at: Path | None = None,
+    stop_at: Path | None = INSTALLATION_VALIDATION_BOUNDARY,
 ) -> None:
     """Require this executable to be the exact approved fixed installation."""
 
@@ -249,9 +250,7 @@ def finalize_capture_output(
 
 def run_capture(output: Path, stop_file: Path, evidence_root: Path = EVIDENCE_ROOT) -> int:
     validate_request_paths(output, stop_file, evidence_root)
-    validate_privileged_origin()
-
-    directory_fd = open_evidence_directory(evidence_root)
+    directory_fd = -1
     output_fd = -1
     process: subprocess.Popen[object] | None = None
     interrupted = False
@@ -263,6 +262,8 @@ def run_capture(output: Path, stop_file: Path, evidence_root: Path = EVIDENCE_RO
     previous_int = signal.signal(signal.SIGINT, on_signal)
     previous_term = signal.signal(signal.SIGTERM, on_signal)
     try:
+        validate_privileged_origin()
+        directory_fd = open_evidence_directory(evidence_root)
         output_fd = open_capture_output(directory_fd, output.name)
         output_stat = os.fstat(output_fd)
         process = subprocess.Popen(
@@ -306,7 +307,8 @@ def run_capture(output: Path, stop_file: Path, evidence_root: Path = EVIDENCE_RO
             _stop_and_reap(process)
         if output_fd >= 0:
             os.close(output_fd)
-        os.close(directory_fd)
+        if directory_fd >= 0:
+            os.close(directory_fd)
         signal.signal(signal.SIGINT, previous_int)
         signal.signal(signal.SIGTERM, previous_term)
 

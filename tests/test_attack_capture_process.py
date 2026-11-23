@@ -62,6 +62,11 @@ def mocked_capture(tmp_path):
         1,
     )
     supervisor_text = supervisor_text.replace(
+        "INSTALLATION_VALIDATION_BOUNDARY: Path | None = None",
+        f"INSTALLATION_VALIDATION_BOUNDARY = Path({str(tmp_path).__repr__()})",
+        1,
+    )
+    supervisor_text = supervisor_text.replace(
         'TCPDUMP = "/usr/bin/tcpdump"',
         f"TCPDUMP = {str(bin_dir / 'tcpdump').__repr__()}",
         1,
