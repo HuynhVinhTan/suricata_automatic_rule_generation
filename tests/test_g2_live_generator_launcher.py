@@ -202,6 +202,7 @@ def test_mocked_bash_execution_is_one_invocation_and_exact_scope(tmp_path):
     assert run_dir.is_dir()
     assert oct(run_dir.stat().st_mode & 0o777) == "0o700"
     assert args_log.read_text(encoding="utf-8").splitlines() == [
+        launcher.GENERATOR_PATH,
         "--run-id",
         request.run_id,
         "--target",
