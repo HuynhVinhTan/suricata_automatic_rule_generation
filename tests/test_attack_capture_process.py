@@ -56,6 +56,11 @@ def mocked_capture(tmp_path):
         f"TCPDUMP = {str(bin_dir / 'tcpdump').__repr__()}",
         1,
     )
+    supervisor_text = supervisor_text.replace(
+        'env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},',
+        'env=dict(os.environ, PATH="/usr/bin:/bin", LC_ALL="C"),',
+        1,
+    )
     supervisor_copy.write_text(supervisor_text, encoding="utf-8")
     supervisor_copy.chmod(0o755)
     _write_test_copy(test_script, supervisor_copy)
@@ -239,7 +244,7 @@ def test_validation_failure_preserves_partial_and_does_not_print_ready(mocked_ca
 
 
 def test_overwrite_refusal_happens_before_authentication(mocked_capture):
-    out = mocked_capture["root"] / "evidence" / "attack.pcap"
+    out = mocked_capture["root"] / "evidence" / "attack-20261123T000000Z.pcap"
     out.write_bytes(b"existing")
     result, _ = _run(mocked_capture)
     assert result.returncode == 77

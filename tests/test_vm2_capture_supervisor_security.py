@@ -103,7 +103,7 @@ def test_secure_output_refuses_existing_file_and_symlink(tmp_path):
     output.write_bytes(b"existing")
     directory_fd = supervisor.open_evidence_directory(evidence)
     try:
-        with pytest.raises(supervisor.CaptureSecurityError, match="existing"):
+        with pytest.raises(supervisor.CaptureSecurityError, match="exists"):
             supervisor.open_capture_output(directory_fd, output_name)
     finally:
         os.close(directory_fd)
