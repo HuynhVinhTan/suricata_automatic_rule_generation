@@ -16,6 +16,11 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.scripts]
+g3-lab-provision-key = "netids.g3_lab_cli:provision_main"
+g3-lab-sign = "netids.g3_lab_cli:sign_main"
+g3-lab-verify = "netids.g3_lab_cli:verify_main"
+
 [project.optional-dependencies]
 research = [
     "matplotlib",

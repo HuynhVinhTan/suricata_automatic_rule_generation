@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 DOMAINS = frozenset({
+    "lab-demo-vm2-vm3-v1",
     "isolated-replay-v1",
     "isolated-owner-approval-v1",
     "isolated-runtime-v1",
