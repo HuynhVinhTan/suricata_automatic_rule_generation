@@ -301,6 +301,28 @@ file, and timestamps are recorded before starting the existing
 not modified. The worker is observed for at most 120 seconds with its existing
 64-record/1 MiB cycle limits, then stopped with the PID-safe stop script.
 
+The executable review-only path is:
+
+```bash
+/home/tanhv/suricata-ai-showcase/current/scripts/demo/vm3-status.sh
+VM3_EVE=/home/tanhv/suricata-ai-showcase/eve-shadow/eve-shadow.jsonl
+/home/tanhv/suricata-ai-showcase/current/scripts/demo/vm3-start-worker.sh \
+  /home/tanhv/suricata-ai-showcase/models/showcase_demo \
+  "$VM3_EVE" showcase_demo
+worker_pid="$(cat /home/tanhv/suricata-ai-showcase/runtime/worker.pid)"
+tr '\0' ' ' < "/proc/$worker_pid/cmdline"
+timeout 120 tail -f /home/tanhv/suricata-ai-showcase/inference/inference.jsonl
+/home/tanhv/suricata-ai-showcase/current/scripts/demo/vm3-stop-worker.sh
+```
+
+With the sender timer stopped, the only permitted input handoff is an owner-
+verified, newly observed EVE line exported from the already-running lab
+Suricata source on VM1, copied once to a private VM3 staging file, hash-checked,
+and appended once to `VM3_EVE`. The source EVE path must be read-only derived
+from the active lab configuration; if it cannot be independently identified,
+G6 stops. No synthetic EVE line, timer restart, production-route edit, or
+unbounded tail is permitted.
+
 Acceptance requires the same new event/run ID to be observed in the EVE shadow,
 inference JSONL, Elasticsearch, and the Kibana-visible index. Latency is the
 measured difference between recorded event timestamps, never command duration.
