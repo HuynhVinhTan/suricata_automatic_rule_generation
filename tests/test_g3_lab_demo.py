@@ -8,11 +8,13 @@ import pytest
 from netids.g3_lab_demo import (
     G3_DOMAIN,
     G3ReplayError,
+    build_lab_demo_record_from_evidence,
     sign_lab_demo_record,
     verify_and_record_lab_demo,
 )
 from netids.lifecycle_ed25519 import generate_encrypted_keypair, public_key_fingerprint
 from netids import g3_lab_cli
+from scripts import g3_lab_build_record
 
 
 PASSWORD = b"g3-test-passphrase"
@@ -134,14 +136,27 @@ def test_lab_demo_replay_is_transactional_and_survives_reopen(tmp_path):
     with pytest.raises(G3ReplayError, match="replay"):
         verify_and_record_lab_demo(envelope, public, pinned_fingerprint=fingerprint, sqlite_path=db_path)
 
+    duplicate_event = _record()
+    duplicate_event["run_id"] = "g3-20261123T120000Z-02"
+    duplicate_event["nonce"] = "b" * 64
+    duplicate_envelope = sign_lab_demo_record(duplicate_event, private, PASSWORD)
+    with pytest.raises(G3ReplayError, match="replay"):
+        verify_and_record_lab_demo(
+            duplicate_envelope, public, pinned_fingerprint=fingerprint, sqlite_path=db_path
+        )
+
     with sqlite3.connect(db_path) as db:
         assert db.execute("SELECT COUNT(*) FROM verified_envelopes").fetchone()[0] == 1
 
 
-def test_lab_demo_rejects_non_review_only_manifest(tmp_path):
+@pytest.mark.parametrize("value", [False, None])
+def test_lab_demo_rejects_non_review_only_manifest(tmp_path, value):
     private, public = generate_encrypted_keypair(PASSWORD)
     record = _record()
-    record["manifest"]["review_only"] = False
+    if value is None:
+        record["manifest"].pop("review_only")
+    else:
+        record["manifest"]["review_only"] = value
     with pytest.raises(G3ReplayError, match="review-only"):
         sign_lab_demo_record(record, private, PASSWORD)
 
@@ -163,3 +178,132 @@ def test_g3_domain_and_key_provisioner_are_explicit(tmp_path, monkeypatch, capsy
         g3_lab_cli.provision_main([
             "--private-key", str(private_path), "--public-key", str(tmp_path / "other.pem"),
         ])
+
+
+def _evidence_files(tmp_path):
+    capture_id = "capture-20261123T120000Z-0123456789abcdef"
+    generator_id = "g4-attack-20261123T120001Z-fedcba9876543210"
+    pcap = tmp_path / f"{capture_id}.pcap"
+    pcap.write_bytes(b"verified-pcap-bytes")
+    pcap_sha = hashlib.sha256(pcap.read_bytes()).hexdigest()
+    native_manifest = {
+        "schema_version": "pcap_handoff_manifest_v1",
+        "pcap_sha256": pcap_sha,
+        "source_ipv4": "192.168.10.20",
+        "destination_ipv4": "192.168.10.10",
+        "run_id": capture_id,
+        "capture_metadata": {
+            "packets": 24,
+            "initial_syn": 24,
+            "http_get_starts": 0,
+            "snaplen": 262144,
+            "capture_kind": "raw",
+            "sealed_at": "2026-11-23T12:02:00Z",
+        },
+    }
+    native_path = tmp_path / f"{capture_id}.manifest.json"
+    native_bytes = (json.dumps(native_manifest, sort_keys=True) + "\n").encode()
+    native_path.write_bytes(native_bytes)
+    ready_path = tmp_path / f"{capture_id}.ready.json"
+    ready_path.write_text(json.dumps({
+        "schema_version": "pcap_handoff_ready_v1",
+        "run_id": capture_id,
+        "pcap_sha256": pcap_sha,
+        "manifest_sha256": hashlib.sha256(native_bytes).hexdigest(),
+    }), encoding="utf-8")
+    generator = {
+        "schema_version": "lab_slow_port_scan_v1",
+        "run_id": generator_id,
+        "scenario": "ATTACK",
+        "source_ip": "192.168.10.20",
+        "target_ip": "192.168.10.10",
+        "started_at_utc": "2026-11-23T12:00:01Z",
+        "ended_at_utc": "2026-11-23T12:01:00Z",
+        "attempt_count": 24,
+        "attempts": [{}] * 24,
+    }
+    generator_path = tmp_path / f"{generator_id}.json"
+    generator_path.write_text(json.dumps(generator, sort_keys=True), encoding="utf-8")
+    return {
+        "capture_id": capture_id,
+        "generator_id": generator_id,
+        "pcap": pcap,
+        "native_manifest": native_path,
+        "ready_marker": ready_path,
+        "generator_json": generator_path,
+        "expected_pcap_sha256": pcap_sha,
+        "expected_generator_sha256": hashlib.sha256(generator_path.read_bytes()).hexdigest(),
+    }
+
+
+def test_evidence_builder_preserves_native_and_canonical_digests(tmp_path):
+    files = _evidence_files(tmp_path)
+    record = build_lab_demo_record_from_evidence(
+        **files,
+        g3_run_id="g3-20261123T120003Z-01",
+        event_id="g3-event-20261123T120003Z-01",
+        sequence=0,
+        nonce="d" * 64,
+    )
+    assert record["source_pcap_sha256"] == files["expected_pcap_sha256"]
+    assert record["artifact_sha256"] == files["expected_generator_sha256"]
+    assert record["evidence"]["native_manifest_sha256"] == record["evidence"]["ready_manifest_sha256"]
+    assert record["manifest"]["review_only"] is True
+    assert record["manifest_sha256"] == _manifest_sha256(record["manifest"])
+
+
+@pytest.mark.parametrize("tamper", ["ready", "pcap", "generator"])
+def test_evidence_builder_rejects_tampered_input_bytes(tmp_path, tamper):
+    files = _evidence_files(tmp_path)
+    if tamper == "ready":
+        data = json.loads(files["ready_marker"].read_text())
+        data["manifest_sha256"] = "e" * 64
+        files["ready_marker"].write_text(json.dumps(data), encoding="utf-8")
+    elif tamper == "pcap":
+        files["pcap"].write_bytes(b"tampered-pcap")
+    else:
+        files["generator_json"].write_text("{\"tampered\": true}", encoding="utf-8")
+    with pytest.raises(G3ReplayError, match="digest|checksum|generator|manifest|PCAP"):
+        build_lab_demo_record_from_evidence(
+            **files,
+            g3_run_id="g3-20261123T120003Z-01",
+            event_id="g3-event-20261123T120003Z-01",
+            sequence=0,
+            nonce="d" * 64,
+        )
+
+
+def test_evidence_builder_and_sqlite_replay_survive_restart(tmp_path):
+    files = _evidence_files(tmp_path)
+    record = build_lab_demo_record_from_evidence(
+        **files,
+        g3_run_id="g3-20261123T120003Z-01",
+        event_id="g3-event-20261123T120003Z-01",
+        sequence=0,
+        nonce="d" * 64,
+    )
+    private, public = generate_encrypted_keypair(PASSWORD)
+    envelope = sign_lab_demo_record(record, private, PASSWORD)
+    db_path = tmp_path / "replay.sqlite3"
+    verify_and_record_lab_demo(envelope, public, pinned_fingerprint=public_key_fingerprint(public), sqlite_path=db_path)
+    with pytest.raises(G3ReplayError, match="replay"):
+        verify_and_record_lab_demo(envelope, public, pinned_fingerprint=public_key_fingerprint(public), sqlite_path=db_path)
+
+
+def test_evidence_builder_cli_writes_exclusive_record(tmp_path):
+    files = _evidence_files(tmp_path)
+    output = tmp_path / "record.json"
+    args = [
+        "--capture-id", files["capture_id"], "--generator-id", files["generator_id"],
+        "--pcap", str(files["pcap"]), "--native-manifest", str(files["native_manifest"]),
+        "--ready-marker", str(files["ready_marker"]), "--generator-json", str(files["generator_json"]),
+        "--expected-pcap-sha256", files["expected_pcap_sha256"],
+        "--expected-generator-sha256", files["expected_generator_sha256"],
+        "--g3-run-id", "g3-20261123T120003Z-01",
+        "--event-id", "g3-event-20261123T120003Z-01", "--sequence", "0",
+        "--nonce", "d" * 64, "--output", str(output),
+    ]
+    assert g3_lab_build_record.main(args) == 0
+    assert json.loads(output.read_text())["manifest"]["review_only"] is True
+    with pytest.raises(ValueError, match="overwrite"):
+        g3_lab_build_record.main(args)

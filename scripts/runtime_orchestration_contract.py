@@ -6,6 +6,9 @@ starts a service, creates a key, captures traffic, or runs a worker.
 
 from __future__ import annotations
 
+from datetime import datetime
+import hashlib
+import json
 from pathlib import PurePosixPath
 import re
 
@@ -13,13 +16,14 @@ import re
 CAPTURE_SERVICE = "suricata-ai-capture.service"
 CAPTURE_INTERFACE = "ens33"
 CAPTURE_SNAPLEN = 262144
+CAPTURE_DURATION_SECONDS = 60
+READINESS_TIMEOUT_SECONDS = 10
 CAPTURE_ROOT = PurePosixPath("/var/lib/suricata-ai-capture")
 VM1_OUTBOX = PurePosixPath("/home/tanhv/suricata-ai-outbox")
 VM1_IP = "192.168.10.10"
 VM2_IP = "192.168.10.20"
 CAPTURE_ID = re.compile(r"^capture-\d{8}T\d{6}Z-[0-9a-f]{16}$")
 GENERATOR_ID = re.compile(r"^g[24]-(?:live-)?[a-z]+-\d{8}T\d{6}Z-[0-9a-f]{16}$")
-RELEASE_SHA = "d1005c24f94c3d994a9fff7cdb780c4ca90b3daa"
 G4_PORTS = tuple(range(18100, 18124))
 G4_NORMAL_CLOSED_PORTS = (18100, 18101)
 G4_NORMAL_OPEN_PORT = 18080
@@ -56,25 +60,118 @@ def correlate_capture_and_generator(capture_id: str, generator_id: str) -> dict[
     return {"capture_id": capture_id, "generator_id": generator_id}
 
 
+def validate_capture_generator_evidence(
+    *,
+    scenario: str,
+    capture_id: str,
+    generator_id: str,
+    pcap_bytes: bytes,
+    native_manifest_bytes: bytes,
+    native_manifest: dict,
+    ready_marker: dict,
+    generator_bytes: bytes,
+) -> dict[str, str | int]:
+    """Validate one G4 session from bytes, hashes, tuples, counts, and time."""
+    correlate_capture_and_generator(capture_id, generator_id)
+    if scenario not in {"ATTACK", "NORMAL"}:
+        raise ValueError("unsupported scenario")
+    try:
+        generator = json.loads(generator_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("generator evidence is not valid JSON") from exc
+    if not isinstance(generator, dict):
+        raise ValueError("generator evidence must be an object")
+    pcap_sha256 = hashlib.sha256(pcap_bytes).hexdigest()
+    native_sha256 = hashlib.sha256(native_manifest_bytes).hexdigest()
+    generator_sha256 = hashlib.sha256(generator_bytes).hexdigest()
+    if native_manifest.get("run_id") != capture_id or ready_marker.get("run_id") != capture_id:
+        raise ValueError("capture ID mismatch")
+    if native_manifest.get("pcap_sha256") != pcap_sha256 or ready_marker.get("pcap_sha256") != pcap_sha256:
+        raise ValueError("PCAP digest mismatch")
+    if ready_marker.get("manifest_sha256") != native_sha256:
+        raise ValueError("native manifest digest mismatch")
+    if generator.get("run_id") != generator_id:
+        raise ValueError("generator ID mismatch")
+    if generator.get("scenario") != scenario:
+        raise ValueError("scenario mismatch")
+    if generator.get("source_ip") != VM2_IP or generator.get("target_ip") != VM1_IP:
+        raise ValueError("generator identity mismatch")
+    metadata = native_manifest.get("capture_metadata")
+    attempts = generator.get("attempts")
+    if not isinstance(metadata, dict) or not isinstance(attempts, list):
+        raise ValueError("capture or generator counts are missing")
+    if native_manifest.get("source_ipv4") != VM2_IP or native_manifest.get("destination_ipv4") != VM1_IP:
+        raise ValueError("native capture identity mismatch")
+    if not isinstance(metadata.get("packets"), int) or metadata["packets"] < len(attempts):
+        raise ValueError("native packet count mismatch")
+    if metadata.get("initial_syn") != len(attempts) or generator.get("attempt_count") != len(attempts):
+        raise ValueError("capture/generator count mismatch")
+    try:
+        sealed = datetime.fromisoformat(str(metadata["sealed_at"]).replace("Z", "+00:00"))
+        started = datetime.fromisoformat(str(generator["started_at_utc"]).replace("Z", "+00:00"))
+        ended = datetime.fromisoformat(str(generator["ended_at_utc"]).replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid evidence timestamp") from exc
+    if sealed.tzinfo is None or started.tzinfo is None or ended.tzinfo is None:
+        raise ValueError("evidence timestamps must include timezone")
+    if not started <= ended <= sealed:
+        raise ValueError("capture/generator timestamp order mismatch")
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            raise ValueError("malformed generator tuple")
+        if (
+            attempt.get("source_ip") != VM2_IP
+            or attempt.get("destination_ip") != VM1_IP
+            or not isinstance(attempt.get("source_port"), int)
+            or not isinstance(attempt.get("destination_port"), int)
+        ):
+            raise ValueError("generator tuple identity mismatch")
+    ports = {attempt["destination_port"] for attempt in attempts}
+    if scenario == "ATTACK" and ports != set(G4_PORTS):
+        raise ValueError("Attack destination-port set mismatch")
+    if scenario == "NORMAL":
+        open_attempts = [attempt for attempt in attempts if attempt.get("destination_port") == G4_NORMAL_OPEN_PORT]
+        closed_attempts = [attempt for attempt in attempts if attempt.get("destination_port") in G4_NORMAL_CLOSED_PORTS]
+        if len(open_attempts) != 22 or len(closed_attempts) != 2:
+            raise ValueError("Normal port/count profile mismatch")
+    return {
+        "capture_id": capture_id,
+        "generator_id": generator_id,
+        "pcap_sha256": pcap_sha256,
+        "native_manifest_sha256": native_sha256,
+        "generator_sha256": generator_sha256,
+        "attempt_count": len(attempts),
+    }
+
+
 def build_vm1_capture_readiness_script() -> str:
     """Build the non-blocking start/readiness gate used before a generator."""
     return "\n".join((
         "set -eu",
+        "start_epoch=$(date +%s)",
+        f"startup_deadline=$((start_epoch+{READINESS_TIMEOUT_SECONDS}))",
+        f"capture_deadline=$((start_epoch+{CAPTURE_DURATION_SECONDS}))",
         f"sudo systemctl start --no-block {CAPTURE_SERVICE}",
-        "deadline=$(($(date +%s)+10))",
         "while :; do",
         f"  state=$(systemctl show -p ActiveState --value {CAPTURE_SERVICE})",
         f"  substate=$(systemctl show -p SubState --value {CAPTURE_SERVICE})",
-        f"  if [ \"$state\" = activating ] && [ \"$substate\" = running ] && \\",
-        f"     pgrep -af '[t]cpdump -i {CAPTURE_INTERFACE} -s {CAPTURE_SNAPLEN}' >/dev/null; then",
-        "    printf '%s\\n' G2_CAPTURE_READY=TRUE",
-        "    exit 0",
-        "  fi",
-        "  if [ \"$state\" = active ] || [ \"$state\" = failed ] || [ \"$state\" = inactive ]; then",
+        "  now=$(date +%s)",
+        "  if [ \"$now\" -ge \"$capture_deadline\" ]; then",
         "    systemctl status --no-pager --full " + CAPTURE_SERVICE + " >&2 || true",
         "    exit 75",
         "  fi",
-        "  [ \"$(date +%s)\" -lt \"$deadline\" ] || exit 75",
+        "  if [ \"$state\" != activating ] || [ \"$substate\" != start ]; then",
+        "    systemctl status --no-pager --full " + CAPTURE_SERVICE + " >&2 || true",
+        "    exit 75",
+        "  fi",
+        f"  if pgrep -af '[/]tcpdump[[:space:]]+-i[[:space:]]+{CAPTURE_INTERFACE}[[:space:]]+-s[[:space:]]+{CAPTURE_SNAPLEN}[[:space:]]+-n[[:space:]]+-U[[:space:]]+-w[[:space:]]+' >/dev/null; then",
+        "    printf '%s\\n' G2_CAPTURE_READY=TRUE",
+        "    exit 0",
+        "  fi",
+        "  if [ \"$now\" -ge \"$startup_deadline\" ]; then",
+        "    systemctl status --no-pager --full " + CAPTURE_SERVICE + " >&2 || true",
+        "    exit 75",
+        "  fi",
         "  sleep 0.2",
         "done",
         "",
@@ -102,9 +199,11 @@ def build_worker_argv(
     ]
 
 
-def g3_release_paths(*, host_root: PurePosixPath) -> dict[str, str]:
+def g3_release_paths(*, host_root: PurePosixPath, release_sha: str) -> dict[str, str]:
     """Return versioned G3 paths; no current-pointer replacement is allowed."""
-    release = PurePosixPath(host_root) / "releases" / RELEASE_SHA
+    if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
+        raise ValueError("release_sha must be a full Git commit SHA")
+    release = PurePosixPath(host_root) / "releases" / release_sha
     return {
         "release": str(release),
         "private_key": str(PurePosixPath(host_root) / "private/g3/g3-signer.pem"),
