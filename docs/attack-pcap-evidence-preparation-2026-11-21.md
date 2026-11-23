@@ -29,12 +29,18 @@ No new Attack PCAP or EVE evidence was observed in this repository-only task.
 ## Prepared workflow
 
 `scripts/demo/vm2-capture-session.sh` is an owner-invoked VM2 workflow. It
-verifies `eth1` and `192.168.10.20`, refuses overwrite, starts interactive
-`sudo tcpdump` with snaplen 96, a 5,000 packet limit, a 120 second timer, and a
-bidirectional allowlist for VM2/VM1 and TCP ports 18100–18123. It waits for the
-`listening on eth1` readiness line before launching the unprivileged 24-probe
-generator. Partial PCAP, tcpdump log, and metadata are retained on failure;
-successful output is moved atomically and hashed.
+verifies `eth1` and `192.168.10.20`, refuses overwrite, and invokes only the
+fixed root-installed helper
+`/usr/local/libexec/suricata-ai-showcase/vm2-capture-supervisor` after
+interactive `sudo -v`. The helper constructs the reviewed `/usr/bin/tcpdump`
+command with snaplen 96, a 5,000 packet limit, a 120 second timer, and a
+bidirectional allowlist for VM2/VM1 and TCP ports 18100–18123. It refuses
+arbitrary commands, PID files, flags, symlinks, path traversal and existing
+outputs. The wrapper waits for the `listening on eth1` readiness line before
+launching the unprivileged 24-probe generator. Partial PCAP, tcpdump log, and
+metadata are retained on failure; successful output is moved atomically and
+hashed. Installation of the fixed helper and its constrained sudoers rule is a
+separate owner approval and has not been performed by this note.
 
 `scripts/verify_attack_evidence.py` is read-only. It parses classic Ethernet
 PCAP, checks hash/link type/snaplen/timestamps/scope, matches actual manifest

@@ -19,10 +19,8 @@ LOG="$OUT.tcpdump.log"
 META="$OUT.capture.json"
 REPORT="$OUT.verification.json"
 TIMEOUT_MARKER="$OUT.timeout"
-CAPTURE_PIDFILE="$OUT.tcpdump.pid"
 STOP_REQUEST="$OUT.stop"
-CAPTURE_STATUSFILE="$OUT.supervisor.status"
-SUPERVISOR="$ROOT/current/scripts/demo/vm2-capture-supervisor.sh"
+SUPERVISOR=/usr/local/libexec/suricata-ai-showcase/vm2-capture-supervisor
 BPF="((src host $SOURCE_IP and dst host $TARGET_IP and tcp and dst portrange 18100-18123) or (src host $TARGET_IP and dst host $SOURCE_IP and tcp and src portrange 18100-18123))"
 TCPDUMP_SUPERVISOR_PID=''
 GENERATOR_STATUS=blocked
@@ -46,7 +44,7 @@ if ! ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | cut -d/ -f1 | grep -Fx
   echo "CAPTURE_BLOCKED: $IFACE does not have expected source IP $SOURCE_IP." >&2
   exit 77
 fi
-if [[ -e "$OUT" || -e "$PARTIAL" || -e "$META" || -e "$REPORT" || -e "$TIMEOUT_MARKER" || -e "$CAPTURE_PIDFILE" || -e "$STOP_REQUEST" || -e "$CAPTURE_STATUSFILE" || -e "$MANIFEST" ]]; then
+if [[ -e "$OUT" || -e "$PARTIAL" || -e "$META" || -e "$REPORT" || -e "$TIMEOUT_MARKER" || -e "$STOP_REQUEST" || -e "$MANIFEST" ]]; then
   echo 'CAPTURE_BLOCKED: refusing to overwrite existing evidence, report, or manifest.' >&2
   exit 77
 fi
@@ -78,14 +76,6 @@ PY
 terminate_capture() {
   if [[ -z "$TCPDUMP_SUPERVISOR_PID" ]]; then return; fi
   touch "$STOP_REQUEST"
-  for _ in $(seq 1 150); do
-    [[ -s "$CAPTURE_STATUSFILE" ]] && break
-    sleep 0.1
-  done
-  if [[ ! -s "$CAPTURE_STATUSFILE" ]]; then
-    CAPTURE_WAIT_STATUS=supervisor_unresponsive
-    return
-  fi
   set +e
   wait "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null
   CAPTURE_WAIT_STATUS=$?
@@ -95,7 +85,7 @@ terminate_capture() {
 cleanup() {
   [[ "$FINALIZED" -eq 1 ]] || terminate_capture
   [[ -f "$LOG" ]] && write_metadata || true
-  rm -f "$CAPTURE_PIDFILE" "$STOP_REQUEST" "$CAPTURE_STATUSFILE" 2>/dev/null || true
+  rm -f "$STOP_REQUEST" 2>/dev/null || true
 }
 trap 'CAPTURE_STATUS=interrupted; exit 130' INT TERM
 trap cleanup EXIT
@@ -115,27 +105,12 @@ fi
 
 # Reuse the foreground ticket, fail closed if unavailable, and delegate all
 # privileged signal escalation and reaping to the supervisor itself.
-sudo -n "$SUPERVISOR" "$CAPTURE_PIDFILE" "$STOP_REQUEST" "$TIMEOUT_MARKER" "$CAPTURE_STATUSFILE" "$MAX_SECONDS" -- tcpdump -i "$IFACE" -s "$SNAPLEN" -n -U -w "$PARTIAL" -c "$MAX_PACKETS" "$BPF" 2>"$LOG" &
+sudo -n "$SUPERVISOR" --output "$PARTIAL" --stop-file "$STOP_REQUEST" 2>"$LOG" &
 TCPDUMP_SUPERVISOR_PID=$!
-
-for _ in $(seq 1 50); do
-  [[ -s "$CAPTURE_PIDFILE" ]] && break
-  if [[ -s "$CAPTURE_STATUSFILE" ]]; then
-    CAPTURE_STATUS=readiness_failed
-    echo 'CAPTURE_BLOCKED: sudo/tcpdump exited before reporting process readiness.' >&2
-    exit 77
-  fi
-  sleep 0.1
-done
-if [[ ! -s "$CAPTURE_PIDFILE" ]]; then
-  CAPTURE_STATUS=readiness_timeout
-  echo 'CAPTURE_BLOCKED: tcpdump process-group readiness timeout.' >&2
-  exit 77
-fi
 
 for _ in $(seq 1 "$READINESS_WAIT_ITERATIONS"); do
   if grep -Fq "listening on $IFACE" "$LOG" 2>/dev/null; then break; fi
-  if [[ -s "$CAPTURE_STATUSFILE" ]]; then
+  if ! kill -0 "$TCPDUMP_SUPERVISOR_PID" 2>/dev/null; then
     CAPTURE_STATUS=readiness_failed
     echo 'CAPTURE_BLOCKED: tcpdump exited before reporting readiness.' >&2
     exit 77
@@ -154,7 +129,10 @@ GENERATOR_STATUS=$?
 set -e
 terminate_capture
 CAPTURE_STATUS=$CAPTURE_WAIT_STATUS
-[[ -e "$TIMEOUT_MARKER" ]] && CAPTURE_STATUS=timeout
+if [[ "$CAPTURE_WAIT_STATUS" == "124" ]]; then
+  CAPTURE_STATUS=timeout
+  touch "$TIMEOUT_MARKER"
+fi
 write_metadata
 
 if [[ "$GENERATOR_STATUS" -ne 0 || "$CAPTURE_STATUS" != "0" || ! -s "$PARTIAL" ]]; then

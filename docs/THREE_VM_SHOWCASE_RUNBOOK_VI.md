@@ -123,17 +123,22 @@ ssh -tt suricata-vm2 /home/kali/suricata-ai-showcase/current/scripts/demo/vm2-ca
 
 Workflow này chỉ được owner chạy sau khi có phê duyệt riêng cho đúng VM2,
 interface `eth1`, lệnh và phạm vi. PTY là bắt buộc để owner nhập mật khẩu qua
-foreground `sudo -v`; sau đó tcpdump chạy non-interactive trong process group
-được giám sát. Sudo được gọi từ chính controlling PTY sau bước `sudo -v`, rồi
-process group tcpdump mới được tạo bên trong lệnh đã được authorize; không dùng
-`setsid` trước sudo và không gọi `sudo -n` ở session detached. Nó kiểm tra
-`192.168.10.20`, snaplen 96, tối đa 5.000 packet,
-tối đa 120 giây, và BPF hai chiều giữa VM2/VM1 cho các port 18100–18123. Nó
-chờ log `listening on eth1` trước khi gọi generator 24 probe unprivileged.
-Timeout, lỗi, Ctrl-C hoặc generator failure đều dừng và reap tcpdump; không
-dùng `setcap`, sudoers, firewall, tcpreplay hoặc capability fallback; không
-overwrite evidence cũ. PCAP chỉ được rename và in `ATTACK_CAPTURE_READY` sau
-khi verifier strict trả về `PASS`; lỗi vẫn giữ partial PCAP, log, metadata và
+foreground `sudo -v`; sau đó wrapper chỉ được gọi fixed helper root-owned
+ngoài release tree:
+
+`/usr/local/libexec/suricata-ai-showcase/vm2-capture-supervisor`
+
+Helper này không nhận command tùy ý, PID file hoặc tcpdump flags từ caller. Nó
+tự dựng `/usr/bin/tcpdump` cho `eth1`, snaplen 96, tối đa 5.000 packet, tối đa
+120 giây và BPF hai chiều giữa VM2/VM1 cho các port 18100–18123. Output chỉ là
+timestamped file trực tiếp trong evidence directory, tạo bằng `O_EXCL` và
+`O_NOFOLLOW`; process group được tạo và signal bởi chính helper, không dùng PID
+do user cung cấp. Wrapper chờ log `listening on eth1` trước khi gọi generator
+24 probe unprivileged. Timeout, lỗi, Ctrl-C hoặc generator failure đều dừng
+và reap tcpdump; output path bị thay thế sẽ fail closed. Không dùng `setcap`,
+firewall, tcpreplay hoặc capability fallback; sudoers phải được owner kiểm tra
+riêng bằng `visudo`. PCAP chỉ được rename và in `ATTACK_CAPTURE_READY` sau khi
+verifier strict trả về `PASS`; lỗi vẫn giữ partial PCAP, log, metadata và
 verification report.
 
 Manifest generator không phải independent holdout và kết quả `24/24

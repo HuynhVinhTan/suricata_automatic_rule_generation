@@ -12,6 +12,7 @@ from scripts.test_attack_fixtures import write_complete_attack_fixture
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="requires POSIX process groups")
 SCRIPT = Path(__file__).parents[1] / "scripts" / "demo" / "vm2-capture-session.sh"
+SUPERVISOR = Path(__file__).parents[1] / "scripts" / "demo" / "vm2-capture-supervisor.py"
 
 
 def _write_executable(path: Path, text: str) -> None:
@@ -19,10 +20,15 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
-def _write_test_copy(path: Path) -> None:
+def _write_test_copy(path: Path, supervisor_copy: Path) -> None:
     """Create a deterministic test copy; production script has no test bypass."""
     text = SCRIPT.read_text(encoding="utf-8")
     text = text.replace("MAX_SECONDS=120\n", "MAX_SECONDS=5\n", 1)
+    text = text.replace(
+        "SUPERVISOR=/usr/local/libexec/suricata-ai-showcase/vm2-capture-supervisor",
+        f'SUPERVISOR="{supervisor_copy.as_posix()}"',
+        1,
+    )
     text = text.replace("if [[ ! -t 0 || ! -t 1 ]]; then", "if false; then", 1)
     text = text.replace("if [[ ${EUID:-$(id -u)} -eq 0 ]]; then", "if false; then", 1)
     path.write_text(text, encoding="utf-8")
@@ -38,7 +44,21 @@ def mocked_capture(tmp_path):
     bin_dir.mkdir()
     fixture_pcap, fixture_manifest = write_complete_attack_fixture(tmp_path / "fixture")
     test_script = tmp_path / "vm2-capture-session-test-copy.sh"
-    _write_test_copy(test_script)
+    supervisor_copy = tmp_path / "vm2-capture-supervisor-test-copy.py"
+    supervisor_text = SUPERVISOR.read_text(encoding="utf-8")
+    supervisor_text = supervisor_text.replace(
+        'EVIDENCE_ROOT = Path("/home/kali/suricata-ai-showcase/evidence")',
+        f"EVIDENCE_ROOT = Path({str(root / 'evidence').__repr__()})",
+        1,
+    )
+    supervisor_text = supervisor_text.replace(
+        'TCPDUMP = "/usr/bin/tcpdump"',
+        f"TCPDUMP = {str(bin_dir / 'tcpdump').__repr__()}",
+        1,
+    )
+    supervisor_copy.write_text(supervisor_text, encoding="utf-8")
+    supervisor_copy.chmod(0o755)
+    _write_test_copy(test_script, supervisor_copy)
     timeout_script = tmp_path / "vm2-capture-session-timeout-test-copy.sh"
     timeout_script.write_text(
         test_script.read_text(encoding="utf-8").replace("MAX_SECONDS=5\n", "MAX_SECONDS=1\n", 1),
@@ -50,9 +70,6 @@ def mocked_capture(tmp_path):
     (root / "current/scripts/verify_attack_evidence.py").write_bytes(
         (Path(__file__).parents[1] / "scripts/verify_attack_evidence.py").read_bytes()
     )
-    supervisor = root / "current/scripts/demo/vm2-capture-supervisor.sh"
-    supervisor.write_bytes((Path(__file__).parents[1] / "scripts/demo/vm2-capture-supervisor.sh").read_bytes())
-    supervisor.chmod(0o755)
     marker = tmp_path / "tcpdump.pid"
     auth_log = tmp_path / "sudo-auth.log"
     sudo_log = tmp_path / "sudo.log"
@@ -65,7 +82,7 @@ if sys.argv[1] == '-v':
     open(os.environ['FAKE_AUTH_LOG'], 'a', encoding='utf-8').write('auth\\n')
     raise SystemExit(int(os.environ.get('FAKE_SUDO_STATUS', '0')))
 args = sys.argv[1:]
-is_supervisor = any('vm2-capture-supervisor.sh' in item for item in args)
+is_supervisor = any('vm2-capture-supervisor.py' in item for item in args)
 if args and args[0] == '-n' and os.environ.get('FAKE_SUDO_TERMINAL_SCOPED') == '1' and not is_supervisor:
     sys.stderr.write('sudo: a password is required\\n')
     raise SystemExit(1)
@@ -103,10 +120,10 @@ time.sleep(float(os.environ.get('FAKE_GENERATOR_SLEEP', '1.6')))
 shutil.copyfile(os.environ['FAKE_MANIFEST'], sys.argv[1])
 raise SystemExit(int(os.environ.get('FAKE_GENERATOR_STATUS', '0')))
 """)
-    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "sudo_log": sudo_log, "script": test_script, "timeout_script": timeout_script}
+    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "sudo_log": sudo_log, "script": test_script, "timeout_script": timeout_script, "supervisor": supervisor_copy}
 
 
-def _run(fixture, name="attack.pcap", **extra):
+def _run(fixture, name="attack-20261123T000000Z.pcap", **extra):
     script = extra.pop("script", fixture["script"])
     out = fixture["root"] / "evidence" / name
     manifest = fixture["root"] / "evidence" / "attack.json"
