@@ -70,7 +70,7 @@ def _run_mock_readiness(tmp_path: Path, *, state: str, substate: str, process: b
         pytest.skip("requires POSIX Bash for executable mock-systemd test")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _mock_command(bin_dir / "sudo", '#!/bin/sh\nshift\nexec "$@"\n')
+    _mock_command(bin_dir / "sudo", '#!/bin/sh\nexec "$@"\n')
     _mock_command(bin_dir / "systemctl", '''#!/bin/sh
 case "$1" in
   start) exit 0 ;;
