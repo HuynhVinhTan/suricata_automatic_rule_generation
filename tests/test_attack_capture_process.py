@@ -39,7 +39,7 @@ def _write_test_copy(path: Path, supervisor_copy: Path) -> None:
 def mocked_capture(tmp_path):
     root = tmp_path / "showcase"
     (root / "current/scripts/demo").mkdir(parents=True)
-    (root / "evidence").mkdir()
+    (root / "evidence").mkdir(mode=0o700)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fixture_pcap, fixture_manifest = write_complete_attack_fixture(tmp_path / "fixture")
@@ -49,6 +49,16 @@ def mocked_capture(tmp_path):
     supervisor_text = supervisor_text.replace(
         'EVIDENCE_ROOT = Path("/home/kali/suricata-ai-showcase/evidence")',
         f"EVIDENCE_ROOT = Path({str(root / 'evidence').__repr__()})",
+        1,
+    )
+    supervisor_text = supervisor_text.replace(
+        'INSTALL_PATH = Path("/usr/local/libexec/suricata-ai-showcase/vm2-capture-supervisor")',
+        f"INSTALL_PATH = Path({str(supervisor_copy).__repr__()})",
+        1,
+    )
+    supervisor_text = supervisor_text.replace(
+        "INSTALLATION_OWNER_UID = 0",
+        "INSTALLATION_OWNER_UID = os.geteuid()",
         1,
     )
     supervisor_text = supervisor_text.replace(

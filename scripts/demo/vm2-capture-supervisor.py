@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Fixed-scope privileged VM2 tcpdump supervisor."""
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import time
 
 
 INSTALL_PATH = Path("/usr/local/libexec/suricata-ai-showcase/vm2-capture-supervisor")
+INSTALLATION_OWNER_UID = 0
 EVIDENCE_ROOT = Path("/home/kali/suricata-ai-showcase/evidence")
 TCPDUMP = "/usr/bin/tcpdump"
 IFACE = "eth1"
@@ -30,10 +31,27 @@ BPF = (
     "dst host 192.168.10.20 and tcp and src portrange 18100-18123))"
 )
 OUTPUT_NAME = re.compile(r"^attack-[0-9]{8}T[0-9]{6}Z\.pcap\.partial\.pcap$")
+FINAL_OUTPUT_MODE = 0o600
 
 
 class CaptureSecurityError(RuntimeError):
     """Raised when a privileged boundary or output invariant is unsafe."""
+
+
+def validate_privileged_origin(
+    path: Path | None = None,
+    *,
+    install_path: Path = INSTALL_PATH,
+    expected_uid: int = INSTALLATION_OWNER_UID,
+    stop_at: Path | None = None,
+) -> None:
+    """Require this executable to be the exact approved fixed installation."""
+
+    path = Path(__file__) if path is None else Path(path)
+    install_path = Path(install_path)
+    if path != install_path:
+        raise CaptureSecurityError(f"privileged executable is not at the approved fixed path: {path}")
+    validate_secure_installation(path, expected_uid=expected_uid, stop_at=stop_at)
 
 
 def validate_secure_installation(
@@ -108,9 +126,13 @@ def open_evidence_directory(evidence_root: Path = EVIDENCE_ROOT) -> int:
         if directory_fd >= 0:
             os.close(directory_fd)
         raise CaptureSecurityError(f"evidence directory is not a safe directory: {evidence_root}") from exc
-    if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+    directory_stat = os.fstat(directory_fd)
+    if not stat.S_ISDIR(directory_stat.st_mode):
         os.close(directory_fd)
         raise CaptureSecurityError("evidence root is not a directory")
+    if directory_stat.st_mode & 0o077:
+        os.close(directory_fd)
+        raise CaptureSecurityError("evidence directory is accessible to group or other users")
     return directory_fd
 
 
@@ -197,10 +219,37 @@ def _same_inode(directory_fd: int, name: str, output_stat: os.stat_result) -> bo
     )
 
 
+def finalize_capture_output(
+    directory_fd: int,
+    output_fd: int,
+    output_name: str,
+    output_stat: os.stat_result,
+) -> None:
+    """Make a completed capture private and readable by the evidence owner."""
+
+    if not _same_inode(directory_fd, output_name, output_stat):
+        raise CaptureSecurityError("output path was replaced or removed")
+    directory_stat = os.fstat(directory_fd)
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise CaptureSecurityError("evidence root is not a directory")
+    try:
+        os.fchown(output_fd, directory_stat.st_uid, directory_stat.st_gid)
+        os.fchmod(output_fd, FINAL_OUTPUT_MODE)
+    except OSError as exc:
+        raise CaptureSecurityError("completed capture ownership or mode could not be secured") from exc
+    final_stat = os.fstat(output_fd)
+    if (
+        final_stat.st_uid != directory_stat.st_uid
+        or final_stat.st_gid != directory_stat.st_gid
+        or final_stat.st_mode & 0o077
+        or not _same_inode(directory_fd, output_name, final_stat)
+    ):
+        raise CaptureSecurityError("completed capture ownership or mode is unsafe")
+
+
 def run_capture(output: Path, stop_file: Path, evidence_root: Path = EVIDENCE_ROOT) -> int:
     validate_request_paths(output, stop_file, evidence_root)
-    if os.geteuid() == 0 and Path(__file__).resolve() == INSTALL_PATH:
-        validate_secure_installation(Path(__file__))
+    validate_privileged_origin()
 
     directory_fd = open_evidence_directory(evidence_root)
     output_fd = -1
@@ -238,8 +287,10 @@ def run_capture(output: Path, stop_file: Path, evidence_root: Path = EVIDENCE_RO
             if not _stop_and_reap(process):
                 return 125
         status = process.wait()
-        if not _same_inode(directory_fd, output.name, output_stat):
-            print("CAPTURE_BLOCKED: output path was replaced or removed", file=sys.stderr)
+        try:
+            finalize_capture_output(directory_fd, output_fd, output.name, output_stat)
+        except CaptureSecurityError as exc:
+            print(f"CAPTURE_BLOCKED: {exc}", file=sys.stderr)
             return 125
         if timed_out:
             return 124

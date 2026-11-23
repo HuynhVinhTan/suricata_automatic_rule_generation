@@ -4,7 +4,9 @@ import os
 import importlib.util
 from pathlib import Path
 import signal
+import stat
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,6 +35,21 @@ def test_rejects_writable_privileged_executable(tmp_path):
         supervisor.validate_secure_installation(entrypoint, expected_uid=os.getuid(), stop_at=tmp_path)
 
 
+def test_rejects_unsafe_privileged_ownership(tmp_path, monkeypatch):
+    entrypoint = _secure_entrypoint(tmp_path / "libexec" / "capture-supervisor")
+    real_stat = supervisor.os.stat
+
+    def fake_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if Path(path) == entrypoint:
+            return SimpleNamespace(st_mode=result.st_mode, st_uid=os.getuid() + 1)
+        return result
+
+    monkeypatch.setattr(supervisor.os, "stat", fake_stat)
+    with pytest.raises(supervisor.CaptureSecurityError, match="owned by uid"):
+        supervisor.validate_secure_installation(entrypoint, expected_uid=os.getuid(), stop_at=tmp_path)
+
+
 def test_rejects_writable_privileged_ancestor(tmp_path):
     parent = tmp_path / "libexec"
     entrypoint = _secure_entrypoint(parent / "capture-supervisor")
@@ -40,6 +57,43 @@ def test_rejects_writable_privileged_ancestor(tmp_path):
 
     with pytest.raises(supervisor.CaptureSecurityError, match="ancestor"):
         supervisor.validate_secure_installation(entrypoint, expected_uid=os.getuid(), stop_at=tmp_path)
+
+
+def test_rejects_privileged_entrypoint_from_alternate_path(tmp_path):
+    alternate = _secure_entrypoint(tmp_path / "alternate" / "capture-supervisor")
+    approved = tmp_path / "approved" / "capture-supervisor"
+
+    with pytest.raises(supervisor.CaptureSecurityError, match="approved fixed path"):
+        supervisor.validate_privileged_origin(
+            alternate,
+            install_path=approved,
+            expected_uid=os.getuid(),
+            stop_at=tmp_path,
+        )
+
+
+def test_privileged_entrypoint_declares_isolated_python_startup():
+    assert _SUPERVISOR_PATH.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3 -I"
+
+
+def test_unsafe_python_startup_configuration_cannot_run_alternate_entrypoint(tmp_path):
+    alternate = tmp_path / "capture-supervisor"
+    alternate.write_bytes(_SUPERVISOR_PATH.read_bytes())
+    alternate.chmod(0o755)
+    marker = tmp_path / "sitecustomize-ran"
+    (tmp_path / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('unsafe')\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ, PYTHONPATH=str(tmp_path), PYTHONHOME=str(tmp_path))
+    result = subprocess.run(
+        [str(alternate), "--output", "/home/kali/suricata-ai-showcase/evidence/attack-20261123T000000Z.pcap.partial.pcap", "--stop-file", "/home/kali/suricata-ai-showcase/evidence/attack-20261123T000000Z.pcap.stop"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 77
+    assert not marker.exists()
 
 
 def test_tcpdump_command_has_only_reviewed_fixed_scope():
@@ -79,6 +133,7 @@ def test_rejects_arbitrary_command_arguments():
 def test_rejects_extra_arguments_and_path_traversal(tmp_path):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
+    evidence.chmod(0o700)
     output = evidence / "attack-20261123T000000Z.pcap.partial.pcap"
     stop = evidence / "attack-20261123T000000Z.pcap.stop"
 
@@ -95,6 +150,7 @@ def test_rejects_extra_arguments_and_path_traversal(tmp_path):
 def test_secure_output_refuses_existing_file_and_symlink(tmp_path):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
+    evidence.chmod(0o700)
     output_name = "attack-20261123T000000Z.pcap.partial.pcap"
     output = evidence / output_name
     stop = evidence / "attack-20261123T000000Z.pcap.stop"
@@ -108,6 +164,35 @@ def test_secure_output_refuses_existing_file_and_symlink(tmp_path):
     finally:
         os.close(directory_fd)
 
+
+def test_rejects_shared_evidence_directory(tmp_path):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o755)
+    with pytest.raises(supervisor.CaptureSecurityError, match="accessible to group or other"):
+        supervisor.open_evidence_directory(evidence)
+
+
+def test_completed_output_is_private_and_owned_by_evidence_user(tmp_path):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    output_name = "attack-20261123T000000Z.pcap.partial.pcap"
+    output = evidence / output_name
+    stop = evidence / "attack-20261123T000000Z.pcap.stop"
+    supervisor.validate_request_paths(output, stop, evidence)
+    directory_fd = supervisor.open_evidence_directory(evidence)
+    try:
+        output_fd = supervisor.open_capture_output(directory_fd, output_name)
+        try:
+            output_stat = os.fstat(output_fd)
+            supervisor.finalize_capture_output(directory_fd, output_fd, output_name, output_stat)
+            final_stat = os.stat(output, follow_symlinks=False)
+            assert stat.S_IMODE(final_stat.st_mode) == 0o600
+            assert final_stat.st_uid == os.fstat(directory_fd).st_uid
+        finally:
+            os.close(output_fd)
+    finally:
+        os.close(directory_fd)
+
     output.unlink()
     output.symlink_to(tmp_path / "unrelated")
     directory_fd = supervisor.open_evidence_directory(evidence)
@@ -115,6 +200,23 @@ def test_secure_output_refuses_existing_file_and_symlink(tmp_path):
         with pytest.raises(supervisor.CaptureSecurityError):
             supervisor.open_capture_output(directory_fd, output_name)
     finally:
+        os.close(directory_fd)
+
+
+def test_finalization_refuses_replaced_output(tmp_path):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    output_name = "attack-20261123T000000Z.pcap.partial.pcap"
+    directory_fd = supervisor.open_evidence_directory(evidence)
+    output_fd = supervisor.open_capture_output(directory_fd, output_name)
+    try:
+        output_stat = os.fstat(output_fd)
+        (evidence / output_name).unlink()
+        (evidence / output_name).write_bytes(b"replacement")
+        with pytest.raises(supervisor.CaptureSecurityError, match="replaced or removed"):
+            supervisor.finalize_capture_output(directory_fd, output_fd, output_name, output_stat)
+    finally:
+        os.close(output_fd)
         os.close(directory_fd)
 
 
