@@ -79,8 +79,8 @@ On failure, the new staging directory is reported and no existing release,
 pointer, unit, capture, outbox or historical evidence is modified. The script
 never edits or reloads systemd and never starts capture.
 
-Prepared script SHA256:
-`5645006ef51c70065f0013ba75ed18e12484b1ba464b90a2942d5e62fca29433`.
+Prepared release script SHA256:
+`e7b800d02a96002959e7aef060d9556d1a150fca8764dae79bed132199a32ff`.
 
 ## Separate read-only VM1 inspection
 
@@ -100,7 +100,7 @@ does not call `sudo`, `systemctl start`, `reload`, `enable`, `disable`, or any
 write operation.
 
 Prepared inspection script SHA256:
-`160c017f0fd3d29f95b414139ce345840934b6a0622d8f76cdba591554af9bf8`.
+`42e7357a8bac3d01b327fa3bfb27e80ef7f3568c6a54a0a293069062dd6ccc78`.
 
 ## Safe retarget plan after release verification
 
@@ -129,3 +129,32 @@ identities, sealed PCAP/manifest/ready hashes, exact five-tuples and timestamps,
 verified `true/false/false` integrity metadata, VM3 `consume` verification, and
 review-only frozen-worker output. G5 remains deferred until an accepted
 candidate supplies its actual SID and rule SHA256.
+
+## Prepared drop-in workflow (owner execution remains blocked)
+
+The separate [`g4_retarget_vm1_capture_dropin.ps1`](../scripts/g4_retarget_vm1_capture_dropin.ps1)
+has SHA256
+`4d7c484cad463d5b50b9aad9d689f2b8caf9c9845c2aeea841c2674a52399cc3`.
+It is plan-only unless the owner supplies `-Install -Execute` or
+`-Rollback -Execute`. Each action uses one owner-visible `ssh -tt` session,
+performs `sudo -v` followed by `sudo -n`, and never asks Codex to handle a
+password. Installation refuses an existing drop-in, verifies the release
+module hashes, imports from the exact release with bytecode disabled, and
+asserts `ens33`, the bidirectional BPF, 60-second duration, 262144 snaplen,
+64 MiB cap, inactive capture/send states, and unchanged security properties.
+The only file it creates is the root-owned mode-0644 drop-in whose sole
+directive is the versioned `WorkingDirectory`; it then runs `daemon-reload`
+without starting the service. Rollback removes only that exact drop-in after
+the same inactive-state and content checks, reloads systemd, and proves the
+original working directory and all recorded properties are restored.
+
+## Offline CI diagnosis
+
+CI run `45310184394` failed because the synthetic attack fixture placed its
+first packet only one second in the future. Foreground authentication and the
+mocked supervisor could legally consume that margin, causing the strict
+verifier to reject metadata that started after the first parsed packet. The
+verifier was not relaxed. The fixture now keeps a 30-second setup margin and
+has a regression assertion requiring at least 20 seconds remaining; strict
+PCAP, manifest, timestamp, tuple, RST, drop and integrity checks remain
+unchanged.

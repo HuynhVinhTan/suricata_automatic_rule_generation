@@ -1,6 +1,8 @@
 """Process-level orchestration tests with mocked owner/VM2 commands."""
 
 import os
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -178,6 +180,12 @@ def test_success_authenticates_in_foreground_and_cleans_capture_process(mocked_c
     assert not Path(str(out) + ".partial.pcap").exists()
     assert mocked_capture["auth"].read_text(encoding="utf-8").splitlines() == ["auth"]
     assert not _pid_exists(mocked_capture["pid"])
+
+
+def test_fixture_capture_window_has_setup_slack_for_strict_metadata_ordering(mocked_capture):
+    manifest = json.loads((mocked_capture["root"] / "fixture.json").read_text(encoding="utf-8"))
+    started = datetime.fromisoformat(manifest["started_at_utc"].replace("Z", "+00:00"))
+    assert (started - datetime.now(timezone.utc)).total_seconds() >= 20
 
 
 def test_success_reaps_tcpdump_child_process(mocked_capture):

@@ -80,6 +80,10 @@ if [ ! -e "$ROOT/.runtime-staging" ]; then mkdir -m 700 "$ROOT/.runtime-staging"
 test "$(stat -c '%a' "$ROOT/.runtime-staging")" = 700
 test ! -e "$STAGE"
 mkdir -m 700 "$STAGE"
+stage_device=$(stat -c '%d' "$STAGE")
+releases_device=$(stat -c '%d' "$ROOT/releases")
+test "$stage_device" = "$releases_device"
+printf 'stage_device=%s releases_device=%s\n' "$stage_device" "$releases_device"
 printf '%s\n' VM1_STAGE_READY=TRUE
 '@.Replace('__ROOT__', $ShowcaseRoot).Replace('__RELEASE__', $ReleasePath).Replace('__STAGE__', $RemoteStagePath).Replace('__UNIT__', $ExpectedUnitSha256)
 }
@@ -129,6 +133,10 @@ test "$state_before" = inactive
 test "$substate_before" = dead
 if pgrep -af '[/]tcpdump' >/dev/null; then exit 75; fi
 test ! -e "$RELEASE"
+stage_device=$(stat -c '%d' "$STAGE")
+releases_device=$(stat -c '%d' "$ROOT/releases")
+test "$stage_device" = "$releases_device"
+printf 'publish_stage_device=%s publish_releases_device=%s\n' "$stage_device" "$releases_device"
 mv -- "$EXTRACTED" "$RELEASE"
 test "$(sha256sum "$RELEASE/backend/pcap_capture.py" | awk '{print $1}')" = 1a96c9264ce6c46011149a7adfaad908e06dcbc4cf40b48c2c496cf1933712b3
 test "$(sha256sum "$RELEASE/backend/pcap_handoff.py" | awk '{print $1}')" = 0442e59ddd47b11608bd9ad110d512e6db338fc5a89b5cb93671746ccee153de
