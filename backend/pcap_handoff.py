@@ -16,6 +16,7 @@ import shutil
 import socket
 import struct
 import subprocess
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from ipaddress import IPv4Address
 from pathlib import Path
@@ -27,6 +28,11 @@ RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 SSH_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 REMOTE_PATH = re.compile(r"^/[A-Za-z0-9_./-]+$")
+CAPTURE_INTEGRITY_FIELDS = (
+    "packet_records_complete",
+    "snaplen_truncated",
+    "capture_drops",
+)
 
 
 class HandoffError(ValueError):
@@ -182,11 +188,66 @@ def _bundle_paths(root: Path, run_id: str) -> tuple[Path, Path, Path]:
     ))
 
 
+def _validated_capture_metadata(
+    audit: dict, capture_metadata: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Validate optional native capture-integrity evidence without fabricating it."""
+    if capture_metadata is None:
+        return {}
+    if not isinstance(capture_metadata, Mapping):
+        raise HandoffError("Capture metadata must be an object")
+    extra = dict(capture_metadata)
+    for key in CAPTURE_INTEGRITY_FIELDS:
+        if key in extra and extra[key] is not None and type(extra[key]) is not bool:
+            raise HandoffError(f"Invalid capture integrity field: {key}")
+    if extra.get("packet_records_complete") is False:
+        raise HandoffError("capture integrity is incomplete")
+    if extra.get("snaplen_truncated") is True:
+        raise HandoffError("capture integrity reports snaplen truncation")
+    if extra.get("capture_drops") is True:
+        raise HandoffError("capture integrity reports kernel drops")
+    for key, value in extra.items():
+        if key in audit and value != audit[key]:
+            raise HandoffError(f"Capture metadata conflicts with PCAP audit: {key}")
+    statistics = extra.get("tcpdump_statistics")
+    if statistics is not None:
+        if not isinstance(statistics, Mapping):
+            raise HandoffError("Invalid tcpdump capture statistics")
+        statistics = dict(statistics)
+        count_fields = (
+            "packets_captured",
+            "packets_received_by_filter",
+            "packets_dropped_by_kernel",
+        )
+        for key in count_fields:
+            value = statistics.get(key)
+            if value is not None and (type(value) is not int or value < 0):
+                raise HandoffError(f"Invalid tcpdump statistic: {key}")
+        status = statistics.get("status")
+        complete_stats = all(statistics.get(key) is not None for key in count_fields)
+        if status not in {"verified", "unverified"} or (status == "verified") != complete_stats:
+            raise HandoffError("Invalid tcpdump statistics status")
+        if (
+            statistics.get("packets_captured") is not None
+            and statistics["packets_captured"] != audit["packets"]
+        ):
+            raise HandoffError("Tcpdump packet count conflicts with PCAP audit")
+        if (
+            statistics.get("packets_dropped_by_kernel") is not None
+            and extra.get("capture_drops") is not None
+            and extra["capture_drops"] != (statistics["packets_dropped_by_kernel"] > 0)
+        ):
+            raise HandoffError("Tcpdump drop count conflicts with capture integrity")
+        extra["tcpdump_statistics"] = statistics
+    return extra
+
+
 def bundle(
     *, pcap: Path, input_root: Path, outbox: Path, run_id: str,
     src: str, dst: str, expected_sha256: str,
     expected_syn: int, expected_get: int | None = None,
     capture_kind: str = "raw",
+    capture_metadata: Mapping[str, object] | None = None,
 ) -> dict:
     run_id = _run_id(run_id)
     inroot, outroot = _root(input_root), _root(outbox)
@@ -207,6 +268,7 @@ def bundle(
     digest = _hash(source)
     if digest != expected_sha256.lower():
         raise HandoffError("Original PCAP SHA256 mismatch")
+    extra_metadata = _validated_capture_metadata(audit, capture_metadata)
     target_dir = outroot / run_id
     target_dir.mkdir(mode=0o700, exist_ok=False)
     pcap_out, manifest_out, ready_out = _bundle_paths(target_dir, run_id)
@@ -226,6 +288,7 @@ def bundle(
         "run_id": run_id,
         "capture_metadata": {
             **audit,
+            **extra_metadata,
             "capture_kind": capture_kind,
             "sealed_at": _utc(),
         },
@@ -263,6 +326,7 @@ def verified_bundle(root: Path, run_id: str) -> tuple[Path, Path, Path, dict]:
     meta = doc.get("capture_metadata")
     if not isinstance(meta, dict) or any(meta.get(k) != audit[k] for k in audit):
         raise HandoffError("Manifest PCAP audit metadata mismatch")
+    _validated_capture_metadata(audit, meta)
     return pcap, manifest, ready, doc
 
 

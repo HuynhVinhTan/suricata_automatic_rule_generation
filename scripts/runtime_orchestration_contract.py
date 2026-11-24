@@ -17,6 +17,10 @@ CAPTURE_SERVICE = "suricata-ai-capture.service"
 CAPTURE_INTERFACE = "ens33"
 CAPTURE_SNAPLEN = 262144
 CAPTURE_DURATION_SECONDS = 60
+CAPTURE_BPF_FILTER = (
+    "tcp and host 192.168.10.20 and host 192.168.10.10 "
+    "and (port 18080 or portrange 18100-18123)"
+)
 READINESS_TIMEOUT_SECONDS = 10
 CAPTURE_ROOT = PurePosixPath("/var/lib/suricata-ai-capture")
 VM1_OUTBOX = PurePosixPath("/home/tanhv/suricata-ai-outbox")
@@ -100,6 +104,14 @@ def validate_capture_generator_evidence(
     attempts = generator.get("attempts")
     if not isinstance(metadata, dict) or not isinstance(attempts, list):
         raise ValueError("capture or generator counts are missing")
+    if metadata.get("interface") != CAPTURE_INTERFACE or metadata.get("bpf_filter") != CAPTURE_BPF_FILTER:
+        raise ValueError("capture interface or BPF filter mismatch")
+    if (
+        metadata.get("packet_records_complete") is not True
+        or metadata.get("snaplen_truncated") is not False
+        or metadata.get("capture_drops") is not False
+    ):
+        raise ValueError("capture integrity is not verified")
     if native_manifest.get("source_ipv4") != VM2_IP or native_manifest.get("destination_ipv4") != VM1_IP:
         raise ValueError("native capture identity mismatch")
     if not isinstance(metadata.get("packets"), int) or metadata["packets"] < len(attempts):

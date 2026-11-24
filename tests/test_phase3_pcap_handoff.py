@@ -16,9 +16,9 @@ SRC = "192.168.10.20"
 DST = "192.168.10.10"
 
 
-def _packet(flags: int, payload: bytes = b"") -> bytes:
-    ip_src = bytes((192, 168, 10, 20))
-    ip_dst = bytes((192, 168, 10, 10))
+def _packet(flags: int, payload: bytes = b"", *, reverse: bool = False) -> bytes:
+    ip_src = bytes((192, 168, 10, 10 if reverse else 20))
+    ip_dst = bytes((192, 168, 10, 20 if reverse else 10))
     tcp = struct.pack(
         "!HHIIBBHHH", 50000, 18100, 1, 0, 0x50, flags, 8192, 0, 0
     ) + payload
@@ -93,6 +93,58 @@ def test_seal_and_receive_dry_run_are_verified(tmp_path):
     assert not (inbox / "lab-001.done.json").exists()
     with pytest.raises(FileExistsError):
         bridge.bundle(**opts)
+
+
+def test_bidirectional_pcap_records_are_audited_without_losing_client_syn(tmp_path):
+    pcap = tmp_path / "bidirectional.pcap"
+    pcap.write_bytes(_raw_pcap([_packet(0x02), _packet(0x14, reverse=True)]))
+
+    audit = bridge.audit_pcap(pcap, SRC, DST)
+
+    assert audit["packets"] == 2
+    assert audit["initial_syn"] == 1
+
+
+def test_capture_integrity_metadata_is_preserved_in_manifest(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+    bridge.bundle(
+        **opts,
+        capture_metadata={
+            "packet_records_complete": True,
+            "snaplen_truncated": False,
+            "capture_drops": False,
+            "tcpdump_statistics": {
+                "packets_captured": 2,
+                "packets_received_by_filter": 2,
+                "packets_dropped_by_kernel": 0,
+                "status": "verified",
+            },
+        },
+    )
+
+    _pcap, manifest, _ready, document = bridge.verified_bundle(
+        opts["outbox"] / "lab-001", "lab-001"
+    )
+    metadata = document["capture_metadata"]
+    assert metadata["packet_records_complete"] is True
+    assert metadata["snaplen_truncated"] is False
+    assert metadata["capture_drops"] is False
+    assert metadata["tcpdump_statistics"]["packets_dropped_by_kernel"] == 0
+    assert json.loads(manifest.read_text())["capture_metadata"] == metadata
+
+
+def test_inconsistent_capture_integrity_metadata_is_rejected(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+
+    with pytest.raises(bridge.HandoffError, match="capture integrity"):
+        bridge.bundle(
+            **opts,
+            capture_metadata={
+                "packet_records_complete": False,
+                "snaplen_truncated": False,
+                "capture_drops": False,
+            },
+        )
 
 
 def test_expected_count_gate_fails_before_creating_bundle(tmp_path):

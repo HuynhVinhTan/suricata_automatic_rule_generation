@@ -8,6 +8,7 @@ import subprocess
 import pytest
 
 from scripts.runtime_orchestration_contract import (
+    CAPTURE_BPF_FILTER,
     CAPTURE_SERVICE,
     build_vm1_capture_readiness_script,
     build_worker_argv,
@@ -197,6 +198,11 @@ def test_capture_generator_correlation_checks_hashes_timestamps_tuples_and_count
         "capture_metadata": {
             "packets": 24,
             "initial_syn": 24,
+            "interface": "ens33",
+            "bpf_filter": CAPTURE_BPF_FILTER,
+            "packet_records_complete": True,
+            "snaplen_truncated": False,
+            "capture_drops": False,
             "sealed_at": "2026-11-23T12:02:00Z",
         },
     }
@@ -245,7 +251,16 @@ def test_capture_generator_correlation_rejects_tuple_or_timestamp_mismatch():
         "pcap_sha256": "a" * 64,
         "source_ipv4": "192.168.10.20",
         "destination_ipv4": "192.168.10.10",
-        "capture_metadata": {"packets": 1, "initial_syn": 1, "sealed_at": "2026-11-23T12:00:00Z"},
+        "capture_metadata": {
+            "packets": 1,
+            "initial_syn": 1,
+            "interface": "ens33",
+            "bpf_filter": CAPTURE_BPF_FILTER,
+            "packet_records_complete": True,
+            "snaplen_truncated": False,
+            "capture_drops": False,
+            "sealed_at": "2026-11-23T12:00:00Z",
+        },
     }
     generator = {
         "run_id": "g4-attack-20261123T120001Z-fedcba9876543210",
@@ -271,6 +286,58 @@ def test_capture_generator_correlation_rejects_tuple_or_timestamp_mismatch():
         "manifest_sha256": hashlib.sha256(native_bytes).hexdigest(),
     }
     with pytest.raises(ValueError, match="tuple|timestamp|count"):
+        validate_capture_generator_evidence(
+            scenario="ATTACK",
+            capture_id=native["run_id"],
+            generator_id=generator["run_id"],
+            pcap_bytes=pcap,
+            native_manifest_bytes=native_bytes,
+            native_manifest=native,
+            ready_marker=ready,
+            generator_bytes=json.dumps(generator).encode(),
+        )
+
+
+def test_capture_generator_correlation_rejects_unknown_or_lossy_integrity():
+    native = {
+        "run_id": "capture-20261123T120000Z-0123456789abcdef",
+        "pcap_sha256": hashlib.sha256(b"pcap").hexdigest(),
+        "source_ipv4": "192.168.10.20",
+        "destination_ipv4": "192.168.10.10",
+        "capture_metadata": {
+            "packets": 24,
+            "initial_syn": 24,
+            "interface": "ens33",
+            "bpf_filter": CAPTURE_BPF_FILTER,
+            "packet_records_complete": True,
+            "snaplen_truncated": False,
+            "capture_drops": None,
+            "sealed_at": "2026-11-23T12:02:00Z",
+        },
+    }
+    generator = {
+        "run_id": "g4-attack-20261123T120001Z-fedcba9876543210",
+        "scenario": "ATTACK",
+        "source_ip": "192.168.10.20",
+        "target_ip": "192.168.10.10",
+        "started_at_utc": "2026-11-23T12:00:01Z",
+        "ended_at_utc": "2026-11-23T12:01:00Z",
+        "attempt_count": 24,
+        "attempts": [{
+            "source_ip": "192.168.10.20",
+            "destination_ip": "192.168.10.10",
+            "source_port": 40000 + index,
+            "destination_port": 18100 + index,
+        } for index in range(24)],
+    }
+    pcap = b"pcap"
+    native_bytes = json.dumps(native, sort_keys=True, separators=(",", ":")).encode()
+    ready = {
+        "run_id": native["run_id"],
+        "pcap_sha256": native["pcap_sha256"],
+        "manifest_sha256": hashlib.sha256(native_bytes).hexdigest(),
+    }
+    with pytest.raises(ValueError, match="integrity"):
         validate_capture_generator_evidence(
             scenario="ATTACK",
             capture_id=native["run_id"],

@@ -1,5 +1,6 @@
 """Offline tests for bounded PCAP capture; tcpdump is always mocked."""
 import hashlib
+import io
 import json
 import struct
 from pathlib import Path
@@ -36,12 +37,13 @@ def _roots(tmp_path):
 
 
 class _Tcpdump:
-    def __init__(self, command, *, data, stop_cleanly=True, interrupt=False):
+    def __init__(self, command, *, data, stop_cleanly=True, interrupt=False, stats=None):
         self.command = command
         self.data = data
         self.stop_cleanly = stop_cleanly
         self.interrupt = interrupt
         self.returncode = None
+        self.stderr = io.BytesIO((stats or "").encode("ascii"))
         Path(command[command.index("-w") + 1]).write_bytes(data)
 
     def wait(self, timeout=None):
@@ -97,10 +99,69 @@ def test_capture_seals_only_exact_bounded_filter_and_preserves_original(tmp_path
     assert result["status"] == "sealed"
     assert commands[0][commands[0].index("-i") + 1] == "ens33"
     assert commands[0][commands[0].index("-s") + 1] == "262144"
-    assert commands[0][-1] == "tcp and src host 192.168.10.20 and dst host 192.168.10.10"
+    assert commands[0][-1] == (
+        "tcp and host 192.168.10.20 and host 192.168.10.10 "
+        "and (port 18080 or portrange 18100-18123)"
+    )
     run_id = result["run_id"]
     assert (capture_root / run_id / "capture.pcap").read_bytes() == _pcap([_frame()])
     assert (outbox / run_id / f"{run_id}.ready.json").is_file()
+
+
+def test_tcpdump_integrity_statistics_are_propagated(tmp_path, monkeypatch):
+    result, _root, outbox = _run(
+        tmp_path,
+        monkeypatch,
+        _pcap([_frame()]),
+        stats=(
+            "1 packets captured\n"
+            "1 packets received by filter\n"
+            "0 packets dropped by kernel\n"
+        ),
+    )
+
+    manifest = json.loads(
+        (outbox / result["run_id"] / f"{result['run_id']}.manifest.json").read_text()
+    )
+    metadata = manifest["capture_metadata"]
+    assert metadata["packet_records_complete"] is True
+    assert metadata["snaplen_truncated"] is False
+    assert metadata["capture_drops"] is False
+    assert metadata["tcpdump_statistics"] == {
+        "packets_captured": 1,
+        "packets_received_by_filter": 1,
+        "packets_dropped_by_kernel": 0,
+        "status": "verified",
+    }
+
+
+def test_missing_tcpdump_statistics_remain_unknown(tmp_path, monkeypatch):
+    result, _root, outbox = _run(tmp_path, monkeypatch, _pcap([_frame()]))
+
+    manifest = json.loads(
+        (outbox / result["run_id"] / f"{result['run_id']}.manifest.json").read_text()
+    )
+    metadata = manifest["capture_metadata"]
+    assert metadata["packet_records_complete"] is True
+    assert metadata["snaplen_truncated"] is False
+    assert metadata["capture_drops"] is None
+    assert metadata["tcpdump_statistics"]["status"] == "unverified"
+
+
+def test_kernel_drop_prevents_sealing(tmp_path, monkeypatch):
+    result, _root, outbox = _run(
+        tmp_path,
+        monkeypatch,
+        _pcap([_frame()]),
+        stats=(
+            "1 packets captured\n"
+            "1 packets received by filter\n"
+            "1 packets dropped by kernel\n"
+        ),
+    )
+
+    assert result["status"] == "failed"
+    assert not list(outbox.rglob("*.ready.json"))
 
 
 @pytest.mark.parametrize("frames", [[], [_frame(flags=0x10)]])
