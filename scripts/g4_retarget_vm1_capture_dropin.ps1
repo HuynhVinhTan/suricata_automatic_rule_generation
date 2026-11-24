@@ -65,6 +65,12 @@ before_families=''
 before_readwrite=''
 before_timeout=''
 before_wd=''
+current_checkpoint=initialization
+
+remote_checkpoint() {
+  current_checkpoint=$1
+  printf 'VM1_REMOTE_CHECKPOINT=%s\n' "$current_checkpoint"
+}
 
 verify_properties() {
   expected_wd=$1
@@ -123,6 +129,10 @@ rollback_install() {
   status=$?
   set +e
   rm -f -- "$temporary_file" 2>/dev/null
+  if [ "$status" -ne 0 ]; then
+    printf 'VM1_REMOTE_FAILURE_CHECKPOINT=%s\n' "$current_checkpoint" >&2
+    printf 'VM1_REMOTE_FAILURE_EXIT=%s\n' "$status" >&2
+  fi
   if [ "$ACTION" = install ] && [ "$status" -ne 0 ]; then
     rollback_failed=0
     if [ "$dropin_created" = 1 ]; then
@@ -155,15 +165,18 @@ rollback_install() {
 }
 trap rollback_install EXIT
 
+remote_checkpoint preflight-unit-identity
 test -f "$UNIT"
 test ! -L "$UNIT"
 test "$(sha256sum "$UNIT" | awk '{print $1}')" = "$EXPECTED_UNIT"
+remote_checkpoint preflight-service-state
 test "$(systemctl show -p ActiveState --value "$SERVICE")" = inactive
 test "$(systemctl show -p SubState --value "$SERVICE")" = dead
 test "$(systemctl show -p ActiveState --value suricata-ai-send.service)" = inactive
 test "$(systemctl show -p ActiveState --value suricata-ai-send.timer)" = inactive
 if pgrep -af '[/]tcpdump' >/dev/null; then exit 75; fi
 
+remote_checkpoint preflight-security-properties
 before_exec=$(systemctl show -p ExecStart --value "$SERVICE")
 before_pre=$(systemctl show -p ExecStartPre --value "$SERVICE")
 before_post=$(systemctl show -p ExecStartPost --value "$SERVICE")
@@ -182,8 +195,10 @@ before_wd=$(systemctl show -p WorkingDirectory --value "$SERVICE")
 before_state_ready=1
 
 if [ "$ACTION" = install ]; then
+  remote_checkpoint install-scope-preflight
   test -z "$(systemctl show -p DropInPaths --value "$SERVICE")"
   test "$before_wd" = "$EXPECTED_WD"
+  remote_checkpoint install-release-preflight
   test -d "$RELEASE"
   test ! -L "$RELEASE"
   test -f "$RELEASE/backend/pcap_capture.py"
@@ -206,6 +221,7 @@ assert capture.MAX_PCAP_BYTES == 64 * 1024 * 1024
 assert capture.BPF_FILTER == sys.argv[1]
 PY
 
+  remote_checkpoint install-dropin-preflight
   test ! -e "$DROPIN"
   test ! -L "$DROPIN"
   if [ -L "$DROPIN_DIR" ]; then exit 1; fi
@@ -215,6 +231,7 @@ PY
   else
     dropin_dir_created=1
   fi
+  remote_checkpoint install-dropin-write
   tmp=$(mktemp)
   temporary_file=$tmp
   umask 022
@@ -230,37 +247,47 @@ PY
   created_dropin_identity=$(stat -c '%d:%i:%U:%G:%a' "$DROPIN")
   rm -f -- "$tmp"
   temporary_file=''
+  remote_checkpoint install-dropin-identity
   verify_dropin_identity
   if [ "$dropin_dir_created" = 0 ]; then
     test "$(stat -c '%d:%i:%U:%G:%a' "$DROPIN_DIR")" = "$before_dropin_dir_identity"
   fi
+  remote_checkpoint install-daemon-reload
   sudo -n systemctl daemon-reload
+  remote_checkpoint install-post-verification
   verify_properties "$TARGET_WD"
   verify_dropin_identity
   trap - EXIT
+  remote_checkpoint install-success
   printf '%s\n' VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE
 else
+  remote_checkpoint rollback-scope-preflight
   if [ "$before_wd" != "$TARGET_WD" ] && [ "$before_wd" != "$EXPECTED_WD" ]; then
     rollback_reject
   fi
   if [ -L "$DROPIN_DIR" ]; then
     rollback_reject
   fi
+  remote_checkpoint rollback-dropin-identity
   if ! verify_dropin_identity; then
     rollback_reject
   fi
+  remote_checkpoint rollback-dropin-removal
   if ! sudo -n rm -- "$DROPIN"; then
     rollback_reject
   fi
   if [ -e "$DROPIN" ] || [ -L "$DROPIN" ]; then
     rollback_reject
   fi
+  remote_checkpoint rollback-daemon-reload
   if ! sudo -n systemctl daemon-reload; then
     rollback_reject
   fi
+  remote_checkpoint rollback-post-verification
   if ! verify_properties "$EXPECTED_WD"; then
     rollback_reject
   fi
+  remote_checkpoint rollback-success
   printf '%s\n' VM1_CAPTURE_DROPIN_ROLLBACK_PASS=TRUE
 fi
 '@

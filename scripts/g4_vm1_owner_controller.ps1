@@ -24,7 +24,7 @@ $Retarget = Join-Path $RepositoryRoot 'scripts/g4_retarget_vm1_capture_dropin.ps
 $ExpectedHashes = @{
     'scripts/g4_inspect_vm1_capture.ps1' = 'a237c6e544786db8400506d4c14a7ec385700a6aa90039bf361db631999774ec'
     'scripts/g4_prepare_vm1_release.ps1' = 'e7b800d02a96002959e7aef060d9556d1a150fca8764dae79bed132199a32ff6'
-    'scripts/g4_retarget_vm1_capture_dropin.ps1' = 'e275be2abd363a791ca5c703fa94aad6e0225c80965675b1b3a0a87f6ae99284'
+    'scripts/g4_retarget_vm1_capture_dropin.ps1' = '515600b647bc9ed9a964f5fcdda1058a6464eacb35fc49e621afdf8310e0df33'
 }
 
 $SecurityFields = @(
@@ -60,6 +60,46 @@ function Require-Marker {
     $Normalized = ($Lines -join "`n") -replace "`r`n?", "`n"
     if (-not ($Normalized -match "(?m)^$([regex]::Escape($Marker))$")) {
         throw "Required marker was not observed: $Marker"
+    }
+}
+
+function Invoke-OwnerVisibleCommand {
+    param(
+        [string]$Name,
+        [scriptblock]$Command
+    )
+
+    $Captured = New-Object System.Collections.ArrayList
+    $InvocationError = $null
+    $ExitCode = 0
+    try {
+        & $Command 2>&1 | ForEach-Object {
+            [void]$Captured.Add($_)
+            Write-Host ("[{0}] {1}" -f $Name, $_)
+        }
+        $LastExitCodeValue = Get-Variable -Name LASTEXITCODE -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -ne $LastExitCodeValue) {
+            $ExitCode = [int]$LastExitCodeValue
+        }
+    }
+    catch {
+        $InvocationError = $_
+        [void]$Captured.Add($_)
+        Write-Host ("[{0}] {1}" -f $Name, $_)
+        $LastExitCodeValue = Get-Variable -Name LASTEXITCODE -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -ne $LastExitCodeValue -and [int]$LastExitCodeValue -ne 0) {
+            $ExitCode = [int]$LastExitCodeValue
+        }
+        else {
+            $ExitCode = 1
+        }
+    }
+
+    [pscustomobject]@{
+        Name = $Name
+        Output = [object[]]$Captured.ToArray()
+        ExitCode = $ExitCode
+        Error = $InvocationError
     }
 }
 
@@ -158,11 +198,18 @@ try {
         throw 'VM1 drop-in installation was not approved.'
     }
 
-    $InstallOutput = & $Retarget -Vm1Target $Vm1Target -Install -Execute 2>&1
-    $InstallExit = $LASTEXITCODE
-    Show-Output $InstallOutput
+    Write-Host 'VM1_RETARGET_AUTHENTICATION=INTERACTIVE_SSH_TTY'
+    $InstallResult = Invoke-OwnerVisibleCommand -Name 'VM1 retarget' -Command {
+        & $Retarget -Vm1Target $Vm1Target -Install -Execute
+    }
+    $InstallOutput = @($InstallResult.Output)
+    $InstallExit = $InstallResult.ExitCode
+    Write-Host ("VM1_RETARGET_EXIT_CODE={0}" -f $InstallExit)
+    if ($null -ne $InstallResult.Error) {
+        Write-Host 'VM1_RETARGET_INVOCATION_ERROR=TRUE'
+    }
     if ($InstallExit -ne 0) {
-        throw 'VM1 drop-in installation command failed.'
+        throw ("VM1 drop-in installation command failed with exit code {0}. See VM1 retarget output above." -f $InstallExit)
     }
     Require-Marker $InstallOutput 'VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE'
     Write-Host 'VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE'

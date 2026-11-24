@@ -134,7 +134,7 @@ candidate supplies its actual SID and rule SHA256.
 
 The separate [`g4_retarget_vm1_capture_dropin.ps1`](../scripts/g4_retarget_vm1_capture_dropin.ps1)
 has SHA256
-`e275be2abd363a791ca5c703fa94aad6e0225c80965675b1b3a0a87f6ae99284`.
+`515600b647bc9ed9a964f5fcdda1058a6464eacb35fc49e621afdf8310e0df33`.
 It is plan-only unless the owner supplies `-Install -Execute` or
 `-Rollback -Execute`. Each action uses one owner-visible `ssh -tt` session,
 performs `sudo -v` followed by narrowly scoped `sudo -n` file operations and

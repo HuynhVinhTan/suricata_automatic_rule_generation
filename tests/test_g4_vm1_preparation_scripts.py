@@ -37,6 +37,18 @@ def test_vm1_dropin_workflow_is_guarded_and_only_retargets_working_directory():
     assert 'WorkingDirectory=$RELEASE' in source
     assert "systemctl daemon-reload" in source
     assert "VM1_CAPTURE_DROPIN_ROLLBACK_PASS=TRUE" in source
+    for checkpoint in (
+        "remote_checkpoint preflight-unit-identity",
+        "remote_checkpoint preflight-service-state",
+        "remote_checkpoint preflight-security-properties",
+        "remote_checkpoint install-scope-preflight",
+        "remote_checkpoint install-release-preflight",
+        "remote_checkpoint install-dropin-write",
+        "remote_checkpoint install-daemon-reload",
+        "remote_checkpoint install-post-verification",
+        "VM1_REMOTE_FAILURE_CHECKPOINT=",
+    ):
+        assert checkpoint in source
     for forbidden in ("systemctl start", "systemctl restart", "systemctl enable", "systemctl stop"):
         assert forbidden not in source
 
@@ -77,7 +89,10 @@ def test_vm1_owner_controller_uses_prepare_repository_root_and_requires_all_read
     assert "-replace \"`r`n?\", \"`n\"" in source
     assert "VM1_RELEASE_APPROVE=YES" in source
     assert "VM1_CAPTURE_DROPIN_INSTALL_APPROVE=YES" in source
-    assert "& $Retarget -Vm1Target $Vm1Target -Install -Execute 2>&1" in source
+    assert "Invoke-OwnerVisibleCommand -Name 'VM1 retarget'" in source
+    assert "VM1_RETARGET_AUTHENTICATION=INTERACTIVE_SSH_TTY" in source
+    assert "VM1_RETARGET_EXIT_CODE=" in source
+    assert "VM1_RETARGET_INVOCATION_ERROR=TRUE" in source
     retarget_source = (ROOT / "scripts/g4_retarget_vm1_capture_dropin.ps1").read_text(encoding="utf-8")
     assert "ssh -tt" in retarget_source
     assert "sudo -v" in retarget_source
@@ -180,3 +195,48 @@ def test_retarget_runtime_normalizes_payload_for_install_and_rollback(tmp_path, 
                 f"stdout={result.stdout}\nstderr={result.stderr}"
             )
             assert "sudo -v" in command
+
+
+def test_owner_controller_preserves_native_output_on_success_and_failure():
+    engines = [
+        engine for name in ("powershell", "pwsh")
+        if (engine := shutil.which(name)) is not None
+    ]
+    if not engines:
+        pytest.skip("PowerShell 5.1 and PowerShell 7 are unavailable")
+
+    source = (ROOT / "scripts/g4_vm1_owner_controller.ps1").read_text(encoding="utf-8")
+    start = source.index("function Invoke-OwnerVisibleCommand")
+    end = source.index("function Show-Output")
+    helper = source[start:end]
+    command = helper + r'''
+$success = Invoke-OwnerVisibleCommand -Name 'native-success' -Command {
+    & cmd.exe /c 'echo NATIVE_SUCCESS_STDOUT & echo NATIVE_SUCCESS_STDERR 1>&2 & exit /b 0'
+}
+$failure = Invoke-OwnerVisibleCommand -Name 'native-failure' -Command {
+    & cmd.exe /c 'echo NATIVE_FAILURE_STDOUT & echo NATIVE_FAILURE_STDERR 1>&2 & exit /b 7'
+}
+$throwing = Invoke-OwnerVisibleCommand -Name 'terminating-child' -Command {
+    Write-Output 'BEFORE_TERMINATING_CHILD_ERROR'
+    throw 'TERMINATING_CHILD_ERROR'
+}
+$all = (($success.Output + $failure.Output + $throwing.Output) -join "`n")
+if ($success.ExitCode -ne 0) { exit 1 }
+if ($failure.ExitCode -ne 7) { exit 2 }
+foreach ($text in @('NATIVE_SUCCESS_STDOUT', 'NATIVE_SUCCESS_STDERR', 'NATIVE_FAILURE_STDOUT', 'NATIVE_FAILURE_STDERR', 'BEFORE_TERMINATING_CHILD_ERROR')) {
+    if ($all -notlike "*$text*") { exit 3 }
+}
+if ($success.Error -ne $null -or $failure.Error -ne $null -or $throwing.Error -eq $null) { exit 4 }
+Write-Output 'NATIVE_OUTPUT_PRESERVATION_PASS=TRUE'
+'''
+
+    for engine in engines:
+        result = subprocess.run(
+            [engine, "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{engine}:\nstdout={result.stdout}\nstderr={result.stderr}"
+        assert "NATIVE_OUTPUT_PRESERVATION_PASS=TRUE" in result.stdout
+        assert "[native-success]" in result.stdout
+        assert "[native-failure]" in result.stdout
