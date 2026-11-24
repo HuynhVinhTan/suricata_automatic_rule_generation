@@ -77,7 +77,10 @@ def test_vm1_owner_controller_uses_prepare_repository_root_and_requires_all_read
     assert "-replace \"`r`n?\", \"`n\"" in source
     assert "VM1_RELEASE_APPROVE=YES" in source
     assert "VM1_CAPTURE_DROPIN_INSTALL_APPROVE=YES" in source
-    assert "sudo -v" in (source + (ROOT / "scripts/g4_retarget_vm1_capture_dropin.ps1").read_text(encoding="utf-8"))
+    assert "& $Retarget -Vm1Target $Vm1Target -Install -Execute 2>&1" in source
+    retarget_source = (ROOT / "scripts/g4_retarget_vm1_capture_dropin.ps1").read_text(encoding="utf-8")
+    assert "ssh -tt" in retarget_source
+    assert "sudo -v" in retarget_source
     for marker in (
         "VM1_RELEASE_PASS=TRUE",
         "VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE",
@@ -128,3 +131,52 @@ Write-Output 'EMPTY_OPTIONAL_FIELDS_PASS=TRUE'
     )
     assert result.returncode == 0, result.stderr
     assert "EMPTY_OPTIONAL_FIELDS_PASS=TRUE" in result.stdout
+
+
+@pytest.mark.parametrize("line_ending", ["crlf", "lf"])
+def test_retarget_runtime_normalizes_payload_for_install_and_rollback(tmp_path, line_ending):
+    engines = [
+        engine for name in ("powershell", "pwsh")
+        if (engine := shutil.which(name)) is not None
+    ]
+    if not engines:
+        pytest.skip("PowerShell 5.1 and PowerShell 7 are unavailable")
+
+    source = (ROOT / "scripts/g4_retarget_vm1_capture_dropin.ps1").read_text(
+        encoding="utf-8"
+    )
+    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    newline = "\r\n" if line_ending == "crlf" else "\n"
+    script_path = tmp_path / f"g4-retarget-{line_ending}.ps1"
+    script_path.write_bytes(normalized_source.replace("\n", newline).encode("utf-8"))
+
+    for engine in engines:
+        for action, switch_name in (("install", "Install"), ("rollback", "Rollback")):
+            command = (
+                "$ErrorActionPreference = 'Stop'\n"
+                "$global:DecodedPayload = $null\n"
+                "function global:ssh {\n"
+                "  $argumentList = @($args)\n"
+                "  $command = [string]$argumentList[$argumentList.Count - 1]\n"
+                "  $match = [regex]::Match($command, \"printf %s '([^']+)' \\| base64 -d \\| bash -s --\")\n"
+                "  if (-not $match.Success) { throw 'mock SSH did not receive the encoded Bash payload' }\n"
+                "  $global:DecodedPayload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($match.Groups[1].Value))\n"
+                "  if ($global:DecodedPayload.Contains([char]13)) { throw 'payload retained CR characters' }\n"
+                f"  if (-not $global:DecodedPayload.Contains(\"ACTION='{action}'\")) {{ throw 'wrong action in payload' }}\n"
+                "  if ($command -notmatch 'sudo -v') { throw 'interactive sudo authentication was not requested' }\n"
+                "  $global:LASTEXITCODE = 0\n"
+                "}\n"
+                f"& '{str(script_path).replace(chr(39), chr(39) * 2)}' -{switch_name} "
+                "-Execute -Vm1Target 'mock@vm1'\n"
+                "if ($null -eq $global:DecodedPayload) { throw 'mock SSH was not invoked' }\n"
+            )
+            result = subprocess.run(
+                [engine, "-NoProfile", "-NonInteractive", "-Command", command],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, (
+                f"{engine} {action} {line_ending} failed:\n"
+                f"stdout={result.stdout}\nstderr={result.stderr}"
+            )
+            assert "sudo -v" in command

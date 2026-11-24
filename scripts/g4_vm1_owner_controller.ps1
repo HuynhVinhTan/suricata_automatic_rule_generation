@@ -24,7 +24,7 @@ $Retarget = Join-Path $RepositoryRoot 'scripts/g4_retarget_vm1_capture_dropin.ps
 $ExpectedHashes = @{
     'scripts/g4_inspect_vm1_capture.ps1' = 'a237c6e544786db8400506d4c14a7ec385700a6aa90039bf361db631999774ec'
     'scripts/g4_prepare_vm1_release.ps1' = 'e7b800d02a96002959e7aef060d9556d1a150fca8764dae79bed132199a32ff6'
-    'scripts/g4_retarget_vm1_capture_dropin.ps1' = 'd558d8e1856892eb6f4c14dd86b338318bdb36aea560c705b2e20f0f2b0d9ad6'
+    'scripts/g4_retarget_vm1_capture_dropin.ps1' = 'e275be2abd363a791ca5c703fa94aad6e0225c80965675b1b3a0a87f6ae99284'
 }
 
 $SecurityFields = @(

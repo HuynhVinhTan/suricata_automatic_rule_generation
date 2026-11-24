@@ -274,7 +274,7 @@ if (-not $Execute) {
 }
 
 $payload = Get-Payload -Action $(if ($Install) { 'install' } else { 'rollback' })
-$normalized = $payload.Replace([Environment]::NewLine, [char]10)
+$normalized = $payload -replace "`r`n?", "`n"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
 & ssh -tt -o StrictHostKeyChecking=yes $Vm1Target ("sudo -v && printf %s '{0}' | base64 -d | bash -s --" -f $encoded)
 if ($LASTEXITCODE -ne 0) { throw "VM1 drop-in workflow failed with exit code $LASTEXITCODE." }
