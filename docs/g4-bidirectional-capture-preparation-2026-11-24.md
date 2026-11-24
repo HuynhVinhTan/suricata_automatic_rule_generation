@@ -150,11 +150,11 @@ original working directory and all recorded properties are restored.
 
 ## Offline CI diagnosis
 
-CI run `45310184394` failed because the synthetic attack fixture placed its
-first packet only one second in the future. Foreground authentication and the
-mocked supervisor could legally consume that margin, causing the strict
-verifier to reject metadata that started after the first parsed packet. The
-verifier was not relaxed. The fixture now keeps a 30-second setup margin and
-has a regression assertion requiring at least 20 seconds remaining; strict
-PCAP, manifest, timestamp, tuple, RST, drop and integrity checks remain
-unchanged.
+CI run `45310184394` failed because the synthetic attack fixture was created
+before foreground authentication and mocked supervisor startup, so its
+one-second packet window could race the strict metadata ordering checks. A
+30-second creation-time slack alone is invalid because it puts the generator
+window after the real mocked capture. The test now rebases only intact
+synthetic PCAP/manifest inputs immediately before each mocked launch, while
+leaving intentionally malformed inputs untouched. Strict PCAP, manifest,
+timestamp, tuple, RST, drop and integrity checks remain unchanged.

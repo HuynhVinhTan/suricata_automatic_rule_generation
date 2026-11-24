@@ -152,11 +152,20 @@ time.sleep(float(os.environ.get('FAKE_GENERATOR_SLEEP', '1.6')))
 shutil.copyfile(os.environ['FAKE_MANIFEST'], sys.argv[1])
 raise SystemExit(int(os.environ.get('FAKE_GENERATOR_STATUS', '0')))
 """)
-    return {"root": root, "bin": bin_dir, "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "sudo_log": sudo_log, "script": test_script, "timeout_script": timeout_script, "supervisor": supervisor_copy}
+    return {"root": root, "bin": bin_dir, "fixture_dir": tmp_path / "fixture", "pcap": root / "fixture.pcap", "pid": marker, "auth": auth_log, "sudo_log": sudo_log, "script": test_script, "timeout_script": timeout_script, "supervisor": supervisor_copy}
 
 
 def _run(fixture, name="attack-20261123T000000Z.pcap", **extra):
     script = extra.pop("script", fixture["script"])
+    # Rebase only an intact synthetic fixture immediately before launch. This
+    # keeps strict capture/manifest windows around the mocked process runtime;
+    # deliberately malformed PCAP tests remain untouched.
+    if fixture["pcap"].read_bytes()[:4] == b"\xd4\xc3\xb2\xa1":
+        fresh_pcap, fresh_manifest = write_complete_attack_fixture(
+            fixture["fixture_dir"], base=datetime.now(timezone.utc) + timedelta(seconds=1)
+        )
+        fixture["pcap"].write_bytes(fresh_pcap.read_bytes())
+        (fixture["root"] / "fixture.json").write_text(fresh_manifest.read_text(encoding="utf-8"), encoding="utf-8")
     out = fixture["root"] / "evidence" / name
     manifest = fixture["root"] / "evidence" / "attack.json"
     env = os.environ.copy()

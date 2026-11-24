@@ -24,12 +24,9 @@ def _write_pcap(path, packets):
             stream.write(payload)
 
 
-def write_complete_attack_fixture(directory: Path) -> tuple[Path, Path]:
+def write_complete_attack_fixture(directory: Path, *, base: datetime | None = None) -> tuple[Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
-    # The fixture is created before foreground authentication and mocked
-    # supervisor startup. Keep packet timestamps safely ahead of that setup so
-    # strict metadata ordering checks test evidence, not scheduling jitter.
-    base = datetime.now(timezone.utc) + timedelta(seconds=30)
+    base = base or (datetime.now(timezone.utc) + timedelta(seconds=30))
     attempts = []
     packets = []
     for index, port in enumerate(range(18100, 18124)):
