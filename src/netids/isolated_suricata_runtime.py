@@ -82,7 +82,7 @@ class IsolatedSuricataRuntime:
         normal_pcap: Path, normal_sha256: str, suricata="/usr/bin/suricata",
         suricatasc="/usr/bin/suricatasc", tcpreplay="/usr/bin/tcpreplay",
         candidate_sid: int = SID, candidate_rule_sha256: str = RULE_SHA,
-        root: Path = ROOT,
+        root: Path = ROOT, negative_pcaps=(), negative_sha256s=(),
     ):
         self.root = Path(root)
         self.sid = candidate_sid
@@ -92,6 +92,8 @@ class IsolatedSuricataRuntime:
         self.normal_pcap = Path(normal_pcap)
         self.attack_sha256 = attack_sha256
         self.normal_sha256 = normal_sha256
+        self.negative_pcaps = tuple(Path(path) for path in negative_pcaps)
+        self.negative_sha256s = tuple(negative_sha256s)
         self.suricata = str(suricata)
         self.suricatasc = str(suricatasc)
         self.tcpreplay = str(tcpreplay)
@@ -103,6 +105,7 @@ class IsolatedSuricataRuntime:
         self._old_rules = None
         self._activated = False
         self._last_attack_eve = ""
+        self.probe_results = []
         self._preflight()
 
     def _preflight(self) -> None:
@@ -113,10 +116,14 @@ class IsolatedSuricataRuntime:
         if not Path("/sys/class/net/lo").exists():
             raise IsolatedRuntimeError("Loopback interface is unavailable")
         _config_safe(self.config, self.root)
-        for file, expected in (
+        if len(self.negative_pcaps) != len(self.negative_sha256s):
+            raise IsolatedRuntimeError("Negative-control PCAP/hash counts differ")
+        pinned_pcaps = [
             (self.attack_pcap, self.attack_sha256),
             (self.normal_pcap, self.normal_sha256),
-        ):
+            *zip(self.negative_pcaps, self.negative_sha256s),
+        ]
+        for file, expected in pinned_pcaps:
             if file.is_symlink() or not file.is_file() or sha256_file(file) != expected:
                 raise IsolatedRuntimeError("Pinned replay PCAP is missing or changed")
         for executable in (self.suricata, self.suricatasc, self.tcpreplay):
@@ -216,6 +223,12 @@ class IsolatedSuricataRuntime:
                 and data.get("alert", {}).get("signature_id") == self.sid
             ):
                 found += 1
+        self.probe_results.append({
+            "pcap_sha256": sha256_file(file),
+            "expected_alert": expect_alert,
+            "candidate_alerts": found,
+            "events_seen": len([line for line in events if line.strip()]),
+        })
         if not events:
             return False  # No new EVE events cannot prove the probe reached Suricata.
         if expect_alert:
@@ -275,6 +288,10 @@ class IsolatedSuricataRuntime:
             return (
                 self._pcap_probe(self.attack_pcap, expect_alert=True)
                 and self._pcap_probe(self.normal_pcap, expect_alert=False)
+                and all(
+                    self._pcap_probe(path, expect_alert=False)
+                    for path in self.negative_pcaps
+                )
             )
         except (IsolatedRuntimeError, OSError):
             return False
@@ -298,6 +315,11 @@ class IsolatedSuricataRuntime:
             if not self._rules_loaded(0):
                 return False
             no_sid = self._pcap_probe(self.attack_pcap, expect_alert=False)
+            no_sid = no_sid and self._pcap_probe(self.normal_pcap, expect_alert=False)
+            no_sid = no_sid and all(
+                self._pcap_probe(path, expect_alert=False)
+                for path in self.negative_pcaps
+            )
             self.shutdown()
             return no_sid and self.process.poll() is not None
         except (IsolatedRuntimeError, OSError):

@@ -26,6 +26,9 @@ DOMAINS = frozenset({
     "isolated-replay-v1",
     "isolated-owner-approval-v1",
     "isolated-runtime-v1",
+    "g5-frozen-replay-v1",
+    "g5-frozen-owner-v1",
+    "g5-frozen-runtime-v1",
 })
 _FIELD = "attestation_ed25519"
 _ALGO = "ed25519-v1"

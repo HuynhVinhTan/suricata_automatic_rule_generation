@@ -183,6 +183,7 @@ def verify_frozen_rst_candidate(
         _require(case.get("hybrid_match"), True, "Hybrid evidence match")
 
     holdout = _load(holdout_report_path, "native holdout report")
+    holdout_sha = _sha256(holdout_report_path)
     _require(holdout.get("scope"), "G4_FROZEN_RST_INDEPENDENT_HOLDOUT_NATIVE_REPLAY", "holdout scope")
     _require(holdout.get("sid"), SID, "holdout SID")
     _require(holdout.get("freeze_sha256"), freeze_sha, "holdout freeze SHA256")
@@ -244,12 +245,25 @@ def verify_frozen_rst_candidate(
         "rule_content_sha256": freeze["rule_content_sha256"],
         "freeze_sha256": freeze_sha,
         "cohort_results_sha256": cohort_sha,
+        "native_holdout_report_sha256": holdout_sha,
+        "metadata_sha256": freeze["metadata_sha256"],
+        "development_evidence_sha256": freeze["development_evidence_sha256"],
+        "source_commit": expected_source_commit,
+        "cases": [
+            {
+                key: case[key]
+                for key in ("case", "label", "run_id", "pcap_sha256", "alerts")
+            }
+            for case in holdout_cases.values()
+        ],
         "metrics": metrics,
         "approved": False,
         "deployed": False,
         "bounded_laboratory_signature": True,
         "hybrid_equivalent": False,
         "rule": rule,
+        "rule_content_sha256": metadata["rule_sha256"],
+        "development": development,
         "metadata": metadata,
     }
 

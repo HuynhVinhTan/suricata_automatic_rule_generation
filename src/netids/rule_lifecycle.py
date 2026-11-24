@@ -73,6 +73,8 @@ class RuleLifecycle:
         replay_verification_key: bytes | None = None,
         owner_verification_key: bytes | None = None,
         attestation_mode: str = "ed25519",
+        replay_domain: str = "isolated-replay-v1",
+        owner_domain: str = "isolated-owner-approval-v1",
     ):
         self.audit_path = Path(audit_path)
         raw_root = Path(isolated_root or self.audit_path.parent / "isolated-lab")
@@ -99,6 +101,8 @@ class RuleLifecycle:
         self.attestation_mode = attestation_mode
         self.replay_verification_key = replay_verification_key
         self.owner_verification_key = owner_verification_key
+        self.replay_domain = replay_domain
+        self.owner_domain = owner_domain
         if (
             isinstance(replay_verification_key, bytes)
             and replay_verification_key == owner_verification_key
@@ -212,6 +216,19 @@ class RuleLifecycle:
             expected_id = hashlib.sha256(
                 json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
+        elif candidate.get("schema_version") == "g5_frozen_rst_candidate_v1":
+            identity = {
+                key: candidate.get(key)
+                for key in (
+                    "sid", "rule_file_sha256", "freeze_sha256",
+                    "cohort_results_sha256", "native_holdout_report_sha256",
+                    "baseline_rules_sha256", "baseline_comparison_sha256",
+                    "cohort_cases_sha256",
+                )
+            }
+            expected_id = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
         else:
             expected_id = _sha(f"{candidate['run_id']}:{sid}:{candidate['rule_sha256']}")
         if candidate.get("candidate_id") != expected_id:
@@ -252,7 +269,7 @@ class RuleLifecycle:
         if state == "AWAITING_APPROVAL":
             evidence = candidate.get("validation")
             if not self._verified(
-                evidence, self.replay_verification_key, domain="isolated-replay-v1"
+                evidence, self.replay_verification_key, domain=self.replay_domain
             ):
                 raise LifecycleError("Authenticated replay evidence is required")
         return self._advance(candidate, state)
@@ -285,7 +302,7 @@ class RuleLifecycle:
         ):
             raise LifecycleError("Invalid isolated replay results")
         if not self._verified(
-            evidence, self.replay_verification_key, domain="isolated-replay-v1"
+            evidence, self.replay_verification_key, domain=self.replay_domain
         ):
             raise LifecycleError("Authenticated replay attestation required")
         self._audit("validation_recorded", candidate, attestation_sha256=_sha(_canonical(evidence)))
@@ -324,7 +341,7 @@ class RuleLifecycle:
             raise LifecycleError("Authorization expired, invalid or not yet valid")
         if not self._verified(
             authorization, self.owner_verification_key,
-            domain="isolated-owner-approval-v1",
+            domain=self.owner_domain,
         ):
             raise LifecycleError("Authenticated owner approval required")
 
@@ -379,7 +396,7 @@ class RuleLifecycle:
         )
         if not self._verified(
             candidate.get("validation"), self.replay_verification_key,
-            domain="isolated-replay-v1",
+            domain=self.replay_domain,
         ):
             raise LifecycleError("Replay evidence no longer trusted")
         target = self._target(lab_rules_dir)

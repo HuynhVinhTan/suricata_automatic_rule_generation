@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Run one owner-authorized SID9103005 isolated activation and rollback."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from netids.g5_frozen_candidate import (
+    FROZEN_OWNER_DOMAIN,
+    FROZEN_REPLAY_DOMAIN,
+    FROZEN_RUNTIME_SCHEMA,
+    FrozenCandidateError,
+    verify_frozen_candidate,
+    verify_frozen_owner_authorization,
+    verify_frozen_replay_attestation,
+    verify_frozen_runtime_result,
+)
+from netids.isolated_suricata_runtime import IsolatedSuricataRuntime, VM1_HOST, is_verified_vm1_host
+from netids.lifecycle_ed25519 import sign_record
+from netids.rule_lifecycle import RuleLifecycle
+from scripts.operate_isolated_once import OperationError, _digest, _read_json, _require_candidate_baseline, production_snapshot
+
+
+SID = 9103005
+RUNTIME_ID = "suricata-vm1:isolated-lifecycle-9103005:lo"
+
+
+def _write_exclusive(path, value):
+    if path.exists() or path.is_symlink():
+        raise OperationError("output exists; refusing overwrite")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+
+
+def execute_frozen_once(
+    *, candidate_file, replay_file, owner_file, replay_public_file, owner_public_file,
+    production_yaml, production_rules, isolated_yaml, isolated_root,
+    attack_pcap, attack_sha256, normal_pcap, normal_sha256,
+    negative_pcaps, negative_sha256s, audit_path, failure_path,
+    runtime_private_pem, runtime_private_password,
+):
+    if not is_verified_vm1_host():
+        raise OperationError("owner authorization is only for verified VM1")
+    candidate = _read_json(candidate_file)
+    replay = _read_json(replay_file)
+    owner = _read_json(owner_file)
+    replay_public = Path(replay_public_file).read_bytes()
+    owner_public = Path(owner_public_file).read_bytes()
+    try:
+        verify_frozen_candidate(candidate, candidate.get("baseline_comparison"))
+    except FrozenCandidateError as exc:
+        raise OperationError(str(exc)) from exc
+    if not verify_frozen_replay_attestation(candidate, replay, replay_public):
+        raise OperationError("untrusted or mismatched frozen replay attestation")
+    if not verify_frozen_owner_authorization(candidate, replay, owner, replay_public, owner_public):
+        raise OperationError("untrusted or mismatched frozen owner authorization")
+    if owner.get("runtime_id") != RUNTIME_ID or owner.get("target_vm") != VM1_HOST or owner.get("interface") != "lo":
+        raise OperationError("frozen owner authorization scope mismatch")
+    if Path(audit_path).resolve() != Path(isolated_root).resolve() / "audit" / "owner-once.jsonl":
+        raise OperationError("audit path must be the candidate-specific persistent one-shot ledger")
+    before = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
+    _require_candidate_baseline(candidate, before)
+    lifecycle = None
+    runtime = None
+    started = datetime.now(timezone.utc)
+    try:
+        lifecycle = RuleLifecycle(
+            audit_path, isolated_root=isolated_root,
+            replay_verification_key=replay_public, owner_verification_key=owner_public,
+            attestation_mode="ed25519", replay_domain=FROZEN_REPLAY_DOMAIN,
+            owner_domain=FROZEN_OWNER_DOMAIN,
+        )
+        proposed = lifecycle.create_candidate(candidate)
+        lifecycle.transition(proposed, "VALIDATING")
+        lifecycle.record_validation(proposed, replay)
+        lifecycle.transition(proposed, "AWAITING_APPROVAL")
+        lifecycle.approve(proposed, owner)
+        runtime = IsolatedSuricataRuntime(
+            config=isolated_yaml, attack_pcap=attack_pcap, attack_sha256=attack_sha256,
+            normal_pcap=normal_pcap, normal_sha256=normal_sha256,
+            negative_pcaps=negative_pcaps, negative_sha256s=negative_sha256s,
+            candidate_sid=SID, candidate_rule_sha256=candidate["rule_sha256"],
+            root=isolated_root,
+        )
+        staged = lifecycle.stage(proposed, Path(isolated_root) / "rules", activate=True, runtime=runtime)
+        if staged.get("status") != "active_in_isolated_lab":
+            raise OperationError("candidate did not reach verified active isolated state")
+        lifecycle.rollback(proposed, runtime=runtime)
+        if proposed.get("state") != "ROLLED_BACK":
+            raise OperationError("mandatory rollback was not verified")
+        if (datetime.now(timezone.utc) - started).total_seconds() > 300:
+            raise OperationError("owner-authorized operation exceeded 300 seconds")
+        after = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
+        if before != after:
+            raise OperationError("production before/after state changed")
+        result = {
+            "schema_version": FROZEN_RUNTIME_SCHEMA,
+            "candidate_id": candidate["candidate_id"],
+            "sid": SID,
+            "rule_file_sha256": candidate["rule_file_sha256"],
+            "replay_evidence_sha256": _digest(replay),
+            "owner_authorization_sha256": _digest(owner),
+            "candidate_loaded": True,
+            "attack_replay_passed": True,
+            "normal_replay_passed": True,
+            "negative_control_passed": True,
+            "rollback_verified": True,
+            "post_rollback_verified": True,
+            "child_process_cleanup_verified": runtime.process is not None and runtime.process.poll() is not None,
+            "production_unchanged": True,
+            "probe_results": runtime.probe_results,
+            "production_before": before,
+            "production_after": after,
+            "lifecycle_audit_records": lifecycle.verify_audit(),
+            "outcome": "VERIFIED_ISOLATED_ACTIVATION_AND_ROLLBACK",
+            "approved": False,
+            "deployed": False,
+        }
+        verify_frozen_runtime_result(candidate, replay, result)
+        return sign_record(result, runtime_private_pem, runtime_private_password, domain="g5-frozen-runtime-v1")
+    except Exception as exc:
+        report = {
+            "schema_version": "g5_frozen_runtime_failure_v1",
+            "candidate_id": candidate.get("candidate_id"),
+            "sid": SID,
+            "failure_reason": str(exc),
+            "rollback_verified": False,
+            "production_before": before,
+            "production_unchanged": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _write_exclusive(failure_path, report)
+        raise
+    finally:
+        if runtime is not None:
+            runtime.shutdown()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    paths = (
+        "candidate", "replay", "owner-authorization", "replay-public", "owner-public",
+        "production-yaml", "production-rules", "isolated-yaml", "isolated-root",
+        "attack-pcap", "normal-pcap", "audit-path", "runtime-private",
+        "evidence-output", "failure-output",
+    )
+    for name in paths:
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--attack-sha256", required=True)
+    parser.add_argument("--normal-sha256", required=True)
+    parser.add_argument("--negative-pcap", action="append", type=Path, required=True)
+    parser.add_argument("--negative-sha256", action="append", required=True)
+    args = parser.parse_args(argv)
+    if len(args.negative_pcap) != len(args.negative_sha256):
+        parser.error("each negative-control PCAP needs one SHA256")
+    if args.evidence_output.exists() or args.failure_output.exists():
+        parser.error("evidence/failure output exists; never overwrite")
+    password = getpass.getpass("Runtime encrypted signing key passphrase: ").encode()
+    evidence = execute_frozen_once(
+        candidate_file=args.candidate, replay_file=args.replay,
+        owner_file=args.owner_authorization, replay_public_file=args.replay_public,
+        owner_public_file=args.owner_public, production_yaml=args.production_yaml,
+        production_rules=args.production_rules, isolated_yaml=args.isolated_yaml,
+        isolated_root=args.isolated_root, attack_pcap=args.attack_pcap,
+        attack_sha256=args.attack_sha256, normal_pcap=args.normal_pcap,
+        normal_sha256=args.normal_sha256, negative_pcaps=args.negative_pcap,
+        negative_sha256s=args.negative_sha256, audit_path=args.audit_path,
+        failure_path=args.failure_output, runtime_private_pem=args.runtime_private.read_bytes(),
+        runtime_private_password=password,
+    )
+    _write_exclusive(args.evidence_output, evidence)
+    print(f"Frozen runtime evidence saved: {args.evidence_output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
