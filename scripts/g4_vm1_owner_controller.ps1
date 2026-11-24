@@ -1,5 +1,8 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory=$true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ApprovedHead,
     [string]$RepositoryRoot = 'D:\suricata-ai-project-worktrees\feat-complete-suricata-ai-e2e'
 )
 
@@ -7,7 +10,6 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 $ExpectedBranch = 'feat/complete-suricata-ai-e2e'
-$ApprovedHead = '0878d2f774c96eeb638ba6bd2ad28b15deab2cf2'
 $Vm1Target = 'tanhv@192.168.10.10'
 $ExpectedUnitSha256 = '42e055539653c06646d786ac7a4888d5426d7d7e6fe0eb1e0dcd11bbdc4f25de'
 $OriginalWorkingDirectory = '/home/tanhv/suricata-ai-tools'
@@ -54,7 +56,8 @@ function Require-Marker {
         [string]$Marker
     )
 
-    if (-not (($Lines -join [Environment]::NewLine) -match "(?m)^$([regex]::Escape($Marker))$")) {
+    $Normalized = ($Lines -join "`n") -replace "`r`n?", "`n"
+    if (-not ($Normalized -match "(?m)^$([regex]::Escape($Marker))$")) {
         throw "Required marker was not observed: $Marker"
     }
 }

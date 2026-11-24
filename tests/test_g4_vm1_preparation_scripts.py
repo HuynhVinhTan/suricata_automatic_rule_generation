@@ -63,10 +63,16 @@ def test_vm1_dropin_install_has_creation_tracking_exact_validation_and_failure_r
 def test_vm1_owner_controller_uses_prepare_repository_root_and_requires_all_readiness_markers():
     source = (ROOT / "scripts/g4_vm1_owner_controller.ps1").read_text(encoding="utf-8")
 
+    assert "[Parameter(Mandatory=$true)]" in source
+    assert "[ValidatePattern('^[0-9a-fA-F]{40}$')]" in source
+    assert "$ApprovedHead" in source
+    assert "0878d2f774c96eeb638ba6bd2ad28b15deab2cf2" not in source
     assert "-RepositoryRoot $RepositoryRoot" in source
     assert "$Prepare -Vm1Target $Vm1Target" not in source
+    assert "-replace \"`r`n?\", \"`n\"" in source
     assert "VM1_RELEASE_APPROVE=YES" in source
     assert "VM1_CAPTURE_DROPIN_INSTALL_APPROVE=YES" in source
+    assert "sudo -v" in (source + (ROOT / "scripts/g4_retarget_vm1_capture_dropin.ps1").read_text(encoding="utf-8"))
     for marker in (
         "VM1_RELEASE_PASS=TRUE",
         "VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE",

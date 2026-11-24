@@ -153,10 +153,18 @@ working directory and all recorded properties are restored.
 
 The owner-controlled Windows PowerShell 5.1 controller is
 [`g4_vm1_owner_controller.ps1`](../scripts/g4_vm1_owner_controller.ps1). It
-passes `-RepositoryRoot` to the release-preparation script, uses separate
+requires the independently reviewed exact CI-passed commit SHA externally;
+the controller does not hardcode a moving approved HEAD. Example invocation:
+
+```powershell
+& 'D:\suricata-ai-project-worktrees\feat-complete-suricata-ai-e2e\scripts\g4_vm1_owner_controller.ps1' `
+  -ApprovedHead '<40-character independently reviewed CI-passed commit SHA>'
+```
+
+It passes `-RepositoryRoot` to the release-preparation script, uses separate
 explicit approval prompts for release publication and drop-in installation,
-and emits `VM1_READY_FOR_G4=TRUE` only after the required post-install
-inspection and all readiness markers pass.
+normalizes CRLF marker output, and emits `VM1_READY_FOR_G4=TRUE` only after
+the required post-install inspection and all readiness markers pass.
 
 ## Offline CI diagnosis
 
