@@ -2,207 +2,130 @@
 
 `G4_BIDIRECTIONAL_CAPTURE_PREPARED`
 
-This is offline preparation only. No SSH, sudo, service start, timer change,
-capture, generator traffic, PCAP handoff, worker execution, G5 operation or
-G6 change was performed. The failed capture
-`capture-20261123T230727Z-cdcabc796cfa49f0` and all existing G3/G4 evidence are
-not read-modified-written by this change.
+This remains offline preparation only. No SSH, sudo, service start, capture,
+generator traffic, handoff, inference, G5 or G6 operation was performed. The
+failed capture `capture-20261123T230727Z-cdcabc796cfa49f0` and all G3/G4
+evidence remain untouched.
 
-## Audited data path
+## Audited capture path
 
-The audited path is:
+The reviewed path is VM1 systemd oneshot → `backend.pcap_capture` →
+`backend.pcap_handoff.audit_pcap/bundle` → native manifest/ready marker →
+`verified_bundle/consume` → pipeline/RST evidence → fail-closed Hybrid review.
 
-```text
-VM1 systemd oneshot
-  -> backend/pcap_capture.py
-  -> backend/pcap_handoff.audit_pcap/bundle
-  -> native manifest + ready marker
-  -> backend/pcap_handoff verified_bundle/consume
-  -> src/netids/pipeline.py capture metadata
-  -> src/netids/rst_evidence.py capture_integrity
-  -> src/netids/hybrid_review.py
-```
-
-The previous VM1 filter was one-way and excluded the requested service-port
-allowlist. The prepared filter is exactly:
+The exact bidirectional filter is:
 
 ```text
 tcp and host 192.168.10.20 and host 192.168.10.10 and (port 18080 or portrange 18100-18123)
 ```
 
-It preserves Normal HTTP port `18080`, Attack ports `18100–18123`, VM1
-`ens33`, snaplen `262144`, the 60-second limit and the 64 MiB PCAP limit. The
-`host` terms admit both TCP directions; the port expression applies to either
-source or destination port, so SYN/SYN-ACK/ACK, payload and RST responses are
-eligible without admitting unrelated lab traffic.
+It preserves `ens33`, snaplen `262144`, the 60-second limit, 64 MiB PCAP cap,
+Normal HTTP `18080`, and Attack ports `18100–18123`. It admits both TCP
+directions, including SYN/ACK and RST responses, while restricting traffic to
+the VM1/VM2 endpoints and approved ports.
 
-## Integrity contract
+Successful native sealing records tcpdump's locale-pinned stderr statistics:
+`packets captured`, `packets received by filter`, and `packets dropped by
+kernel`. A structurally audited full-snaplen PCAP yields
+`packet_records_complete=true` and `snaplen_truncated=false`. Missing drop
+statistics remain `capture_drops=null`; malformed/truncated PCAPs are not
+sealed. Any drop, count conflict, truncation or unknown integrity value fails
+fresh G4 acceptance. Historical manifests without these optional fields remain
+readable for preservation but cannot qualify as fresh G4 evidence.
 
-`backend.pcap_capture` now captures tcpdump's locale-pinned stderr summary:
+## Version pins and hashes
 
-```text
-N packets captured
-N packets received by filter
-N packets dropped by kernel
-```
-
-The native manifest records:
-
-```json
-{
-  "interface": "ens33",
-  "bpf_filter": "tcp and host 192.168.10.20 and host 192.168.10.10 and (port 18080 or portrange 18100-18123)",
-  "packet_records_complete": true,
-  "snaplen_truncated": false,
-  "capture_drops": false,
-  "tcpdump_statistics": {
-    "packets_captured": 0,
-    "packets_received_by_filter": 0,
-    "packets_dropped_by_kernel": 0,
-    "status": "verified"
-  }
-}
-```
-
-The counts above are a schema example, not runtime evidence. The actual
-values come from tcpdump and the PCAP audit. If a tcpdump statistic is absent,
-the corresponding evidence remains unverified and `capture_drops` is `null`.
-An audited full-snaplen PCAP is marked `packet_records_complete=true` and
-`snaplen_truncated=false`; malformed or truncated records are not sealed.
-Any kernel drop, truncation, count conflict or incomplete integrity metadata
-prevents a fresh G4 bundle from being accepted. The runtime contract requires
-`true/false/false` and the exact interface/filter before G4 evidence can be
-correlated. Hybrid review remains fail-closed as
-`ambiguous_incomplete_capture` whenever completeness is not proven.
-
-Historical manifests without these optional fields remain verifiable for
-preservation and audit; they do not qualify as fresh G4 acceptance evidence.
-
-## Versioned release pins
-
-The capture and controller preparation is pinned to these independently
-identified releases:
-
-| Host | Release | Path or artifact |
+| Host | Pin | Path/artifact |
 |---|---|---|
-| VM1 `192.168.10.10` | commit `08174bf8a9af83c588b48f1c95f7647c22db5118` | `/home/tanhv/suricata-ai-showcase/releases/08174bf8a9af83c588b48f1c95f7647c22db5118` |
-| VM1 archive | SHA256 `8cc7905d4632c0cbcfdad474f2cc61a2e138c8f46e14771594eb245a18a32005` | exact LF Git archive of the VM1 release commit |
-| VM2 `192.168.10.20` | reviewed release `a8fe3e82e701beafc9e47fb7bc5b45064029f8be` | `/home/kali/suricata-ai-showcase/releases/a8fe3e82e701beafc9e47fb7bc5b45064029f8be/scripts/lab_slow_port_scan.py` |
-| VM3 `192.168.10.30` | deployed commit `04438fd864c4312cb22eaf1ce2560e5bcf86861e` | `/home/tanhv/suricata-ai-showcase/releases/04438fd864c4312cb22eaf1ce2560e5bcf86861e` |
+| VM1 | `08174bf8a9af83c588b48f1c95f7647c22db5118` | `/home/tanhv/suricata-ai-showcase/releases/08174bf8a9af83c588b48f1c95f7647c22db5118` |
+| VM1 archive | `8cc7905d4632c0cbcfdad474f2cc61a2e138c8f46e14771594eb245a18a32005` | exact Git archive SHA256 |
+| VM2 | `a8fe3e82e701beafc9e47fb7bc5b45064029f8be` | reviewed generator release |
+| VM3 | `04438fd864c4312cb22eaf1ce2560e5bcf86861e` | deployed worker release |
 
-The VM2 generator file hash must be read and compared with the already
-approved VM2 release evidence before any future session. It is deliberately
-not invented here. The VM3 release is the user-confirmed `VM3_DEPLOY_PASS`
-release and remains unchanged.
+The existing VM1 unit remains unchanged. Its known working directory
+`/home/tanhv/suricata-ai-tools` does not select the new versioned release.
+Release copying therefore does not authorize capture; the unit must first be
+retargeted under a separate approval after the read-only inspection passes.
 
-The existing VM1 unit was not changed. Its previously observed
-`WorkingDirectory=/home/tanhv/suricata-ai-tools` does not select the new
-versioned release. Therefore extracting the release alone is insufficient:
-the owner must separately reconcile the unit's effective working directory or
-approved versioned wrapper, verify the unit SHA/policy, and only then use the
-controller. This preparation does not authorize or perform that service
-change.
+## Owner-controlled deployment
 
-## Owner-executable VM1 deployment preparation
-
-Run only after the separate runtime authorization covers the release copy. The
-block transfers the exact archive bytes, refuses an existing release, verifies
-the archive and source hashes, and leaves `current` and the systemd unit
-unchanged. It does not start the service.
+The corrected Windows PowerShell 5.1 deployment interface is
+[`g4_prepare_vm1_release.ps1`](../scripts/g4_prepare_vm1_release.ps1):
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$Repo = 'D:\suricata-ai-project-worktrees\feat-complete-suricata-ai-e2e'
-$Commit = '08174bf8a9af83c588b48f1c95f7647c22db5118'
-$ArchiveSha256 = '8cc7905d4632c0cbcfdad474f2cc61a2e138c8f46e14771594eb245a18a32005'
-$Vm1 = 'tanhv@192.168.10.10'
-$Root = '/home/tanhv/suricata-ai-showcase'
-$Release = "$Root/releases/$Commit"
-$Archive = Join-Path ([IO.Path]::GetTempPath()) "suricata-ai-vm1-$Commit.tar"
-
-Set-Location $Repo
-if ((git rev-parse HEAD).Trim() -ne $Commit) { throw 'Controller source is not the pinned VM1 commit.' }
-git archive --format=tar --output=$Archive $Commit
-if ($LASTEXITCODE -ne 0) { throw 'git archive failed.' }
-try {
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant()
-    if ($actual -ne $ArchiveSha256) { throw "VM1 archive SHA256 mismatch: $actual" }
-    & ssh -o BatchMode=yes -o StrictHostKeyChecking=yes $Vm1 "set -eu; test ! -e '$Release'; test -d '$Root/releases'; test -d '$Root'"
-    if ($LASTEXITCODE -ne 0) { throw 'VM1 release preflight failed.' }
-    & scp -B -o BatchMode=yes -o StrictHostKeyChecking=yes $Archive "$Vm1`:/tmp/suricata-ai-vm1-$Commit.tar"
-    if ($LASTEXITCODE -ne 0) { throw 'VM1 archive transfer failed.' }
-    $payload = @'
-set -eu
-ROOT=/home/tanhv/suricata-ai-showcase
-COMMIT=08174bf8a9af83c588b48f1c95f7647c22db5118
-ARCHIVE=/tmp/suricata-ai-vm1-08174bf8a9af83c588b48f1c95f7647c22db5118.tar
-EXPECTED=8cc7905d4632c0cbcfdad474f2cc61a2e138c8f46e14771594eb245a18a32005
-RELEASE="$ROOT/releases/$COMMIT"
-test ! -e "$RELEASE"
-test "$(sha256sum "$ARCHIVE" | awk '{print $1}')" = "$EXPECTED"
-mkdir "$RELEASE"
-tar -xf "$ARCHIVE" -C "$RELEASE"
-test "$(sha256sum "$RELEASE/backend/pcap_capture.py" | awk '{print $1}')" = 1a96c9264ce6c46011149a7adfaad908e06dcbc4cf40b48c2c496cf1933712b3
-test "$(sha256sum "$RELEASE/backend/pcap_handoff.py" | awk '{print $1}')" = 0442e59ddd47b11608bd9ad110d512e6db338fc5a89b5cb93671746ccee153de
-test ! -e "$ROOT/current" || test "$(readlink -f "$ROOT/current")" != "$RELEASE"
-rm -- "$ARCHIVE"
-printf '%s\n' VM1_RELEASE_READY=TRUE
-'@
-    $bytes = [Text.Encoding]::UTF8.GetBytes(($payload -replace "`r`n", "`n"))
-    $encoded = [Convert]::ToBase64String($bytes)
-    & ssh -o BatchMode=yes -o StrictHostKeyChecking=yes $Vm1 "printf %s '$encoded' | base64 -d | bash"
-    if ($LASTEXITCODE -ne 0) { throw 'VM1 release extraction or hash verification failed.' }
-}
-finally {
-    if (Test-Path -LiteralPath $Archive) { Remove-Item -LiteralPath $Archive -Force }
-}
+& 'D:\suricata-ai-project-worktrees\feat-complete-suricata-ai-e2e\scripts\g4_prepare_vm1_release.ps1'
 ```
 
-This block is preparation for the later capture gate. It intentionally does
-not switch `current`, rewrite the unit, reload systemd, or start capture.
+That is plan-only. The owner must explicitly invoke `-Execute` after approving
+the release copy. It:
 
-## Prepared six-session controller contract
+1. requires branch `feat/complete-suricata-ai-e2e`, a HEAD descending from the
+   verified state `624858968e0528c58d6e4284394d0932cf8bd7cb`, and proves the
+   pinned release commit is an ancestor;
+2. archives the pinned ancestor, not HEAD, and checks archive SHA256;
+3. performs a read-only VM1 preflight for root/release collision, unit hash,
+   inactive/dead capture service, and absence of tcpdump;
+4. creates a unique same-filesystem staging directory under
+   `/home/tanhv/suricata-ai-showcase/.runtime-staging/` and transfers the
+   archive unchanged;
+5. rejects archive traversal, partial extraction, symlinked required files and
+   Python SHA256 mismatches;
+6. atomically renames the verified extracted directory into the new versioned
+   release; and
+7. proves the pre-existing `current` pointer, unit SHA256 and service state
+   are unchanged before printing `VM1_RELEASE_PASS=TRUE`.
 
-The offline controller contract is
-`[scripts/runtime_orchestration_contract.py](../scripts/runtime_orchestration_contract.py)`.
-`g4_release_paths()` pins the three versioned roots; the validator binds each
-fresh native capture ID to its distinct generator ID and requires:
+On failure, the new staging directory is reported and no existing release,
+pointer, unit, capture, outbox or historical evidence is modified. The script
+never edits or reloads systemd and never starts capture.
 
-- Attack: 24 distinct destination ports `18100–18123`, interval 2 seconds,
-  timeout 1 second, VM2 source `192.168.10.20` to VM1 `192.168.10.10`.
-- Normal: 22 `/health` requests to `18080` plus exactly two closed controls
-  `18100,18101`, with the reviewed VM1 Normal service start/stop scripts.
-- Every session: a fresh capture ID, fresh generator ID and exclusive output
-  directory; one VM1 60-second capture; one VM2 generator invocation; no retry.
-- Native manifest: exact BPF/interface, packet/SYN counts, timestamp ordering,
-  PCAP/manifest/ready hashes, `packet_records_complete=true`,
-  `snaplen_truncated=false`, `capture_drops=false`, and verified tcpdump
-  statistics.
-- VM3: the actual sealed bundle is verified with `backend.pcap_handoff
-  consume` and the frozen worker is run from the pinned `04438fd...` release
-  with review-only output. `--expected-sha256` alone is not sufficient.
+Prepared script SHA256:
+`5645006ef51c70065f0013ba75ed18e12484b1ba464b90a2942d5e62fca29433`.
 
-For PowerShell-to-Bash transport, use the base64 technique in the deployment
-block: construct the remote script as a single-quoted PowerShell here-string,
-normalize CRLF to LF, base64-encode the bytes, and let the remote shell decode
-and run it. Do not interpolate `$R`, `$O`, `$capture_id`, or literal `|` in an
-unquoted PowerShell here-string. The VM1 readiness script must observe
-`ActiveState=activating`, `SubState=start`, and the exact tcpdump command before
-the VM2 invocation is launched; any readiness, path, hash, timing, drop,
-truncation, tuple, count or worker-integrity failure stops the six-session
-sequence without retry.
+## Separate read-only VM1 inspection
 
-## Evidence required before six-session authorization
+Run the following only as a read-only audit using
+[`g4_inspect_vm1_capture.ps1`](../scripts/g4_inspect_vm1_capture.ps1):
 
-For each of the six sessions, preserve the native capture directory and the
-VM2 generator directory. The acceptance record must contain the native
-capture ID, generator ID, PCAP SHA256, manifest SHA256, ready-marker SHA256,
-generator JSON SHA256, tcpdump statistics, capture drops, packet/SYN counts,
-five-tuples, start/end/sealed timestamps, and the worker's review-only
-summary. The six sessions must have disjoint run identities and provenance.
+```powershell
+& 'D:\suricata-ai-project-worktrees\feat-complete-suricata-ai-e2e\scripts\g4_inspect_vm1_capture.ps1'
+```
 
-No G4 acceptance, candidate approval, SID or rule SHA is asserted by this
-offline preparation. G5 remains deferred until a real accepted candidate
-supplies its actual SID and rule SHA256.
+It reports `systemctl cat`, effective `ExecStart`, pre/post hooks, working
+directory, identity/capability/sandbox properties, unit/drop-in paths, unit
+SHA256, capture service state, resolved source module path and SHA256, current
+pointer, and the current pointer's rollback target. It fails on a symlinked
+unit, unit hash mismatch, unsafe `current`, or unresolved source module. It
+does not call `sudo`, `systemctl start`, `reload`, `enable`, `disable`, or any
+write operation.
 
-`G4_BIDIRECTIONAL_CAPTURE_PREPARED`
+Prepared inspection script SHA256:
+`160c017f0fd3d29f95b414139ce345840934b6a0622d8f76cdba591554af9bf8`.
+
+## Safe retarget plan after release verification
+
+Retargeting is a separate owner-approved operation and is not included in the
+deployment script:
+
+1. Run the read-only inspection and record the exact unit content/hash,
+   effective `ExecStart`, working directory, module path/hash, service state,
+   and rollback target.
+2. Confirm the new release exists and its required hashes match the pinned
+   archive. Confirm `current`, capture root, outbox, timer state and all
+   historical evidence are unchanged.
+3. Prepare a root-owned, mode-`0644` unit change whose only intended delta is
+   the versioned VM1 source path. Do not alter capture limits, interface, BPF,
+   sandboxing or production services.
+4. Independently review the complete unit and its SHA256, then obtain the
+   separate owner authorization for the unit change and `systemctl daemon-reload`.
+5. Before any start, verify the service is inactive/dead, no tcpdump exists,
+   free space remains above the established threshold, and the old unit bytes
+   and rollback target are recorded.
+6. If any check differs, stop. Do not switch `current`, start capture, launch
+   generators, or infer G4 acceptance.
+
+Fresh G4 authorization additionally requires six disjoint capture/generator
+identities, sealed PCAP/manifest/ready hashes, exact five-tuples and timestamps,
+verified `true/false/false` integrity metadata, VM3 `consume` verification, and
+review-only frozen-worker output. G5 remains deferred until an accepted
+candidate supplies its actual SID and rule SHA256.
