@@ -45,6 +45,26 @@ TARGET_WD='__RELEASE__'
 EXPECTED_BPF='__BPF__'
 dropin_created=0
 dropin_dir_created=0
+before_state_ready=0
+temporary_file=''
+created_dropin_identity=''
+created_dropin_dir_identity=''
+before_dropin_dir_identity=''
+before_exec=''
+before_pre=''
+before_post=''
+before_user=''
+before_group=''
+before_caps=''
+before_ambient=''
+before_nnp=''
+before_protect_system=''
+before_protect_home=''
+before_private_tmp=''
+before_families=''
+before_readwrite=''
+before_timeout=''
+before_wd=''
 
 verify_properties() {
   expected_wd=$1
@@ -71,25 +91,60 @@ verify_properties() {
   return "$ok"
 }
 
+verify_dropin_identity() {
+  ok=0
+  test -f "$DROPIN" || ok=1
+  test ! -L "$DROPIN" || ok=1
+  test "$(sha256sum "$DROPIN" | awk '{print $1}')" = "$EXPECTED_DROPIN" || ok=1
+  test "$(stat -c '%U:%G %a' "$DROPIN")" = 'root:root 644' || ok=1
+  return "$ok"
+}
+
+rollback_reject() {
+  printf '%s\n' VM1_CAPTURE_DROPIN_ROLLBACK_PASS=FALSE >&2
+  exit 1
+}
+
+remove_created_dropin() {
+  ok=0
+  test "$dropin_created" = 1 || ok=1
+  test -n "$created_dropin_identity" || ok=1
+  test "$(stat -c '%d:%i:%U:%G:%a' "$DROPIN")" = "$created_dropin_identity" || ok=1
+  verify_dropin_identity || ok=1
+  if [ "$ok" -ne 0 ]; then
+    return 1
+  fi
+  sudo -n rm -- "$DROPIN"
+  test ! -e "$DROPIN"
+  test ! -L "$DROPIN"
+}
+
 rollback_install() {
   status=$?
   set +e
+  rm -f -- "$temporary_file" 2>/dev/null
   if [ "$ACTION" = install ] && [ "$status" -ne 0 ]; then
     rollback_failed=0
     if [ "$dropin_created" = 1 ]; then
-      sudo -n rm -f -- "$DROPIN" || rollback_failed=1
-      sudo -n systemctl daemon-reload || rollback_failed=1
+      if remove_created_dropin; then
+        sudo -n systemctl daemon-reload || rollback_failed=1
+      else
+        rollback_failed=1
+      fi
     fi
     if [ "$dropin_dir_created" = 1 ]; then
-      remaining=$(sudo -n find "$DROPIN_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)
-      if [ -d "$DROPIN_DIR" ] && [ -z "$remaining" ]; then
+      current_dir_identity=$(stat -c '%d:%i:%U:%G:%a' "$DROPIN_DIR" 2>/dev/null)
+      remaining=$(find "$DROPIN_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)
+      if [ -d "$DROPIN_DIR" ] && [ "$current_dir_identity" = "$created_dropin_dir_identity" ] && [ -z "$remaining" ]; then
         sudo -n rmdir -- "$DROPIN_DIR" || rollback_failed=1
       else
         rollback_failed=1
       fi
     fi
     if [ -e "$DROPIN" ] || [ -L "$DROPIN" ]; then rollback_failed=1; fi
-    verify_properties "$EXPECTED_WD" || rollback_failed=1
+    if [ "$before_state_ready" = 1 ]; then
+      verify_properties "$EXPECTED_WD" || rollback_failed=1
+    fi
     if [ "$rollback_failed" = 0 ]; then
       printf '%s\n' VM1_CAPTURE_DROPIN_ROLLBACK_PASS=TRUE
     else
@@ -124,6 +179,7 @@ before_families=$(systemctl show -p RestrictAddressFamilies --value "$SERVICE")
 before_readwrite=$(systemctl show -p ReadWritePaths --value "$SERVICE")
 before_timeout=$(systemctl show -p TimeoutStartUSec --value "$SERVICE")
 before_wd=$(systemctl show -p WorkingDirectory --value "$SERVICE")
+before_state_ready=1
 
 if [ "$ACTION" = install ]; then
   test -z "$(systemctl show -p DropInPaths --value "$SERVICE")"
@@ -152,41 +208,59 @@ PY
 
   test ! -e "$DROPIN"
   test ! -L "$DROPIN"
+  if [ -L "$DROPIN_DIR" ]; then exit 1; fi
   if [ -e "$DROPIN_DIR" ]; then
-    test ! -L "$DROPIN_DIR"
+    test -d "$DROPIN_DIR"
+    before_dropin_dir_identity=$(stat -c '%d:%i:%U:%G:%a' "$DROPIN_DIR")
   else
     dropin_dir_created=1
   fi
   tmp=$(mktemp)
+  temporary_file=$tmp
   umask 022
   printf '%s\n' '[Service]' "WorkingDirectory=$RELEASE" > "$tmp"
   chmod 0644 "$tmp"
-  sudo -n install -d -o root -g root -m 0755 "$DROPIN_DIR"
+  if [ "$dropin_dir_created" = 1 ]; then
+    sudo -n install -d -o root -g root -m 0755 "$DROPIN_DIR"
+    created_dropin_dir_identity=$(stat -c '%d:%i:%U:%G:%a' "$DROPIN_DIR")
+    test "$(stat -c '%U:%G %a' "$DROPIN_DIR")" = 'root:root 755'
+  fi
   sudo -n install -o root -g root -m 0644 "$tmp" "$DROPIN"
   dropin_created=1
+  created_dropin_identity=$(stat -c '%d:%i:%U:%G:%a' "$DROPIN")
   rm -f -- "$tmp"
-  test "$(sha256sum "$DROPIN" | awk '{print $1}')" = "$EXPECTED_DROPIN"
-  test "$(stat -c '%U:%G %a' "$DROPIN")" = 'root:root 644'
+  temporary_file=''
+  verify_dropin_identity
+  if [ "$dropin_dir_created" = 0 ]; then
+    test "$(stat -c '%d:%i:%U:%G:%a' "$DROPIN_DIR")" = "$before_dropin_dir_identity"
+  fi
   sudo -n systemctl daemon-reload
   verify_properties "$TARGET_WD"
-  test "$(sha256sum "$DROPIN" | awk '{print $1}')" = "$EXPECTED_DROPIN"
-  test "$(stat -c '%U:%G %a' "$DROPIN")" = 'root:root 644'
+  verify_dropin_identity
   trap - EXIT
   printf '%s\n' VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE
 else
-  test "$before_wd" = "$TARGET_WD"
-  test -f "$DROPIN"
-  test ! -L "$DROPIN"
-  test "$(sha256sum "$DROPIN" | awk '{print $1}')" = "$EXPECTED_DROPIN"
-  test "$(stat -c '%U:%G %a' "$DROPIN")" = 'root:root 644'
-  sudo -n rm -- "$DROPIN"
-  if [ -d "$DROPIN_DIR" ] && [ -z "$(sudo -n find "$DROPIN_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    sudo -n rmdir -- "$DROPIN_DIR"
+  if [ "$before_wd" != "$TARGET_WD" ] && [ "$before_wd" != "$EXPECTED_WD" ]; then
+    rollback_reject
   fi
-  sudo -n systemctl daemon-reload
-  test ! -e "$DROPIN"
-  test ! -L "$DROPIN"
-  verify_properties "$EXPECTED_WD"
+  if [ -L "$DROPIN_DIR" ]; then
+    rollback_reject
+  fi
+  if ! verify_dropin_identity; then
+    rollback_reject
+  fi
+  if ! sudo -n rm -- "$DROPIN"; then
+    rollback_reject
+  fi
+  if [ -e "$DROPIN" ] || [ -L "$DROPIN" ]; then
+    rollback_reject
+  fi
+  if ! sudo -n systemctl daemon-reload; then
+    rollback_reject
+  fi
+  if ! verify_properties "$EXPECTED_WD"; then
+    rollback_reject
+  fi
   printf '%s\n' VM1_CAPTURE_DROPIN_ROLLBACK_PASS=TRUE
 fi
 '@
@@ -200,7 +274,7 @@ if (-not $Execute) {
 }
 
 $payload = Get-Payload -Action $(if ($Install) { 'install' } else { 'rollback' })
-$normalized = $payload -replace "`r`n", "`n"
+$normalized = $payload.Replace([Environment]::NewLine, [char]10)
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
 & ssh -tt -o StrictHostKeyChecking=yes $Vm1Target ("sudo -v && printf %s '{0}' | base64 -d | bash -s --" -f $encoded)
 if ($LASTEXITCODE -ne 0) { throw "VM1 drop-in workflow failed with exit code $LASTEXITCODE." }

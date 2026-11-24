@@ -1,0 +1,188 @@
+[CmdletBinding()]
+param(
+    [string]$RepositoryRoot = 'D:\suricata-ai-project-worktrees\feat-complete-suricata-ai-e2e'
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2.0
+
+$ExpectedBranch = 'feat/complete-suricata-ai-e2e'
+$ApprovedHead = '0878d2f774c96eeb638ba6bd2ad28b15deab2cf2'
+$Vm1Target = 'tanhv@192.168.10.10'
+$ExpectedUnitSha256 = '42e055539653c06646d786ac7a4888d5426d7d7e6fe0eb1e0dcd11bbdc4f25de'
+$OriginalWorkingDirectory = '/home/tanhv/suricata-ai-tools'
+$TargetWorkingDirectory = '/home/tanhv/suricata-ai-showcase/releases/08174bf8a9af83c588b48f1c95f7647c22db5118'
+$ExpectedCaptureSha256 = '1a96c9264ce6c46011149a7adfaad908e06dcbc4cf40b48c2c496cf1933712b3'
+
+$Prepare = Join-Path $RepositoryRoot 'scripts/g4_prepare_vm1_release.ps1'
+$Inspect = Join-Path $RepositoryRoot 'scripts/g4_inspect_vm1_capture.ps1'
+$Retarget = Join-Path $RepositoryRoot 'scripts/g4_retarget_vm1_capture_dropin.ps1'
+
+$ExpectedHashes = @{
+    'scripts/g4_inspect_vm1_capture.ps1' = '42e7357a8bac3d01b327fa3bfb27e80ef7f3568c6a54a0a293069062dd6ccc78'
+    'scripts/g4_prepare_vm1_release.ps1' = 'e7b800d02a96002959e7aef060d9556d1a150fca8764dae79bed132199a32ff6'
+    'scripts/g4_retarget_vm1_capture_dropin.ps1' = 'd558d8e1856892eb6f4c14dd86b338318bdb36aea560c705b2e20f0f2b0d9ad6'
+}
+
+$SecurityFields = @(
+    'ExecStart', 'ExecStartPre', 'ExecStartPost', 'User', 'Group',
+    'CapabilityBoundingSet', 'AmbientCapabilities', 'NoNewPrivileges',
+    'ProtectSystem', 'ProtectHome', 'PrivateTmp',
+    'RestrictAddressFamilies', 'TimeoutStartUSec', 'FragmentPath'
+)
+
+function Get-ReportField {
+    param(
+        [object[]]$Lines,
+        [string]$Name
+    )
+
+    $Prefix = "$Name="
+    foreach ($Line in $Lines) {
+        $Text = [string]$Line
+        if ($Text.StartsWith($Prefix)) {
+            return $Text.Substring($Prefix.Length)
+        }
+    }
+
+    throw "Missing inspection field: $Name"
+}
+
+function Require-Marker {
+    param(
+        [object[]]$Lines,
+        [string]$Marker
+    )
+
+    if (-not (($Lines -join [Environment]::NewLine) -match "(?m)^$([regex]::Escape($Marker))$")) {
+        throw "Required marker was not observed: $Marker"
+    }
+}
+
+function Show-Output {
+    param([object[]]$Lines)
+    $Lines | ForEach-Object { Write-Host $_ }
+}
+
+Push-Location $RepositoryRoot
+try {
+    if ((git branch --show-current) -ne $ExpectedBranch) {
+        throw "Wrong repository branch."
+    }
+    if ((git rev-parse HEAD) -ne $ApprovedHead) {
+        throw "HEAD is not the approved controller commit."
+    }
+
+    git status --short | Write-Host
+
+    foreach ($RelativePath in $ExpectedHashes.Keys) {
+        $ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepositoryRoot $RelativePath)).Hash.ToLowerInvariant()
+        if ($ActualHash -ne $ExpectedHashes[$RelativePath]) {
+            throw "Script hash mismatch: $RelativePath"
+        }
+    }
+
+    $PlanOutput = & $Prepare -RepositoryRoot $RepositoryRoot 2>&1
+    $PlanExit = $LASTEXITCODE
+    Show-Output $PlanOutput
+    if ($PlanExit -ne 0) {
+        throw 'VM1 release plan failed.'
+    }
+
+    if ((Read-Host 'Type VM1_RELEASE_APPROVE=YES to publish the prepared release') -ne 'YES') {
+        throw 'VM1 release publication was not approved.'
+    }
+
+    $ReleaseOutput = & $Prepare -RepositoryRoot $RepositoryRoot -Execute 2>&1
+    $ReleaseExit = $LASTEXITCODE
+    Show-Output $ReleaseOutput
+    if ($ReleaseExit -ne 0) {
+        throw 'VM1 release publication command failed.'
+    }
+    Require-Marker $ReleaseOutput 'VM1_RELEASE_PASS=TRUE'
+    Write-Host 'VM1_RELEASE_PASS=TRUE'
+
+    $BeforeOutput = & $Inspect -Vm1Target $Vm1Target 2>&1
+    $BeforeExit = $LASTEXITCODE
+    Show-Output $BeforeOutput
+    if ($BeforeExit -ne 0) {
+        throw 'Pre-install VM1 inspection failed.'
+    }
+
+    if ((Get-ReportField $BeforeOutput 'unit_sha256') -ne $ExpectedUnitSha256) {
+        throw 'Original unit hash mismatch.'
+    }
+    if ((Get-ReportField $BeforeOutput 'effective_working_directory') -ne $OriginalWorkingDirectory) {
+        throw 'Original WorkingDirectory mismatch.'
+    }
+    if ((Get-ReportField $BeforeOutput 'DropInPaths') -ne '') {
+        throw 'Unexpected pre-existing drop-in.'
+    }
+    if ((Get-ReportField $BeforeOutput 'capture_active_state') -ne 'inactive' -or
+        (Get-ReportField $BeforeOutput 'capture_sub_state') -ne 'dead') {
+        throw 'Capture service is not inactive/dead.'
+    }
+    if ((Get-ReportField $BeforeOutput 'tcpdump_process') -ne 'absent') {
+        throw 'tcpdump is running.'
+    }
+
+    $BeforeCurrentTarget = Get-ReportField $BeforeOutput 'current_target'
+    $BeforeSecurity = @{}
+    foreach ($Field in $SecurityFields) {
+        $BeforeSecurity[$Field] = Get-ReportField $BeforeOutput $Field
+    }
+
+    if ((Read-Host 'Type VM1_CAPTURE_DROPIN_INSTALL_APPROVE=YES to install the reviewed drop-in') -ne 'YES') {
+        throw 'VM1 drop-in installation was not approved.'
+    }
+
+    $InstallOutput = & $Retarget -Vm1Target $Vm1Target -Install -Execute 2>&1
+    $InstallExit = $LASTEXITCODE
+    Show-Output $InstallOutput
+    if ($InstallExit -ne 0) {
+        throw 'VM1 drop-in installation command failed.'
+    }
+    Require-Marker $InstallOutput 'VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE'
+    Write-Host 'VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE'
+
+    $AfterOutput = & $Inspect -Vm1Target $Vm1Target 2>&1
+    $AfterExit = $LASTEXITCODE
+    Show-Output $AfterOutput
+    if ($AfterExit -ne 0) {
+        throw 'Post-install VM1 inspection failed.'
+    }
+
+    if ((Get-ReportField $AfterOutput 'unit_sha256') -ne $ExpectedUnitSha256) {
+        throw 'Original unit changed.'
+    }
+    if ((Get-ReportField $AfterOutput 'current_target') -ne $BeforeCurrentTarget) {
+        throw 'Current pointer changed.'
+    }
+    if ((Get-ReportField $AfterOutput 'effective_working_directory') -ne $TargetWorkingDirectory) {
+        throw 'Effective WorkingDirectory does not target the approved release.'
+    }
+    if ((Get-ReportField $AfterOutput 'source_module_path') -ne "$TargetWorkingDirectory/backend/pcap_capture.py") {
+        throw 'Effective module path mismatch.'
+    }
+    if ((Get-ReportField $AfterOutput 'source_module_sha256') -ne $ExpectedCaptureSha256) {
+        throw 'Effective module hash mismatch.'
+    }
+    if ((Get-ReportField $AfterOutput 'capture_active_state') -ne 'inactive' -or
+        (Get-ReportField $AfterOutput 'capture_sub_state') -ne 'dead' -or
+        (Get-ReportField $AfterOutput 'tcpdump_process') -ne 'absent') {
+        throw 'Post-install service state is unsafe.'
+    }
+
+    foreach ($Field in $SecurityFields) {
+        if ((Get-ReportField $AfterOutput $Field) -ne $BeforeSecurity[$Field]) {
+            throw "Security property changed: $Field"
+        }
+    }
+
+    Write-Host 'VM1_EFFECTIVE_MODULE_PASS=TRUE'
+    Write-Host 'VM1_SECURITY_PROPERTIES_UNCHANGED=TRUE'
+    Write-Host 'VM1_READY_FOR_G4=TRUE'
+}
+finally {
+    Pop-Location
+}

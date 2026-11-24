@@ -134,7 +134,7 @@ candidate supplies its actual SID and rule SHA256.
 
 The separate [`g4_retarget_vm1_capture_dropin.ps1`](../scripts/g4_retarget_vm1_capture_dropin.ps1)
 has SHA256
-`8768c7b333c35bf1af5e283232fbc1ced1ae6679fc508928c6fbba2cdd2ffcd3`.
+`d558d8e1856892eb6f4c14dd86b338318bdb36aea560c705b2e20f0f2b0d9ad6`.
 It is plan-only unless the owner supplies `-Install -Execute` or
 `-Rollback -Execute`. Each action uses one owner-visible `ssh -tt` session,
 performs `sudo -v` followed by narrowly scoped `sudo -n` file operations and
@@ -150,6 +150,13 @@ prints an explicit rollback pass/fail marker. Rollback validates and removes
 only that exact drop-in without depending on the new release being available,
 preserves unrelated drop-ins, reloads systemd, and proves the original
 working directory and all recorded properties are restored.
+
+The owner-controlled Windows PowerShell 5.1 controller is
+[`g4_vm1_owner_controller.ps1`](../scripts/g4_vm1_owner_controller.ps1). It
+passes `-RepositoryRoot` to the release-preparation script, uses separate
+explicit approval prompts for release publication and drop-in installation,
+and emits `VM1_READY_FOR_G4=TRUE` only after the required post-install
+inspection and all readiness markers pass.
 
 ## Offline CI diagnosis
 

@@ -58,3 +58,22 @@ def test_vm1_dropin_install_has_creation_tracking_exact_validation_and_failure_r
     assert "stat -c '%U:%G %a' \"$DROPIN\"" in source
     assert 'if [ "$ACTION" = install ]; then' in source
     assert source.index('if [ "$ACTION" = install ]; then') < source.index('test -d "$RELEASE"')
+
+
+def test_vm1_owner_controller_uses_prepare_repository_root_and_requires_all_readiness_markers():
+    source = (ROOT / "scripts/g4_vm1_owner_controller.ps1").read_text(encoding="utf-8")
+
+    assert "-RepositoryRoot $RepositoryRoot" in source
+    assert "$Prepare -Vm1Target $Vm1Target" not in source
+    assert "VM1_RELEASE_APPROVE=YES" in source
+    assert "VM1_CAPTURE_DROPIN_INSTALL_APPROVE=YES" in source
+    for marker in (
+        "VM1_RELEASE_PASS=TRUE",
+        "VM1_CAPTURE_DROPIN_INSTALL_PASS=TRUE",
+        "VM1_EFFECTIVE_MODULE_PASS=TRUE",
+        "VM1_SECURITY_PROPERTIES_UNCHANGED=TRUE",
+        "VM1_READY_FOR_G4=TRUE",
+    ):
+        assert marker in source
+    assert "VM1_READY_FOR_G4=TRUE" in source
+    assert source.index("VM1_EFFECTIVE_MODULE_PASS=TRUE") < source.index("VM1_READY_FOR_G4=TRUE")
