@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 
 from netids.g5_frozen_candidate import sign_frozen_replay_attestation, verify_frozen_candidate
+from netids.key_pins import require_pinned_replay_key
+from netids.lifecycle_ed25519 import private_key_matches_public
 
 
 def _write_exclusive(path, value):
@@ -34,14 +36,19 @@ def main(argv=None):
         candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
         evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
         verify_frozen_candidate(candidate, candidate.get("baseline_comparison"))
+        replay_public = args.replay_public.read_bytes()
+        require_pinned_replay_key(replay_public)
         if evidence.get("cohort_cases") != candidate.get("cohort_cases"):
             raise ValueError("runtime evidence does not bind the exact six-case cohort")
-        for key in ("candidate_id", "sid", "rule_file_sha256", "freeze_sha256", "cohort_results_sha256", "baseline_rules_sha256"):
+        for key in ("candidate_id", "run_id", "sid", "rule_sha256", "rule_file_sha256", "freeze_sha256", "cohort_results_sha256", "native_holdout_report_sha256", "cohort_cases_sha256", "baseline_rules_sha256"):
             if evidence.get(key) != candidate.get(key):
                 raise ValueError(f"runtime evidence mismatch: {key}")
         password = getpass.getpass("Replay encrypted signing key passphrase: ").encode()
+        replay_private = args.replay_private.read_bytes()
+        if not private_key_matches_public(replay_private, password, replay_public):
+            raise ValueError("replay private key does not match the pinned public key")
         signed = sign_frozen_replay_attestation(
-            candidate, evidence, args.replay_private.read_bytes(), password
+            candidate, evidence, replay_private, password
         )
         _write_exclusive(args.output, signed)
     except (OSError, ValueError, json.JSONDecodeError) as exc:

@@ -9,6 +9,7 @@ import secrets
 from pathlib import Path
 
 from netids.g5_frozen_candidate import build_frozen_owner_authorization, verify_frozen_candidate
+from netids.lifecycle_ed25519 import public_key_fingerprint
 
 
 PROMPT = "AUTHORIZE FROZEN SID9103005 ISOLATED ACTIVATION ONE TIME AND ROLLBACK"
@@ -31,6 +32,7 @@ def main(argv=None):
     parser.add_argument("--replay-public", type=Path, required=True)
     parser.add_argument("--owner-private", type=Path, required=True)
     parser.add_argument("--owner-public", type=Path, required=True)
+    parser.add_argument("--runtime-public", type=Path, required=True)
     parser.add_argument("--isolated-root", required=True)
     parser.add_argument("--runtime-id", required=True)
     parser.add_argument("--target-vm", required=True)
@@ -51,6 +53,7 @@ def main(argv=None):
         print(f"Freeze SHA256: {candidate['freeze_sha256']}")
         print(f"Cohort SHA256: {candidate['cohort_results_sha256']}")
         print(f"Baseline rules SHA256: {candidate['baseline_rules_sha256']}")
+        print(f"Runtime signer SHA256: {public_key_fingerprint(args.runtime_public.read_bytes())}")
         print(f"Runtime: {args.runtime_id}; target: {args.target_vm}; interface: {args.interface}")
         print("Mandatory rollback: yes; maximum activation window: 300 seconds")
         print("No production activation is authorized; candidate remains review-only.")
@@ -60,7 +63,8 @@ def main(argv=None):
         authorization = build_frozen_owner_authorization(
             candidate, replay, replay_public_pem=replay_public,
             owner_private_pem=args.owner_private.read_bytes(), owner_private_password=password,
-            owner_public_pem=owner_public, approver_identity=args.approver_identity,
+            owner_public_pem=owner_public, runtime_public_pem=args.runtime_public.read_bytes(),
+            approver_identity=args.approver_identity,
             isolated_root=args.isolated_root, runtime_id=args.runtime_id,
             target_vm=args.target_vm, interface=args.interface, nonce=secrets.token_hex(16),
         )

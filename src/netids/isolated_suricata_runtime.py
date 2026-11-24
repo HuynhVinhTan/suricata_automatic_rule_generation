@@ -52,7 +52,12 @@ class IsolatedRuntimeError(RuntimeError):
     pass
 
 
-def _run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
+def _run(argv: list[str], *, timeout: int = 60, deadline_monotonic=None) -> subprocess.CompletedProcess:
+    if deadline_monotonic is not None:
+        remaining = deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise IsolatedRuntimeError("Isolated runtime deadline exceeded")
+        timeout = min(timeout, max(1, int(remaining)))
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -82,7 +87,8 @@ class IsolatedSuricataRuntime:
         normal_pcap: Path, normal_sha256: str, suricata="/usr/bin/suricata",
         suricatasc="/usr/bin/suricatasc", tcpreplay="/usr/bin/tcpreplay",
         candidate_sid: int = SID, candidate_rule_sha256: str = RULE_SHA,
-        root: Path = ROOT, negative_pcaps=(), negative_sha256s=(),
+        root: Path = ROOT, negative_pcaps=(), negative_sha256s=(), probe_plan=(),
+        deadline_monotonic=None,
     ):
         self.root = Path(root)
         self.sid = candidate_sid
@@ -94,6 +100,8 @@ class IsolatedSuricataRuntime:
         self.normal_sha256 = normal_sha256
         self.negative_pcaps = tuple(Path(path) for path in negative_pcaps)
         self.negative_sha256s = tuple(negative_sha256s)
+        self.probe_plan = tuple(dict(probe) for probe in probe_plan)
+        self.deadline_monotonic = deadline_monotonic
         self.suricata = str(suricata)
         self.suricatasc = str(suricatasc)
         self.tcpreplay = str(tcpreplay)
@@ -107,6 +115,10 @@ class IsolatedSuricataRuntime:
         self._last_attack_eve = ""
         self.probe_results = []
         self._preflight()
+
+    def _check_deadline(self):
+        if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
+            raise IsolatedRuntimeError("Isolated runtime deadline exceeded")
 
     def _preflight(self) -> None:
         if not is_verified_vm1_host():
@@ -123,13 +135,17 @@ class IsolatedSuricataRuntime:
             (self.normal_pcap, self.normal_sha256),
             *zip(self.negative_pcaps, self.negative_sha256s),
         ]
+        for probe in self.probe_plan:
+            if not isinstance(probe.get("case"), str) or probe.get("label") not in ("ATTACK", "NORMAL"):
+                raise IsolatedRuntimeError("Invalid signed probe plan")
+            pinned_pcaps.append((Path(probe["path"]), probe.get("pcap_sha256")))
         for file, expected in pinned_pcaps:
             if file.is_symlink() or not file.is_file() or sha256_file(file) != expected:
                 raise IsolatedRuntimeError("Pinned replay PCAP is missing or changed")
         for executable in (self.suricata, self.suricatasc, self.tcpreplay):
             if not Path(executable).is_file():
                 raise IsolatedRuntimeError("Required preinstalled tool not available")
-        version = _run([self.suricata, "-V"], timeout=20).stdout
+        version = _run([self.suricata, "-V"], timeout=20, deadline_monotonic=self.deadline_monotonic).stdout
         if "8.0.3" not in version:
             raise IsolatedRuntimeError("Suricata 8.0.3 is required")
         if self.socket_path.exists() or self.pidfile.exists():
@@ -142,9 +158,10 @@ class IsolatedSuricataRuntime:
             raise IsolatedRuntimeError("Unexpected existing isolated ruleset; refuse overwrite")
 
     def _command(self, command: str) -> object:
+        self._check_deadline()
         result = _run([
             self.suricatasc, "-c", command, str(self.socket_path)
-        ], timeout=75)
+        ], timeout=75, deadline_monotonic=self.deadline_monotonic)
         try:
             output = json.loads(result.stdout)
         except ValueError as exc:
@@ -166,6 +183,7 @@ class IsolatedSuricataRuntime:
         )
 
     def _start(self) -> None:
+        self._check_deadline()
         if self.process is not None:
             raise IsolatedRuntimeError("Isolated daemon already owned")
         self._old_rules = b"# no active candidate rules in this isolated test\n"
@@ -181,6 +199,7 @@ class IsolatedSuricataRuntime:
             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
         )
         for _ in range(40):
+            self._check_deadline()
             if self.process.poll() is not None:
                 raise IsolatedRuntimeError("Isolated Suricata exited during startup")
             if self.socket_path.exists():
@@ -198,13 +217,21 @@ class IsolatedSuricataRuntime:
             time.sleep(0.25)
         raise IsolatedRuntimeError("Isolated UNIX socket was not ready")
 
-    def _pcap_probe(self, file: Path, *, expect_alert: bool) -> bool:
+    def _pcap_probe(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
+        self._check_deadline()
         eve = self.logdir / "eve.json"
         offset = eve.stat().st_size if eve.exists() else 0
         _run([
             self.tcpreplay, "--intf1=lo", "--pps=150", str(file),
-        ], timeout=180)
-        time.sleep(2)
+        ], timeout=180, deadline_monotonic=self.deadline_monotonic)
+        if self.deadline_monotonic is None:
+            time.sleep(2)
+        else:
+            remaining = self.deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise IsolatedRuntimeError("Isolated runtime deadline exceeded")
+            time.sleep(min(2, remaining))
+        self._check_deadline()
         if not eve.is_file():
             return False
         with eve.open("rb") as reader:
@@ -224,6 +251,10 @@ class IsolatedSuricataRuntime:
             ):
                 found += 1
         self.probe_results.append({
+            "case": case,
+            "label": label,
+            "scenario": scenario,
+            "phase": phase,
             "pcap_sha256": sha256_file(file),
             "expected_alert": expect_alert,
             "candidate_alerts": found,
@@ -237,6 +268,7 @@ class IsolatedSuricataRuntime:
         return found == 0
 
     def validate(self, rule: str) -> bool:
+        self._check_deadline()
         if not rule.startswith("alert tcp ") or "\n" in rule or "\r" in rule:
             return False
         if sha256_file(self.attack_pcap) != self.attack_sha256:
@@ -251,7 +283,7 @@ class IsolatedSuricataRuntime:
                 self.suricata, "-T", "--init-errors-fatal",
                 "-c", str(self.config), "-S", str(temporary),
                 "-l", str(self.logdir),
-            ], timeout=120)
+            ], timeout=120, deadline_monotonic=self.deadline_monotonic)
             return result.returncode == 0
         except IsolatedRuntimeError:
             return False
@@ -285,6 +317,16 @@ class IsolatedSuricataRuntime:
         try:
             if not self._rules_loaded(1):
                 return False
+            if self.probe_plan:
+                return all(
+                    self._pcap_probe(
+                        Path(probe["path"]),
+                        expect_alert=probe["label"] == "ATTACK",
+                        case=probe["case"], label=probe["label"],
+                        scenario=probe.get("scenario"), phase="active",
+                    )
+                    for probe in self.probe_plan
+                )
             return (
                 self._pcap_probe(self.attack_pcap, expect_alert=True)
                 and self._pcap_probe(self.normal_pcap, expect_alert=False)
@@ -314,6 +356,17 @@ class IsolatedSuricataRuntime:
                 return False
             if not self._rules_loaded(0):
                 return False
+            if self.probe_plan:
+                no_sid = all(
+                    self._pcap_probe(
+                        Path(probe["path"]), expect_alert=False,
+                        case=probe["case"], label=probe["label"],
+                        scenario=probe.get("scenario"), phase="rollback",
+                    )
+                    for probe in self.probe_plan
+                )
+                self.shutdown()
+                return no_sid and self.process.poll() is not None
             no_sid = self._pcap_probe(self.attack_pcap, expect_alert=False)
             no_sid = no_sid and self._pcap_probe(self.normal_pcap, expect_alert=False)
             no_sid = no_sid and all(

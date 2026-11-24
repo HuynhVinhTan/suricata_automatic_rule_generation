@@ -57,7 +57,34 @@ The output must report `schema_version=g5_frozen_rst_candidate_v1`,
 With the supplied baseline comparison bytes, the expected candidate ID is
 `bfd6891a14dd3e648737e0a43d20f602d160085cefc92aa5f7fcfa8d32e0f1f6`.
 
-## 2. Independent signed replay attestation
+## 2. Prepare replay evidence from existing native artifacts
+
+Prepare the unsigned replay record from the already verified native report,
+cohort receipts, frozen metadata and exact candidate. This command never
+collects a holdout or invents a success marker; it refuses changed labels,
+hashes, run IDs, calibration provenance or incomplete capture/handoff evidence:
+
+```powershell
+python -m scripts.prepare_frozen_rst_replay `
+  --candidate C:\g5-signed\sid9103005-candidate.json `
+  --freeze "$dev\acceptance-freeze.json" `
+  --development-evidence "$dev\development-evidence.json" `
+  --holdout-report "$holdout\native-holdout-replay.json" `
+  --cohort-results "$holdout\cohort-results.json" `
+  --cohort-plan "$holdout\cohort-plan.json" `
+  --rule "$dev\ml-generated-rst.rules" `
+  --metadata "$dev\ml-generated-rst.metadata.json" `
+  --source-commit c3aaa982fcb2d38b71d51ac9ae2af8a41b3e1dad `
+  --freeze-sha256 74ce643d782d525e83910138b32218bc69e8d97a6908e725f71dbbeab0fd9bd4 `
+  --cohort-sha256 443b42478b3bfbc0d66433fc5e582433426962fe54427278b584a5e5e859efaa `
+  --output C:\g5-signed\sid9103005-replay-evidence.json
+```
+
+The output is explicitly unsigned, review-only evidence. It contains all six
+cohort probes, their labels and hashes, the native syntax/production proof, and
+the threshold derived from frozen development metadata.
+
+## 3. Independent signed replay attestation
 
 The trusted replay signer must create a new JSON evidence file containing the
 exact candidate binding, six cohort cases, syntax proof, candidate-loaded
@@ -75,11 +102,11 @@ python -m scripts.attest_frozen_rst_replay `
   --output C:\g5-signed\sid9103005-replay-attestation.json
 ```
 
-The public key must satisfy the pinned replay fingerprint in
-`src/netids/key_pins.py`; the private key must never enter Git, `.runtime-staging/`,
-or VM transfer bundles.
+The CLI enforces the pinned replay fingerprint in `src/netids/key_pins.py` and
+checks that the encrypted private key matches that public key. The private key
+must never enter Git, `.runtime-staging/`, or VM transfer bundles.
 
-## 3. Separate owner authorization
+## 4. Separate owner authorization
 
 The owner reviews the exact candidate ID, freeze/cohort/baseline hashes, target,
 loopback interface, and mandatory rollback. The command prompts for the exact
@@ -92,6 +119,7 @@ python -m scripts.approve_frozen_rst_activation `
   --replay-public C:\keys\g5-replay-9103005.pub.pem `
   --owner-private C:\keys\g5-owner-9103005.pem `
   --owner-public C:\keys\g5-owner-9103005.pub.pem `
+  --runtime-public C:\keys\g5-runtime-9103005.pub.pem `
   --isolated-root /home/tanhv/suricata-rule-review/isolated-lifecycle-9103005 `
   --runtime-id suricata-vm1:isolated-lifecycle-9103005:lo `
   --target-vm suricata-vm1 `
@@ -100,11 +128,13 @@ python -m scripts.approve_frozen_rst_activation `
   --output C:\g5-signed\sid9103005-owner-authorization.json
 ```
 
-The owner public key must satisfy the pinned owner fingerprint. The resulting
-authorization is one-shot, nonce-bound, expires after 15 minutes, and is scoped
-to the candidate-specific isolated root and 300-second maximum operation.
+The owner public key must satisfy the pinned owner fingerprint. The runtime
+public key fingerprint is bound into the owner authorization; the VM command
+must use the matching encrypted runtime private key. The resulting authorization
+is one-shot, nonce-bound, expiry-checked, and scoped to the candidate-specific
+isolated root and 300-second maximum operation.
 
-## 4. VM1 runtime and rollback
+## 5. VM1 runtime and rollback
 
 Transfer only the candidate JSON, signed replay attestation, owner authorization,
 both public keys, the isolated YAML, and the encrypted runtime signing key to
@@ -122,18 +152,17 @@ python3 -m scripts.operate_frozen_rst_once \
   --owner-authorization /home/tanhv/g5-signed/sid9103005-owner-authorization.json \
   --replay-public /home/tanhv/.config/suricata-ai/g5-replay-9103005.pub.pem \
   --owner-public /home/tanhv/.config/suricata-ai/g5-owner-9103005.pub.pem \
+  --runtime-public /home/tanhv/.config/suricata-ai/g5-runtime-9103005.pub.pem \
   --production-yaml /etc/suricata/suricata.yaml \
   --production-rules /var/lib/suricata/rules/suricata.rules \
   --isolated-yaml /home/tanhv/suricata-rule-review/isolated-lifecycle-9103005/isolated.yaml \
   --isolated-root /home/tanhv/suricata-rule-review/isolated-lifecycle-9103005 \
-  --attack-pcap /ABSOLUTE/VERIFIED/A1.pcap \
-  --attack-sha256 490016e1e33b07c10f4035eb0425d6e2427f814fd9da6ea9694dfd020c00b07e \
-  --normal-pcap /ABSOLUTE/VERIFIED/N1.pcap \
-  --normal-sha256 58ad0bd5150c5fa7c56ea9c9531fda2e2240b84c0c1b0bc083bd0f311b5c4c0e \
-  --negative-pcap /ABSOLUTE/VERIFIED/N2.pcap \
-  --negative-sha256 7af0d4524dec3c08c2bce4787cb329c568e3cac3e46e6d9e39e766814936dcdf \
-  --negative-pcap /ABSOLUTE/VERIFIED/N3.pcap \
-  --negative-sha256 85075147568ba52ebcae87c70727910d3839c22b34e56da976c843e25a8acf12 \
+  --probe A1=/ABSOLUTE/VERIFIED/A1.pcap \
+  --probe A2=/ABSOLUTE/VERIFIED/A2.pcap \
+  --probe A3=/ABSOLUTE/VERIFIED/A3.pcap \
+  --probe N1=/ABSOLUTE/VERIFIED/N1.pcap \
+  --probe N2=/ABSOLUTE/VERIFIED/N2.pcap \
+  --probe N3=/ABSOLUTE/VERIFIED/N3.pcap \
   --audit-path /home/tanhv/suricata-rule-review/isolated-lifecycle-9103005/audit/owner-once.jsonl \
   --runtime-private /home/tanhv/.config/suricata-ai/g5-runtime-9103005.pem \
   --evidence-output /home/tanhv/g5-signed/sid9103005-runtime-evidence.json \
@@ -141,12 +170,13 @@ python3 -m scripts.operate_frozen_rst_once \
 ```
 
 `/ABSOLUTE/VERIFIED/*.pcap` tokens must be replaced only with paths whose bytes
-match the printed hashes. The command refuses guessed or changed PCAPs. It
-requires Suricata 8.0.3, VM1 hostname/interface, an isolated `-S` ruleset,
-candidate loading, real Attack alerts, zero Normal and negative-control alerts,
-mandatory rollback, post-rollback zero candidate alerts, child-process cleanup,
-and byte-identical production before/after snapshots. It never calls systemd or
-writes production rules.
+match the signed six-case cohort. The command refuses guessed, substituted,
+duplicated or relabeled PCAPs. It requires Suricata 8.0.3, VM1
+hostname/interface, an isolated `-S` ruleset, candidate loading, all three
+Attack alerts, zero Normal/negative-control alerts, mandatory rollback,
+post-rollback zero candidate alerts, child-process cleanup, a trusted runtime
+signature, an effective 300-second deadline, and byte-identical production
+before/after snapshots. It never calls systemd or writes production rules.
 
 Any failure, including rollback failure or production mutation, is FAILED/
 UNVERIFIED. Preserve the failure JSON and isolated logs; do not reuse the

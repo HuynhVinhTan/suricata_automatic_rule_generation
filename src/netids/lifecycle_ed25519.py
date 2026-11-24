@@ -76,6 +76,21 @@ def public_key_fingerprint(public_pem: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def private_key_matches_public(private_pem: bytes, password: bytes, public_pem: bytes) -> bool:
+    """Return whether an encrypted private key corresponds to the supplied public key."""
+    try:
+        private = serialization.load_pem_private_key(private_pem, password=password)
+        if not isinstance(private, Ed25519PrivateKey):
+            return False
+        derived = private.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return public_key_fingerprint(derived) == public_key_fingerprint(public_pem)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+
+
 def sign_record(
     record: Mapping,
     private_pem: bytes,
