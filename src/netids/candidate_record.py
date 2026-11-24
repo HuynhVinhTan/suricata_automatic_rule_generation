@@ -16,6 +16,7 @@ from netids.rulegen import (
     RST_RESPONSE_FAMILY,
     SYN_PACKET_COUNT_FAMILY,
     collect_sids,
+    is_verified_development_evidence,
 )
 from netids.lifecycle_ed25519 import verify_record
 
@@ -131,7 +132,16 @@ def build_candidate_record(artifact_dir: Path, calibration_manifest: Path, basel
     if expected_family == RST_RESPONSE_FAMILY:
         calibration = metadata.get("normal_calibration_provenance")
         validation = metadata.get("normal_validation_evidence")
+        development = metadata.get("development_evidence")
+        hybrid = metadata.get("hybrid_evidence")
         if (
+            not is_verified_development_evidence(development)
+            or
+            not isinstance(hybrid, dict)
+            or hybrid.get("classification") != "reconnaissance_consistent"
+            or hybrid.get("python_only") is not True
+            or hybrid.get("suricata_signature_equivalent") is not False
+            or
             not isinstance(calibration, dict)
             or calibration.get("status") != "accepted"
             or calibration.get("final_holdout_used") is not False
@@ -141,7 +151,7 @@ def build_candidate_record(artifact_dir: Path, calibration_manifest: Path, basel
             or validation.get("capture_integrity", {}).get("capture_complete") is not True
         ):
             raise CandidateRecordError(
-                "RST candidate lacks independent calibration or Normal validation evidence"
+                "RST candidate lacks verified development, Hybrid, calibration, or Normal validation evidence"
             )
     if any(metadata.get(key) is not False for key in ("approved", "deployable", "deployed")):
         raise CandidateRecordError("Candidate safety flags must be false")

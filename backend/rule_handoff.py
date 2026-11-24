@@ -14,7 +14,12 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from netids.rulegen import REJECTED_SIDS, RST_RESPONSE_FAMILY, SYN_PACKET_COUNT_FAMILY
+from netids.rulegen import (
+    REJECTED_SIDS,
+    RST_RESPONSE_FAMILY,
+    SYN_PACKET_COUNT_FAMILY,
+    is_verified_development_evidence,
+)
 
 
 class HandoffError(ValueError):
@@ -68,7 +73,16 @@ def _read_artifacts(artifact_dir: Path, run_id: str) -> tuple[Path, Path, str, d
         raise HandoffError("Rule metadata must be an object")
     calibration = metadata.get("normal_calibration_provenance")
     validation = metadata.get("normal_validation_evidence")
+    development = metadata.get("development_evidence")
+    hybrid = metadata.get("hybrid_evidence")
     if (
+        not is_verified_development_evidence(development)
+        or
+        not isinstance(hybrid, dict)
+        or hybrid.get("classification") != "reconnaissance_consistent"
+        or hybrid.get("python_only") is not True
+        or hybrid.get("suricata_signature_equivalent") is not False
+        or
         not isinstance(calibration, dict)
         or calibration.get("status") != "accepted"
         or calibration.get("final_holdout_used") is not False
@@ -78,7 +92,7 @@ def _read_artifacts(artifact_dir: Path, run_id: str) -> tuple[Path, Path, str, d
         or validation.get("capture_integrity", {}).get("capture_complete") is not True
     ):
         raise HandoffError(
-            "RST candidate lacks independent calibration or Normal validation evidence"
+            "RST candidate lacks verified development, Hybrid, calibration, or Normal validation evidence"
         )
     if (
         metadata.get("schema_version") != metadata_schema

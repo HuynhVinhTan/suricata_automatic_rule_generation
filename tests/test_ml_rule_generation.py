@@ -7,6 +7,28 @@ from netids import rulegen
 from backend import worker
 
 
+_DEV_EVIDENCE = {
+    "scope": "G4_DEVELOPMENT_ONLY",
+    "native_replay_tested": False,
+    "independent_final_acceptance": False,
+    "generator_sha256": "d" * 64,
+    "calibration_sha256": "e" * 64,
+    "calibration_references": [{
+        "ground_truth_label": "NORMAL",
+        "capture_metadata": {
+            "packet_records_complete": True,
+            "snaplen_truncated": False,
+            "capture_drops": False,
+        },
+    }],
+}
+_HYBRID_EVIDENCE = {
+    "classification": "reconnaissance_consistent",
+    "python_only": True,
+    "suricata_signature_equivalent": False,
+}
+
+
 def test_allocates_fresh_sid_away_from_rejected_and_existing_sids():
     assert hasattr(rulegen, "allocate_sid")
     assert rulegen.allocate_sid({9103000, 9103001, 9103002, 9102001, 9102002}) == 9103005
@@ -147,6 +169,8 @@ def test_worker_validates_rst_artifact_family_provenance(tmp_path):
             "pcap_sha256": "c" * 64,
             "capture_integrity": {"capture_complete": True},
         },
+        development_evidence=_DEV_EVIDENCE,
+        hybrid_evidence=_HYBRID_EVIDENCE,
     )
     rulegen.write_rst_rule_artifacts(tmp_path, result)
     review = {
@@ -218,6 +242,8 @@ def test_replay_validation_updates_rst_family_metadata(tmp_path):
             "pcap_sha256": "c" * 64,
             "capture_integrity": {"capture_complete": True},
         },
+        development_evidence=_DEV_EVIDENCE,
+        hybrid_evidence=_HYBRID_EVIDENCE,
     )
     rulegen.write_rst_rule_artifacts(tmp_path, result)
 
@@ -280,6 +306,8 @@ def test_generates_rst_rule_only_with_all_independent_gates(tmp_path):
             "pcap_sha256": "c" * 64,
             "capture_integrity": {"capture_complete": True},
         },
+        development_evidence=_DEV_EVIDENCE,
+        hybrid_evidence=_HYBRID_EVIDENCE,
         existing_sids=[9103000, 9103001, 9103002],
     )
     assert result["status"] == "needs_review"
@@ -289,6 +317,8 @@ def test_generates_rst_rule_only_with_all_independent_gates(tmp_path):
     assert result["metadata"]["rule_sha256"]
     assert result["metadata"]["approved"] is False
     assert result["metadata"]["candidate_family"] == "rst_response_v1"
+    assert result["metadata"]["bounded_laboratory_signature"] is True
+    assert result["metadata"]["hybrid_equivalent"] is False
 
     rulegen.write_rst_rule_artifacts(tmp_path, result)
     assert (tmp_path / "ml-generated-rst.rules").read_text(encoding="utf-8").strip() == result["rule"]
@@ -312,6 +342,8 @@ def test_rst_rule_rejects_normal_validation_and_missing_ml():
             "pcap_sha256": "c" * 64,
             "capture_integrity": {"capture_complete": True},
         },
+        development_evidence=_DEV_EVIDENCE,
+        hybrid_evidence=_HYBRID_EVIDENCE,
     )
     normal = rulegen.generate_rst_rule(**common, normal_validation_rst_counts=[2], ml_consensus=True)
     assert normal["rejection_reason"] == "normal_validation_false_positive"
@@ -332,5 +364,103 @@ def test_rst_rule_rejects_unknown_capture_completeness():
         ml_consensus=True,
         port_diversity_triggered=True,
         rst_evidence={"rst_count": 3, "capture_integrity": {"capture_complete": None}},
+        development_evidence=_DEV_EVIDENCE,
+        hybrid_evidence=_HYBRID_EVIDENCE,
     )
     assert result["rejection_reason"] == "incomplete_capture_evidence"
+
+
+def test_rst_rule_requires_verified_development_evidence():
+    result = rulegen.generate_rst_rule(
+        run_id="rst-no-development-evidence",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        source_ip="192.168.10.10",
+        destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[0, 1],
+        normal_validation_rst_counts=[0],
+        attack_rst_counts=[3],
+        ml_consensus=True,
+        port_diversity_triggered=True,
+        rst_evidence={"rst_count": 3, "capture_integrity": {"capture_complete": True}},
+        normal_calibration_provenance={
+            "status": "accepted",
+            "final_holdout_used": False,
+            "frozen_before_holdouts": True,
+        },
+        normal_validation_evidence={
+            "pcap_sha256": "c" * 64,
+            "capture_integrity": {"capture_complete": True},
+        },
+    )
+    assert result["rejection_reason"] == "missing_verified_development_evidence"
+
+
+def test_rst_rule_rejects_incomplete_development_capture():
+    development = dict(_DEV_EVIDENCE)
+    development["calibration_references"] = [{
+        "ground_truth_label": "NORMAL",
+        "capture_metadata": {
+            "packet_records_complete": True,
+            "snaplen_truncated": True,
+            "capture_drops": False,
+        },
+    }]
+    result = rulegen.generate_rst_rule(
+        run_id="rst-incomplete-development-capture",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        source_ip="192.168.10.10",
+        destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[0, 1],
+        normal_validation_rst_counts=[0],
+        attack_rst_counts=[3],
+        ml_consensus=True,
+        port_diversity_triggered=True,
+        rst_evidence={"rst_count": 3, "capture_integrity": {"capture_complete": True}},
+        normal_calibration_provenance={
+            "status": "accepted",
+            "final_holdout_used": False,
+            "frozen_before_holdouts": True,
+        },
+        normal_validation_evidence={
+            "pcap_sha256": "c" * 64,
+            "capture_integrity": {"capture_complete": True},
+        },
+        development_evidence=development,
+        hybrid_evidence=_HYBRID_EVIDENCE,
+    )
+    assert result["rejection_reason"] == "missing_verified_development_evidence"
+
+
+def test_rst_signature_is_bounded_when_legitimate_repeated_rst_is_outside_normal_distribution():
+    result = rulegen.generate_rst_rule(
+        run_id="rst-bounded-lab-signature",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        source_ip="192.168.10.10",
+        destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[2, 2, 0],
+        normal_validation_rst_counts=[2],
+        attack_rst_counts=[3],
+        ml_consensus=True,
+        port_diversity_triggered=True,
+        rst_evidence={
+            "rst_count": 3,
+            "max_rst_count_per_window": 3,
+            "capture_integrity": {"capture_complete": True},
+        },
+        normal_calibration_provenance={
+            "status": "accepted",
+            "final_holdout_used": False,
+            "frozen_before_holdouts": True,
+        },
+        normal_validation_evidence={
+            "pcap_sha256": "c" * 64,
+            "capture_integrity": {"capture_complete": True},
+        },
+        development_evidence=_DEV_EVIDENCE,
+        hybrid_evidence=_HYBRID_EVIDENCE,
+    )
+    assert result["status"] == "needs_review"
+    assert result["metadata"]["hybrid_equivalent"] is False

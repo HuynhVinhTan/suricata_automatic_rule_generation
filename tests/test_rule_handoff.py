@@ -27,6 +27,26 @@ def _artifact(tmp_path):
                 "pcap_sha256": "c" * 64,
                 "capture_integrity": {"capture_complete": True},
             },
+            "development_evidence": {
+                "scope": "G4_DEVELOPMENT_ONLY",
+                "native_replay_tested": False,
+                "independent_final_acceptance": False,
+                "generator_sha256": "d" * 64,
+                "calibration_sha256": "e" * 64,
+                "calibration_references": [{
+                    "ground_truth_label": "NORMAL",
+                    "capture_metadata": {
+                        "packet_records_complete": True,
+                        "snaplen_truncated": False,
+                        "capture_drops": False,
+                    },
+                }],
+            },
+            "hybrid_evidence": {
+                "classification": "reconnaissance_consistent",
+                "python_only": True,
+                "suricata_signature_equivalent": False,
+            },
             "approved": False,
             "deployable": False,
             "deployed": False,

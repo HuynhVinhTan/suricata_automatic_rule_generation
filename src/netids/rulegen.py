@@ -67,6 +67,33 @@ def _validate_counts(values, field_name):
     return list(values)
 
 
+def is_verified_development_evidence(value):
+    """Return whether evidence is frozen development-only provenance."""
+    if not isinstance(value, dict):
+        return False
+    if value.get("scope") != "G4_DEVELOPMENT_ONLY":
+        return False
+    if value.get("native_replay_tested") is not False:
+        return False
+    if value.get("independent_final_acceptance") is not False:
+        return False
+    for field in ("generator_sha256", "calibration_sha256"):
+        if not isinstance(value.get(field), str) or not _SHA256_PATTERN.fullmatch(value[field].lower()):
+            return False
+    references = value.get("calibration_references")
+    if not isinstance(references, list) or not references:
+        return False
+    return all(
+        isinstance(reference, dict)
+        and reference.get("ground_truth_label") == "NORMAL"
+        and isinstance(reference.get("capture_metadata"), dict)
+        and reference["capture_metadata"].get("packet_records_complete") is True
+        and reference["capture_metadata"].get("snaplen_truncated") is False
+        and reference["capture_metadata"].get("capture_drops") is False
+        for reference in references
+    )
+
+
 def collect_sids(rule_texts):
     """Return all integer SIDs found in existing rule text."""
     sids = set()
@@ -145,6 +172,7 @@ def generate_rst_rule(
     normal_cal_rst_counts, normal_validation_rst_counts, attack_rst_counts,
     ml_consensus, port_diversity_triggered, rst_evidence, existing_sids=(),
     normal_calibration_provenance=None, normal_validation_evidence=None,
+    development_evidence=None, hybrid_evidence=None,
     window_seconds=60,
 ):
     """Generate a review-only RST rule from independent evidence gates."""
@@ -186,6 +214,21 @@ def generate_rst_rule(
             if isinstance(normal_validation_evidence, dict)
             else normal_validation_evidence
         ),
+        "development_evidence": (
+            dict(development_evidence)
+            if isinstance(development_evidence, dict)
+            else development_evidence
+        ),
+        "hybrid_evidence": (
+            dict(hybrid_evidence)
+            if isinstance(hybrid_evidence, dict)
+            else hybrid_evidence
+        ),
+        # This is intentionally a bounded Suricata signature, not a compiled
+        # equivalent of the Python Hybrid conjunction.
+        "bounded_laboratory_signature": True,
+        "hybrid_equivalent": False,
+        "suricata_signature_equivalent": False,
         "approved": False,
         "deployable": False,
         "deployed": False,
@@ -201,6 +244,19 @@ def generate_rst_rule(
     }
     if rst_evidence.get("capture_integrity", {}).get("capture_complete") is not True:
         result["rejection_reason"] = "incomplete_capture_evidence"
+        return result
+    if (
+        not is_verified_development_evidence(development_evidence)
+    ):
+        result["rejection_reason"] = "missing_verified_development_evidence"
+        return result
+    if (
+        not isinstance(hybrid_evidence, dict)
+        or hybrid_evidence.get("classification") != "reconnaissance_consistent"
+        or hybrid_evidence.get("python_only") is not True
+        or hybrid_evidence.get("suricata_signature_equivalent") is not False
+    ):
+        result["rejection_reason"] = "missing_hybrid_evidence"
         return result
     if (
         not isinstance(normal_calibration_provenance, dict)

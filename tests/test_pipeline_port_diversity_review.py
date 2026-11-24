@@ -13,7 +13,7 @@ SRC = "192.168.10.20"
 DST = "192.168.10.10"
 
 
-def test_hybrid_eligibility_never_selects_the_failed_syn_only_candidate():
+def test_hybrid_eligibility_selects_only_the_evidence_gated_rst_family():
     decision = pipeline._candidate_generation_decision(
         candidate_gate_passed=True,
         normal_test_counts=[11, 9, 11],
@@ -22,9 +22,9 @@ def test_hybrid_eligibility_never_selects_the_failed_syn_only_candidate():
     )
 
     assert decision == {
-        "family": "syn_packet_count_v1",
-        "rejection": "quarantined_syn_packet_count_family",
-        "matches_previous_failed_candidate": True,
+        "family": "rst_response_v1",
+        "rejection": None,
+        "matches_previous_failed_candidate": False,
     }
 
 
