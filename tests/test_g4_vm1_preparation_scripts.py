@@ -1,4 +1,8 @@
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 
 ROOT = Path(__file__).parents[1]
@@ -7,7 +11,8 @@ ROOT = Path(__file__).parents[1]
 def test_vm1_inspector_uses_service_identifiers_and_disables_bytecode():
     source = (ROOT / "scripts/g4_inspect_vm1_capture.ps1").read_text(encoding="utf-8")
     assert 'systemctl cat "$SERVICE"' in source
-    assert 'systemctl show "$SERVICE"' in source
+    assert 'systemctl show --all "$SERVICE"' in source
+    assert 'published_release_hashes_pass=TRUE' in source
     assert 'PYTHONDONTWRITEBYTECODE=1' in source
     assert 'systemctl cat "$UNIT"' not in source
     assert 'systemctl show "$UNIT"' not in source
@@ -83,3 +88,43 @@ def test_vm1_owner_controller_uses_prepare_repository_root_and_requires_all_read
         assert marker in source
     assert "VM1_READY_FOR_G4=TRUE" in source
     assert source.index("VM1_EFFECTIVE_MODULE_PASS=TRUE") < source.index("VM1_READY_FOR_G4=TRUE")
+
+
+def test_vm1_owner_controller_supports_resume_retarget_only_without_republication():
+    source = (ROOT / "scripts/g4_vm1_owner_controller.ps1").read_text(encoding="utf-8")
+
+    assert "[switch]$ResumeRetargetOnly" in source
+    assert "Resume-retarget-only mode: VM1 release publication is skipped." in source
+    assert "published_release_hashes_pass" in source
+    assert "published_capture_sha256" in source
+    assert "published_handoff_sha256" in source
+
+
+def test_controller_reads_empty_pre_post_fields_from_actual_inspection_output():
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+
+    source = (ROOT / "scripts/g4_vm1_owner_controller.ps1").read_text(encoding="utf-8")
+    start = source.index("function Get-ReportField")
+    end = source.index("function Require-Marker")
+    parser = source[start:end]
+    command = parser + "\n" + r'''
+$inspection = @(
+    'ExecStart=/usr/bin/python3 -m backend.pcap_capture',
+    'ExecStartPre=',
+    'ExecStartPost=',
+    'User=tanhv'
+)
+$pre = [string](Get-ReportField -Lines $inspection -Name 'ExecStartPre')
+$post = [string](Get-ReportField -Lines $inspection -Name 'ExecStartPost')
+if ($pre -ne '' -or $post -ne '') { exit 1 }
+Write-Output 'EMPTY_OPTIONAL_FIELDS_PASS=TRUE'
+'''
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "EMPTY_OPTIONAL_FIELDS_PASS=TRUE" in result.stdout

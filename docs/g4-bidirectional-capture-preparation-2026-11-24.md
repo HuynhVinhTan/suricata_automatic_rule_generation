@@ -100,7 +100,7 @@ does not call `sudo`, `systemctl start`, `reload`, `enable`, `disable`, or any
 write operation.
 
 Prepared inspection script SHA256:
-`42e7357a8bac3d01b327fa3bfb27e80ef7f3568c6a54a0a293069062dd6ccc78`.
+`a237c6e544786db8400506d4c14a7ec385700a6aa90039bf361db631999774ec`.
 
 ## Safe retarget plan after release verification
 
@@ -165,6 +165,9 @@ It passes `-RepositoryRoot` to the release-preparation script, uses separate
 explicit approval prompts for release publication and drop-in installation,
 normalizes CRLF marker output, and emits `VM1_READY_FOR_G4=TRUE` only after
 the required post-install inspection and all readiness markers pass.
+With a verified published release, add `-ResumeRetargetOnly` to skip release
+publication and verify the existing release hashes before requesting the
+separate retarget approval.
 
 ## Offline CI diagnosis
 

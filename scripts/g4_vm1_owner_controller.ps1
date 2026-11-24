@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory=$true)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$ApprovedHead,
+    [switch]$ResumeRetargetOnly,
     [string]$RepositoryRoot = 'D:\suricata-ai-project-worktrees\feat-complete-suricata-ai-e2e'
 )
 
@@ -21,7 +22,7 @@ $Inspect = Join-Path $RepositoryRoot 'scripts/g4_inspect_vm1_capture.ps1'
 $Retarget = Join-Path $RepositoryRoot 'scripts/g4_retarget_vm1_capture_dropin.ps1'
 
 $ExpectedHashes = @{
-    'scripts/g4_inspect_vm1_capture.ps1' = '42e7357a8bac3d01b327fa3bfb27e80ef7f3568c6a54a0a293069062dd6ccc78'
+    'scripts/g4_inspect_vm1_capture.ps1' = 'a237c6e544786db8400506d4c14a7ec385700a6aa90039bf361db631999774ec'
     'scripts/g4_prepare_vm1_release.ps1' = 'e7b800d02a96002959e7aef060d9556d1a150fca8764dae79bed132199a32ff6'
     'scripts/g4_retarget_vm1_capture_dropin.ps1' = 'd558d8e1856892eb6f4c14dd86b338318bdb36aea560c705b2e20f0f2b0d9ad6'
 }
@@ -85,31 +86,49 @@ try {
         }
     }
 
-    $PlanOutput = & $Prepare -RepositoryRoot $RepositoryRoot 2>&1
-    $PlanExit = $LASTEXITCODE
-    Show-Output $PlanOutput
-    if ($PlanExit -ne 0) {
-        throw 'VM1 release plan failed.'
+    if ($ResumeRetargetOnly) {
+        Write-Host 'Resume-retarget-only mode: VM1 release publication is skipped.'
     }
+    else {
+        $PlanOutput = & $Prepare -RepositoryRoot $RepositoryRoot 2>&1
+        $PlanExit = $LASTEXITCODE
+        Show-Output $PlanOutput
+        if ($PlanExit -ne 0) {
+            throw 'VM1 release plan failed.'
+        }
 
-    if ((Read-Host 'Type VM1_RELEASE_APPROVE=YES to publish the prepared release') -ne 'YES') {
-        throw 'VM1 release publication was not approved.'
-    }
+        if ((Read-Host 'Type VM1_RELEASE_APPROVE=YES to publish the prepared release') -ne 'YES') {
+            throw 'VM1 release publication was not approved.'
+        }
 
-    $ReleaseOutput = & $Prepare -RepositoryRoot $RepositoryRoot -Execute 2>&1
-    $ReleaseExit = $LASTEXITCODE
-    Show-Output $ReleaseOutput
-    if ($ReleaseExit -ne 0) {
-        throw 'VM1 release publication command failed.'
+        $ReleaseOutput = & $Prepare -RepositoryRoot $RepositoryRoot -Execute 2>&1
+        $ReleaseExit = $LASTEXITCODE
+        Show-Output $ReleaseOutput
+        if ($ReleaseExit -ne 0) {
+            throw 'VM1 release publication command failed.'
+        }
+        Require-Marker $ReleaseOutput 'VM1_RELEASE_PASS=TRUE'
+        Write-Host 'VM1_RELEASE_PASS=TRUE'
     }
-    Require-Marker $ReleaseOutput 'VM1_RELEASE_PASS=TRUE'
-    Write-Host 'VM1_RELEASE_PASS=TRUE'
 
     $BeforeOutput = & $Inspect -Vm1Target $Vm1Target 2>&1
     $BeforeExit = $LASTEXITCODE
     Show-Output $BeforeOutput
     if ($BeforeExit -ne 0) {
         throw 'Pre-install VM1 inspection failed.'
+    }
+    if ((Get-ReportField $BeforeOutput 'published_release_hashes_pass') -ne 'TRUE') {
+        throw 'Published VM1 release hash verification failed.'
+    }
+    if ((Get-ReportField $BeforeOutput 'published_release_path') -ne $TargetWorkingDirectory) {
+        throw 'Published VM1 release path mismatch.'
+    }
+    if ((Get-ReportField $BeforeOutput 'published_capture_sha256') -ne $ExpectedCaptureSha256 -or
+        (Get-ReportField $BeforeOutput 'published_handoff_sha256') -ne '0442e59ddd47b11608bd9ad110d512e6db338fc5a89b5cb93671746ccee153de') {
+        throw 'Published VM1 release module hash mismatch.'
+    }
+    if ($ResumeRetargetOnly) {
+        Write-Host 'VM1_RELEASE_RESUME_PASS=TRUE'
     }
 
     if ((Get-ReportField $BeforeOutput 'unit_sha256') -ne $ExpectedUnitSha256) {
