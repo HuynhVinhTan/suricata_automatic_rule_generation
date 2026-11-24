@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -209,12 +210,13 @@ def test_owner_controller_preserves_native_output_on_success_and_failure():
     start = source.index("function Invoke-OwnerVisibleCommand")
     end = source.index("function Show-Output")
     helper = source[start:end]
+    native = str(Path(sys.executable)).replace("'", "''")
     command = helper + r'''
 $success = Invoke-OwnerVisibleCommand -Name 'native-success' -Command {
-    & cmd.exe /c 'echo NATIVE_SUCCESS_STDOUT & echo NATIVE_SUCCESS_STDERR 1>&2 & exit /b 0'
+    & '__PYTHON__' -c "import sys; print('NATIVE_SUCCESS_STDOUT'); print('NATIVE_SUCCESS_STDERR', file=sys.stderr); sys.exit(0)"
 }
 $failure = Invoke-OwnerVisibleCommand -Name 'native-failure' -Command {
-    & cmd.exe /c 'echo NATIVE_FAILURE_STDOUT & echo NATIVE_FAILURE_STDERR 1>&2 & exit /b 7'
+    & '__PYTHON__' -c "import sys; print('NATIVE_FAILURE_STDOUT'); print('NATIVE_FAILURE_STDERR', file=sys.stderr); sys.exit(7)"
 }
 $throwing = Invoke-OwnerVisibleCommand -Name 'terminating-child' -Command {
     Write-Output 'BEFORE_TERMINATING_CHILD_ERROR'
@@ -229,6 +231,7 @@ foreach ($text in @('NATIVE_SUCCESS_STDOUT', 'NATIVE_SUCCESS_STDERR', 'NATIVE_FA
 if ($success.Error -ne $null -or $failure.Error -ne $null -or $throwing.Error -eq $null) { exit 4 }
 Write-Output 'NATIVE_OUTPUT_PRESERVATION_PASS=TRUE'
 '''
+    command = command.replace('__PYTHON__', native)
 
     for engine in engines:
         result = subprocess.run(
