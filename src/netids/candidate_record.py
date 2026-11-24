@@ -12,7 +12,11 @@ import json
 import re
 from pathlib import Path
 
-from netids.rulegen import collect_sids
+from netids.rulegen import (
+    RST_RESPONSE_FAMILY,
+    SYN_PACKET_COUNT_FAMILY,
+    collect_sids,
+)
 from netids.lifecycle_ed25519 import verify_record
 
 
@@ -89,8 +93,20 @@ def _read_json(path: Path, name: str) -> dict:
 
 def build_candidate_record(artifact_dir: Path, calibration_manifest: Path, baseline_rules: Path) -> dict:
     root = Path(artifact_dir).resolve(strict=True)
-    rule_path = root / "ml-generated.rules"
-    metadata_path = root / "ml-generated.metadata.json"
+    rst_rule_path = root / "ml-generated-rst.rules"
+    rst_metadata_path = root / "ml-generated-rst.metadata.json"
+    legacy_rule_path = root / "ml-generated.rules"
+    legacy_metadata_path = root / "ml-generated.metadata.json"
+    if rst_rule_path.exists() or rst_metadata_path.exists():
+        if legacy_rule_path.exists() or legacy_metadata_path.exists():
+            raise CandidateRecordError("Candidate contains multiple rule families")
+        rule_path, metadata_path = rst_rule_path, rst_metadata_path
+        expected_schema = "ml_rst_rule_metadata_v1"
+        expected_family = RST_RESPONSE_FAMILY
+    else:
+        rule_path, metadata_path = legacy_rule_path, legacy_metadata_path
+        expected_schema = "ml_rule_metadata_v1"
+        expected_family = None
     review_path = root / "review.json"
     if any(path.is_symlink() or not path.is_file() for path in (rule_path, metadata_path, review_path)):
         raise CandidateRecordError("Candidate artifacts are missing or unsafe")
@@ -106,8 +122,27 @@ def build_candidate_record(artifact_dir: Path, calibration_manifest: Path, basel
     run_id = metadata.get("run_id")
     if not isinstance(run_id, str) or not _RUN.fullmatch(run_id):
         raise CandidateRecordError("Candidate run ID is invalid")
-    if metadata.get("schema_version") != "ml_rule_metadata_v1" or review.get("schema_version") != "lab_rule_review_v0_2":
+    if metadata.get("schema_version") != expected_schema or review.get("schema_version") != "lab_rule_review_v0_2":
         raise CandidateRecordError("Unsupported candidate artifact schema")
+    if expected_family is not None and metadata.get("candidate_family") != expected_family:
+        raise CandidateRecordError("Candidate family does not match artifact schema")
+    if metadata.get("candidate_family") == SYN_PACKET_COUNT_FAMILY:
+        raise CandidateRecordError("SYN packet-count candidate family is permanently quarantined")
+    if expected_family == RST_RESPONSE_FAMILY:
+        calibration = metadata.get("normal_calibration_provenance")
+        validation = metadata.get("normal_validation_evidence")
+        if (
+            not isinstance(calibration, dict)
+            or calibration.get("status") != "accepted"
+            or calibration.get("final_holdout_used") is not False
+            or calibration.get("frozen_before_holdouts") is not True
+            or not isinstance(validation, dict)
+            or not _HEX.fullmatch(str(validation.get("pcap_sha256", "")))
+            or validation.get("capture_integrity", {}).get("capture_complete") is not True
+        ):
+            raise CandidateRecordError(
+                "RST candidate lacks independent calibration or Normal validation evidence"
+            )
     if any(metadata.get(key) is not False for key in ("approved", "deployable", "deployed")):
         raise CandidateRecordError("Candidate safety flags must be false")
     if metadata.get("status") not in (None, "needs_review") or review.get("status") != "needs_review":
@@ -148,6 +183,7 @@ def build_candidate_record(artifact_dir: Path, calibration_manifest: Path, basel
         "schema_version": "candidate_record_v1",
         "candidate_record_schema": "candidate_record_v1",
         "run_id": run_id,
+        "candidate_family": metadata.get("candidate_family"),
         "sid": sid,
         "rule": rule,
         "rule_sha256": rule_sha,

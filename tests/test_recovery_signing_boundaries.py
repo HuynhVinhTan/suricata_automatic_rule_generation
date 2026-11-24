@@ -66,20 +66,17 @@ def _recovery_inputs(tmp_path, monkeypatch, *, bad_candidate=False):
     return pcap_paths[0], manifest_path, hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
 
-def test_documented_recovery_registration_is_review_only_and_bound(tmp_path, monkeypatch):
+def test_documented_recovery_of_quarantined_sid_is_blocked(tmp_path, monkeypatch):
     source_pcap, manifest, manifest_sha = _recovery_inputs(tmp_path, monkeypatch)
-    result = register_documented_frozen_candidate(
-        repo_root=integration.Path(__file__).resolve().parents[1],
-        evidence_path=integration.Path(DOCUMENTED_EVIDENCE_PATH),
-        replay_manifest=manifest, expected_replay_manifest_sha256=manifest_sha,
-        source_pcap=source_pcap,
-        calibration_manifest=integration.Path("configs/hybrid_normal_calibration.json"),
-        audit_path=tmp_path / "audit.jsonl", isolated_root=tmp_path / "isolated-lab",
-    )
-    assert result["status"] == "PROPOSED"
-    assert result["evidence_class"] == "documented_frozen_rule_recovery"
-    assert result["historical_generated_metadata"] == "unavailable_not_recovered"
-    assert result["approved"] is result["deployable"] is result["deployed"] is False
+    with pytest.raises(LifecycleError, match="Rejected or conflicting SID"):
+        register_documented_frozen_candidate(
+            repo_root=integration.Path(__file__).resolve().parents[1],
+            evidence_path=integration.Path(DOCUMENTED_EVIDENCE_PATH),
+            replay_manifest=manifest, expected_replay_manifest_sha256=manifest_sha,
+            source_pcap=source_pcap,
+            calibration_manifest=integration.Path("configs/hybrid_normal_calibration.json"),
+            audit_path=tmp_path / "audit.jsonl", isolated_root=tmp_path / "isolated-lab",
+        )
 
 
 def test_documented_recovery_rejects_forged_candidate_identity(tmp_path, monkeypatch):

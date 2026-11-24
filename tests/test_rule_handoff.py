@@ -7,16 +7,26 @@ from backend import rule_handoff
 
 
 def _artifact(tmp_path):
-    rule = 'alert tcp any any -> 192.0.2.10 any (msg:"test"; sid:9103000; rev:1;)'
-    (tmp_path / "ml-generated.rules").write_text(rule + "\n", encoding="utf-8")
+    rule = 'alert tcp 192.0.2.10 any -> 192.0.2.20 any (msg:"test"; flags:R+; sid:9103999; rev:1;)'
+    (tmp_path / "ml-generated-rst.rules").write_text(rule + "\n", encoding="utf-8")
     rule_sha = hashlib.sha256(rule.encode()).hexdigest()
-    (tmp_path / "ml-generated.metadata.json").write_text(
+    (tmp_path / "ml-generated-rst.metadata.json").write_text(
         json.dumps({
-            "schema_version": "ml_rule_metadata_v1",
+            "schema_version": "ml_rst_rule_metadata_v1",
+            "candidate_family": "rst_response_v1",
             "run_id": "recon-001",
             "pcap_sha256": "a" * 64,
             "model_sha256": "b" * 64,
             "rule_sha256": rule_sha,
+            "normal_calibration_provenance": {
+                "status": "accepted",
+                "final_holdout_used": False,
+                "frozen_before_holdouts": True,
+            },
+            "normal_validation_evidence": {
+                "pcap_sha256": "c" * 64,
+                "capture_integrity": {"capture_complete": True},
+            },
             "approved": False,
             "deployable": False,
             "deployed": False,

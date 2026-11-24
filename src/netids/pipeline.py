@@ -1,7 +1,6 @@
 """One-command PCAP -> SYN features -> ML/DL -> review pipeline."""
 
 import argparse
-import hashlib
 import ipaddress
 import json
 import subprocess
@@ -12,10 +11,9 @@ from netids.app import run as run_inference
 from netids.lab_runtime import sha256
 import csv
 from netids.rulegen import (
+    RST_RESPONSE_FAMILY,
+    SYN_PACKET_COUNT_FAMILY,
     build_syn_burst_review_rule,
-    collect_sids,
-    generate_ml_rule,
-    write_ml_rule_artifacts,
 )
 from netids.port_diversity import analyze_port_diversity, read_pcap_syn
 from netids.hybrid_review import calibrate_hybrid_thresholds, evaluate_hybrid
@@ -70,6 +68,29 @@ def _hybrid_reference_evidence(private_root, provenance):
             "max_rst_count_per_window": rst["max_rst_count_per_window"],
         })
     return evidence
+
+
+def _candidate_generation_decision(
+    *, candidate_gate_passed, normal_test_counts, attack_counts, attach_candidate
+):
+    """Select a candidate family without converting Hybrid evidence to SYN counts."""
+    if not candidate_gate_passed:
+        return {
+            "family": None,
+            "rejection": None,
+            "matches_previous_failed_candidate": False,
+        }
+    if not normal_test_counts:
+        rejection = "missing_normal_validation"
+    elif not attack_counts:
+        rejection = "missing_attack_inference_evidence"
+    else:
+        rejection = "quarantined_syn_packet_count_family"
+    return {
+        "family": SYN_PACKET_COUNT_FAMILY,
+        "rejection": rejection,
+        "matches_previous_failed_candidate": bool(attach_candidate),
+    }
 
 
 def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata=None):
@@ -454,6 +475,15 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         "passed": candidate_gate_passed,
         "rule_approval_authorized": False,
     }
+    review["alternative_candidate_family_review"] = {
+        "family": RST_RESPONSE_FAMILY,
+        "status": "not_integrated",
+        "reason": (
+            "hybrid_conjunction_not_expressible_as_one_safe_suricata_signature"
+        ),
+        "requires_independent_native_replay": True,
+        "automatic_generation": False,
+    }
 
     normal_validation = (
         private_root / "lab-sessions" / "normal-batch-v01"
@@ -477,47 +507,35 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         for prediction in result.get("predictions", [])
         if prediction.get("both_anomaly") is True
     ]
-    existing_sids = collect_sids(
-        path.read_text(encoding="utf-8")
-        for path in private_root.rglob("*.rules")
-        if path.is_file()
+    generation = _candidate_generation_decision(
+        candidate_gate_passed=candidate_gate_passed,
+        normal_test_counts=normal_test_counts,
+        attack_counts=attack_counts,
+        attach_candidate=attach_candidate,
     )
-
-    generated = None
-    generation_rejection = None
+    generation_rejection = generation["rejection"]
+    generation_family = generation["family"]
     with latency.stage("rule_generation"):
-        if candidate_gate_passed and not normal_test_counts:
-            generation_rejection = "missing_normal_validation"
-        elif candidate_gate_passed and not attack_counts:
-            generation_rejection = "missing_attack_inference_evidence"
-        elif candidate_gate_passed:
-            generated = generate_ml_rule(
-                run_id=output_dir.name,
-                pcap_sha256=expected_sha,
-                model_sha256=result["model_sha256"],
-                destination_ip=dst,
-                normal_train_syn_counts=normal_counts_by_partition["normal-train"],
-                normal_cal_syn_counts=normal_counts_by_partition["normal-cal"],
-                normal_test_syn_counts=normal_test_counts,
-                attack_syn_counts=attack_counts,
-                existing_sids=existing_sids,
-            )
-            if generated["rule"] is not None:
-                write_ml_rule_artifacts(output_dir, generated)
-
-    if generated and generated.get("rule"):
-        with latency.stage("local_artifact_validation"):
-            if len(collect_sids([generated["rule"]])) != 1:
-                raise ValueError("Generated rule did not contain exactly one SID")
-            rule_bytes = (output_dir / "ml-generated.rules").read_bytes()
-            if generated["metadata"].get("rule_sha256") != hashlib.sha256(rule_bytes[:-1]).hexdigest():
-                raise ValueError("Generated rule artifact SHA256 mismatch")
-    else:
-        latency.record("local_artifact_validation", status="not_measured")
+        # The Hybrid decision is Python-only.  The old implementation
+        # incorrectly converted that multi-feature evidence into a
+        # SYN-count-only Suricata rule, which native replay proved to be a
+        # false-positive family (SIDs 9103000/3/4).  Keep the evidence in
+        # review.json and fail closed until a separately proven native
+        # signature exists; do not emit any executable rule artifact.
+        pass
+    latency.record("local_artifact_validation", status="not_measured")
 
     review.update({
         "schema_version": "lab_rule_review_v0_2",
-        "generation_method": "normal_train_cal_syn_count_packet_filter",
+        "generation_method": (
+            "quarantined_syn_packet_count_family"
+            if generation_family == SYN_PACKET_COUNT_FAMILY
+            else "no_candidate_family_selected"
+        ),
+        "candidate_family": generation_family,
+        "candidate_family_status": (
+            "quarantined" if generation_family == SYN_PACKET_COUNT_FAMILY else None
+        ),
         "normal_train_cal_max_syn": normal_max,
         "proposed_syn_threshold": max(3, normal_max + 1),
         "normal_validation_csv_sha256": (
@@ -526,18 +544,17 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         "normal_validation_max_syn": (
             max(normal_test_counts) if normal_test_counts else None
         ),
-        "rule_generated_in_this_run": bool(generated and generated["rule"]),
-        "generated_rule": generated["rule"] if generated else None,
-        "generated_rule_sid": generated["sid"] if generated else None,
-        "generated_rule_metadata": generated["metadata"] if generated else None,
-        "matches_previous_failed_candidate": False,
-        "generation_rejection": generation_rejection or (
-            generated.get("rejection_reason") if generated else None
-        ),
+        "rule_generated_in_this_run": False,
+        "generated_rule": None,
+        "generated_rule_sid": None,
+        "generated_rule_metadata": None,
+        "matches_previous_failed_candidate": generation[
+            "matches_previous_failed_candidate"
+        ],
+        "generation_rejection": generation_rejection,
         "status": (
-            "needs_review" if generated and generated["rule"]
-            else "rejected_validation_failure"
-            if generation_rejection or generated
+            "rejected_validation_failure"
+            if generation_rejection
             else "no_candidate"
         ),
         "syntax_tested_in_this_run": False,

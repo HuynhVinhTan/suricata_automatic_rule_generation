@@ -17,12 +17,13 @@ def _sources(tmp_path, *, sid=9103999):
     artifact = tmp_path / "existing-worker-output"
     artifact.mkdir(parents=True)
     rule = (
-        f'alert tcp any any -> 192.0.2.10 any '
-        f'(msg:"synthetic review artifact"; sid:{sid}; rev:1;)'
+        f'alert tcp 192.0.2.10 any -> 192.0.2.20 any '
+        f'(msg:"synthetic review artifact"; flags:R+; sid:{sid}; rev:1;)'
     )
-    (artifact / "ml-generated.rules").write_text(rule + "\n", encoding="utf-8")
+    (artifact / "ml-generated-rst.rules").write_text(rule + "\n", encoding="utf-8")
     metadata = {
-        "schema_version": "ml_rule_metadata_v1",
+        "schema_version": "ml_rst_rule_metadata_v1",
+        "candidate_family": "rst_response_v1",
         "run_id": "synthetic-run",
         "status": "needs_review",
         "approved": False,
@@ -31,8 +32,17 @@ def _sources(tmp_path, *, sid=9103999):
         "pcap_sha256": "a" * 64,
         "model_sha256": "b" * 64,
         "rule_sha256": _hash(rule.encode("utf-8")),
+        "normal_calibration_provenance": {
+            "status": "accepted",
+            "final_holdout_used": False,
+            "frozen_before_holdouts": True,
+        },
+        "normal_validation_evidence": {
+            "pcap_sha256": "c" * 64,
+            "capture_integrity": {"capture_complete": True},
+        },
     }
-    metadata_path = artifact / "ml-generated.metadata.json"
+    metadata_path = artifact / "ml-generated-rst.metadata.json"
     metadata_path.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
     calibration = tmp_path / "verified-calibration.json"
     calibration.write_text('{"version":"synthetic"}\n', encoding="utf-8")
@@ -63,7 +73,7 @@ def test_existing_generated_artifact_registers_only_proposed_candidate(tmp_path)
     assert result["deployable"] is False
     assert result["deployed"] is False
     assert not list((tmp_path / "isolated-lab").glob("*.rules"))
-    assert (tmp_path / "existing-worker-output" / "ml-generated.rules").is_file()
+    assert (tmp_path / "existing-worker-output" / "ml-generated-rst.rules").is_file()
 
 
 def test_registration_rejects_unpinned_calibration_and_baseline(tmp_path):
@@ -85,7 +95,7 @@ def test_acceptance_path_rejects_legacy_identity_without_candidate_record(tmp_pa
     with pytest.raises(LifecycleError, match="candidate_record_v1"):
         register_generated_candidate(**args, require_candidate_record=True)
     args = _sources(tmp_path / "separate", sid=9103998)
-    metadata_path = args["artifact_dir"] / "ml-generated.metadata.json"
+    metadata_path = args["artifact_dir"] / "ml-generated-rst.metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["approved"] = True
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")

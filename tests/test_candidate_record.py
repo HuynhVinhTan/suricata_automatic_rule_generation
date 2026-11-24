@@ -13,6 +13,7 @@ from netids.candidate_record import (
 )
 from netids.lifecycle_ed25519 import generate_encrypted_keypair, sign_record
 from netids.rule_lifecycle import RuleLifecycle
+from netids import rulegen
 
 
 def _fixture(tmp_path):
@@ -47,6 +48,56 @@ def _fixture(tmp_path):
     baseline = tmp_path / "baseline.rules"
     baseline.write_text("alert tcp any any -> any any (sid:1; rev:1;)\n", encoding="utf-8")
     return artifact, calibration, baseline
+
+
+def test_candidate_record_supports_provenance_bound_rst_family(tmp_path):
+    artifact = tmp_path / "rst-lineage"
+    artifact.mkdir()
+    result = rulegen.generate_rst_rule(
+        run_id="rst-record-01",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        source_ip="192.168.10.10",
+        destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[0, 1],
+        normal_validation_rst_counts=[0],
+        attack_rst_counts=[3],
+        ml_consensus=True,
+        port_diversity_triggered=True,
+        rst_evidence={
+            "rst_count": 3,
+            "capture_integrity": {"capture_complete": True},
+        },
+        normal_calibration_provenance={
+            "status": "accepted",
+            "final_holdout_used": False,
+            "frozen_before_holdouts": True,
+        },
+        normal_validation_evidence={
+            "pcap_sha256": "c" * 64,
+            "capture_integrity": {"capture_complete": True},
+        },
+    )
+    rulegen.write_rst_rule_artifacts(artifact, result)
+    (artifact / "review.json").write_text(json.dumps({
+        "schema_version": "lab_rule_review_v0_2",
+        "source_pcap_sha256": "a" * 64,
+        "model_sha256": "b" * 64,
+        "generated_rule_sid": result["sid"],
+        "status": "needs_review",
+    }), encoding="utf-8")
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps({
+        "threshold_provenance": {"calibration_decision_sha256": "d" * 64}
+    }), encoding="utf-8")
+    baseline = tmp_path / "baseline.rules"
+    baseline.write_text("alert tcp any any -> any any (sid:1; rev:1;)\n", encoding="utf-8")
+
+    record = build_candidate_record(artifact, calibration, baseline)
+
+    assert record["candidate_family"] == "rst_response_v1"
+    assert record["sid"] == result["sid"]
+    assert verify_candidate_record(record)
 
 
 def test_candidate_record_binds_new_lineage_and_is_review_only(tmp_path):

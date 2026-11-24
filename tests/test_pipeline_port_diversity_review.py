@@ -13,6 +13,21 @@ SRC = "192.168.10.20"
 DST = "192.168.10.10"
 
 
+def test_hybrid_eligibility_never_selects_the_failed_syn_only_candidate():
+    decision = pipeline._candidate_generation_decision(
+        candidate_gate_passed=True,
+        normal_test_counts=[11, 9, 11],
+        attack_counts=[11, 10, 9],
+        attach_candidate=True,
+    )
+
+    assert decision == {
+        "family": "syn_packet_count_v1",
+        "rejection": "quarantined_syn_packet_count_family",
+        "matches_previous_failed_candidate": True,
+    }
+
+
 @pytest.mark.parametrize(
     "ports, expected_peak, expected_trigger, consensus, benign_like",
     [
@@ -276,7 +291,8 @@ def test_pipeline_keeps_review_gate_closed(
     if expected_gate:
         assert review["status"] == "rejected_validation_failure"
         assert review["generation_rejection"] == "missing_normal_validation"
-        assert review["matches_previous_failed_candidate"] is False
+        assert review["matches_previous_failed_candidate"] is True
+        assert review["candidate_family_status"] == "quarantined"
         assert review["rule_generated_in_this_run"] is False
     else:
         assert review["status"] == "no_candidate"
