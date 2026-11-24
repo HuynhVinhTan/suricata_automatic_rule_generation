@@ -226,3 +226,28 @@ def g3_release_paths(*, host_root: PurePosixPath, release_sha: str) -> dict[str,
         "envelope": str(PurePosixPath(host_root) / "evidence/g3/envelope.json"),
         "verification": str(PurePosixPath(host_root) / "evidence/g3/verification.json"),
     }
+
+
+def g4_release_paths(
+    *,
+    vm1_release_sha: str,
+    vm2_release_sha: str,
+    vm3_release_sha: str,
+) -> dict[str, str]:
+    """Return the exact versioned roots used by the prepared G4 controller."""
+    commits = {
+        "vm1_release_sha": vm1_release_sha,
+        "vm2_release_sha": vm2_release_sha,
+        "vm3_release_sha": vm3_release_sha,
+    }
+    for name, value in commits.items():
+        if not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise ValueError(f"{name} must be a full lowercase Git commit SHA")
+    return {
+        "vm1_release": str(PurePosixPath("/home/tanhv/suricata-ai-showcase/releases") / vm1_release_sha),
+        "vm2_generator": str(
+            PurePosixPath("/home/kali/suricata-ai-showcase/releases")
+            / vm2_release_sha / "scripts/lab_slow_port_scan.py"
+        ),
+        "vm3_release": str(PurePosixPath("/home/tanhv/suricata-ai-showcase/releases") / vm3_release_sha),
+    }

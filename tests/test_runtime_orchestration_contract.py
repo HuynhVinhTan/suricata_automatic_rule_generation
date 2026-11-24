@@ -15,6 +15,7 @@ from scripts.runtime_orchestration_contract import (
     capture_bundle_paths,
     correlate_capture_and_generator,
     g3_release_paths,
+    g4_release_paths,
     validate_capture_generator_evidence,
     worker_bundle_paths,
 )
@@ -184,6 +185,20 @@ def test_g3_sync_is_versioned_and_private_key_is_not_in_release():
     assert paths["ledger"].endswith("/private/g3/g3-replay.sqlite3")
     assert paths["fingerprint"].endswith("/private/g3/g3-signer.pub.sha256")
     assert paths["record"].endswith("/evidence/g3/record.json")
+
+
+def test_g4_release_paths_are_versioned_and_pin_all_three_hosts():
+    paths = g4_release_paths(
+        vm1_release_sha="08174bf8a9af83c588b48f1c95f7647c22db5118",
+        vm2_release_sha="a8fe3e82e701beafc9e47fb7bc5b45064029f8be",
+        vm3_release_sha="04438fd864c4312cb22eaf1ce2560e5bcf86861e",
+    )
+    assert paths["vm1_release"].endswith("/releases/08174bf8a9af83c588b48f1c95f7647c22db5118")
+    assert paths["vm2_generator"].endswith(
+        "/releases/a8fe3e82e701beafc9e47fb7bc5b45064029f8be/scripts/lab_slow_port_scan.py"
+    )
+    assert paths["vm3_release"].endswith("/releases/04438fd864c4312cb22eaf1ce2560e5bcf86861e")
+    assert all("/current/" not in value for value in paths.values())
 
 
 def test_capture_generator_correlation_checks_hashes_timestamps_tuples_and_counts():
