@@ -134,19 +134,22 @@ candidate supplies its actual SID and rule SHA256.
 
 The separate [`g4_retarget_vm1_capture_dropin.ps1`](../scripts/g4_retarget_vm1_capture_dropin.ps1)
 has SHA256
-`4d7c484cad463d5b50b9aad9d689f2b8caf9c9845c2aeea841c2674a52399cc3`.
+`8768c7b333c35bf1af5e283232fbc1ced1ae6679fc508928c6fbba2cdd2ffcd3`.
 It is plan-only unless the owner supplies `-Install -Execute` or
 `-Rollback -Execute`. Each action uses one owner-visible `ssh -tt` session,
-performs `sudo -v` followed by `sudo -n`, and never asks Codex to handle a
-password. Installation refuses an existing drop-in, verifies the release
-module hashes, imports from the exact release with bytecode disabled, and
-asserts `ens33`, the bidirectional BPF, 60-second duration, 262144 snaplen,
-64 MiB cap, inactive capture/send states, and unchanged security properties.
-The only file it creates is the root-owned mode-0644 drop-in whose sole
-directive is the versioned `WorkingDirectory`; it then runs `daemon-reload`
-without starting the service. Rollback removes only that exact drop-in after
-the same inactive-state and content checks, reloads systemd, and proves the
-original working directory and all recorded properties are restored.
+performs `sudo -v` followed by narrowly scoped `sudo -n` file operations and
+`daemon-reload`, and never asks Codex to handle a password. Release module
+hashing and Python provenance imports run as `tanhv`, never as root.
+Installation refuses an existing drop-in, verifies the exact root-owned
+mode-0644 drop-in contents, imports from the exact release with bytecode
+disabled, and asserts `ens33`, the bidirectional BPF, 60-second duration,
+262144 snaplen, 64 MiB cap, inactive capture/send states, and unchanged
+security properties. If a post-install check fails, the script removes only
+the drop-in and directory created by that invocation, reloads systemd, and
+prints an explicit rollback pass/fail marker. Rollback validates and removes
+only that exact drop-in without depending on the new release being available,
+preserves unrelated drop-ins, reloads systemd, and proves the original
+working directory and all recorded properties are restored.
 
 ## Offline CI diagnosis
 
