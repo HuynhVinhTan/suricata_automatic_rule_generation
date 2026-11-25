@@ -29,7 +29,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedGroupKFold, train_test_split
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -167,6 +167,45 @@ def _group_ids(X: np.ndarray) -> np.ndarray:
     return groups.astype(np.int64)
 
 
+def _assert_group_disjoint(X_parts: list[np.ndarray]) -> None:
+    feature_sets = [set(map(tuple, X)) for X in X_parts]
+    for left in range(len(feature_sets)):
+        for right in range(left + 1, len(feature_sets)):
+            left_values = feature_sets[left]
+            right_values = feature_sets[right]
+            if left_values & right_values:
+                raise AssertionError("feature-group overlap detected")
+
+
+def group_disjoint_inner_splits(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    n_splits: int,
+    stratified: bool,
+) -> tuple[np.ndarray, ...]:
+    """Return complete inner partitions with exact-feature groups separated."""
+    X = np.asarray(X, dtype=np.float64)
+    y = np.asarray(y, dtype=np.int8).reshape(-1)
+    if n_splits < 2 or len(X) != len(y) or len(X) < n_splits:
+        raise ValueError("Invalid inner split inputs")
+    groups = _group_ids(X)
+    splitter = (
+        StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
+        if stratified
+        else GroupKFold(n_splits=n_splits)
+    )
+    parts = tuple(test.astype(np.int64) for _, test in splitter.split(X, y, groups))
+    joined = np.concatenate(parts)
+    if not np.array_equal(np.sort(joined), np.arange(len(X))):
+        raise AssertionError("inner group split is incomplete")
+    for left in range(len(parts)):
+        for right in range(left + 1, len(parts)):
+            if np.intersect1d(groups[parts[left]], groups[parts[right]]).size:
+                raise AssertionError("inner group split overlaps")
+    return parts
+
+
 def _model_factories() -> dict[str, Any]:
     """Selected v02 family configurations; no v02 model is loaded or overwritten."""
     return {
@@ -249,7 +288,11 @@ def _save_eda_figures(processed: pd.DataFrame, directory: Path) -> list[str]:
     for ax, column, title, unit in zip(axes.ravel(), RAW_METRICS, ("Duration by class", "Packets by class", "Bytes by class"), ("seconds; log y-axis", "packets; log y-axis", "bytes; log y-axis")):
         normal = processed.loc[processed["label"] == 0, column].to_numpy(dtype=float)
         attack = processed.loc[processed["label"] == 1, column].to_numpy(dtype=float)
-        ax.boxplot([normal, attack], labels=["Normal", "Attack"], showfliers=False); ax.set_yscale("symlog", linthresh=1e-6); ax.set_title(title); ax.set_ylabel(unit); ax.grid(alpha=0.2)
+        try:
+            ax.boxplot([normal, attack], tick_labels=["Normal", "Attack"], showfliers=False)
+        except TypeError:
+            ax.boxplot([normal, attack], labels=["Normal", "Attack"], showfliers=False)
+        ax.set_yscale("symlog", linthresh=1e-6); ax.set_title(title); ax.set_ylabel(unit); ax.grid(alpha=0.2)
     axes[1, 1].axis("off"); fig.suptitle("UNSW-NB15 EDA: Normal vs Attack distributions", fontsize=15); fig.tight_layout()
     name = "02_normal_attack_boxplots.png"; fig.savefig(directory / name, dpi=300, bbox_inches="tight"); plt.close(fig); names.append(name)
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -269,14 +312,33 @@ def _save_eda_figures(processed: pd.DataFrame, directory: Path) -> list[str]:
 
 
 def _write_reports(data: PreprocessingResult, partition: dict[str, Any], output: Path) -> None:
+    numeric = data.raw.loc[:, PHYSICAL_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    labels = pd.to_numeric(data.raw["label"], errors="coerce")
+    protocols = data.raw["proto"].astype("string").str.strip().str.lower()
+    quality = {
+        "nan_counts_by_physical_column": {name: int(value) for name, value in numeric.isna().sum().items()},
+        "inf_counts_by_physical_column": {name: int(value) for name, value in zip(PHYSICAL_COLUMNS, np.isinf(numeric.to_numpy(dtype=np.float64)).sum(axis=0))},
+        "negative_counts_by_physical_column": {name: int(value) for name, value in (numeric < 0).sum().items()},
+        "invalid_binary_label_rows": int((labels.isna() | ~labels.isin([0, 1])).sum()),
+        "unsupported_protocol_rows": int((~protocols.isin(["tcp", "udp"])).sum()),
+        "exact_duplicate_raw_rows": data.raw_duplicate_rows,
+        "exact_duplicate_feature_rows": data.processed_duplicate_feature_rows,
+        "rows_excluded_by_contract": data.removed_rows,
+    }
+    output.joinpath("data_quality_audit.json").write_text(json.dumps(quality, indent=2), encoding="utf-8")
     output.joinpath("preprocessing_report.json").write_text(json.dumps({
         "status": "COMPLETED", "raw_rows": data.original_rows, "processed_rows": data.processed_rows, "removed_rows": data.removed_rows,
         "retention_rate": data.processed_rows / data.original_rows, "removal_reasons": data.removal_reasons,
         "raw_duplicate_rows_reported_not_removed": data.raw_duplicate_rows, "processed_duplicate_feature_rows_reported_not_removed": data.processed_duplicate_feature_rows,
+        "quality_audit": quality,
         "policy": {"raw_preserved": True, "imputation": "none", "clipping": "none", "duplicate_deletion": "none", "invalid_rows": "excluded only when the existing UNSW flow contract failed"},
     }, indent=2), encoding="utf-8")
-    before = data.raw.head(10).copy(); before.insert(0, "stage", "RAW_BEFORE")
-    after = data.processed.head(10).copy(); after.insert(0, "stage", "PROCESSED_AFTER")
+    sample_source_rows = data.processed.head(10)["source_raw_row"].astype(int).to_numpy()
+    before = data.raw.loc[sample_source_rows].copy().reset_index(drop=True)
+    before.insert(0, "source_raw_row", sample_source_rows)
+    before.insert(0, "stage", "RAW_BEFORE")
+    after = data.processed.head(10).copy()
+    after.insert(0, "stage", "PROCESSED_AFTER")
     pd.concat([before, after], ignore_index=True, sort=False).to_csv(output / "before_after_samples.csv", index=False)
     rows = []
     for stage, table in (("RAW_BEFORE", data.raw), ("PROCESSED_AFTER", data.processed)):
@@ -302,11 +364,10 @@ def _fit_and_score_cv(X: np.ndarray, y: np.ndarray, partition: dict[str, Any], o
             model = factories[family](); model.fit(X_train, y_train); scores = model.predict_proba(X_test)[:, 1]; threshold = .5; oof[family][test_rel] = scores; thresholds[family][test_rel] = threshold
             fold_metrics.append({"fold": fold, "family": family, "train_rows": len(train_rel), "test_rows": len(test_rel), "threshold": threshold, **summarize_metrics(y_test, scores, threshold), **_confusion(y_test, scores, threshold)})
             checkpoint = checkpoint_dir / f"fold_{fold:02d}_{family.lower()}.joblib"; joblib.dump({"family": family, "model": model, "scaler": None, "threshold": threshold, "best_weight_restored": True}, checkpoint, compress=3); checkpoint_names.append(str(checkpoint.relative_to(output)))
-        inner_train, inner_stop = train_test_split(np.arange(len(train_rel)), test_size=.20, stratify=y_train, random_state=SEED); scaler = StandardScaler().fit(X_train[inner_train]); model = factories["MLP"](); model.fit(scaler.transform(X_train[inner_train]), y_train[inner_train], scaler.transform(X_train[inner_stop]), y_train[inner_stop]); scores = model.predict_proba(scaler.transform(X_test))[:, 1]; oof["MLP"][test_rel] = scores; thresholds["MLP"][test_rel] = .5
+        inner_train, inner_stop = group_disjoint_inner_splits(X_train, y_train, n_splits=2, stratified=True); _assert_group_disjoint([X_train[inner_train], X_train[inner_stop], X_test]); scaler = StandardScaler().fit(X_train[inner_train]); model = factories["MLP"](); model.fit(scaler.transform(X_train[inner_train]), y_train[inner_train], scaler.transform(X_train[inner_stop]), y_train[inner_stop]); scores = model.predict_proba(scaler.transform(X_test))[:, 1]; oof["MLP"][test_rel] = scores; thresholds["MLP"][test_rel] = .5
         histories["MLP"].append({"fold": fold, "best_epoch": int(model.best_epoch_), "epochs_ran": int(model.epochs_ran_), "best_validation_loss": float(model.best_val_loss_), "train_loss": [float(v) for v in model.history_["train_loss"]], "validation_loss": [float(v) for v in model.history_["val_loss"]]}); fold_metrics.append({"fold": fold, "family": "MLP", "train_rows": len(train_rel), "test_rows": len(test_rel), "threshold": .5, **summarize_metrics(y_test, scores, .5), **_confusion(y_test, scores, .5)})
         checkpoint = checkpoint_dir / f"fold_{fold:02d}_mlp.joblib"; joblib.dump({"family": "MLP", "model": model, "scaler": scaler, "threshold": .5, "best_epoch": int(model.best_epoch_), "best_weight_restored": True}, checkpoint, compress=3); checkpoint_names.append(str(checkpoint.relative_to(output)))
-        normal_positions = np.flatnonzero(y_train == 0)
-        ae_train_rel, ae_stop_rel, threshold_rel = np.array_split(normal_positions, 3); ae_scaler = StandardScaler().fit(X_train[ae_train_rel]); ae_model = factories["AE"](); ae_model.fit(ae_scaler.transform(X_train[ae_train_rel]), ae_scaler.transform(X_train[ae_stop_rel])); normal_scores = ae_model.anomaly_score(ae_scaler.transform(X_train[threshold_rel])); threshold, _ = threshold_for_budget(normal_scores, NORMAL_FPR_BUDGET); scores = ae_model.anomaly_score(ae_scaler.transform(X_test)); oof["AE"][test_rel] = scores; thresholds["AE"][test_rel] = threshold
+        normal_positions = np.flatnonzero(y_train == 0); normal_parts = group_disjoint_inner_splits(X_train[normal_positions], y_train[normal_positions], n_splits=3, stratified=False); ae_train_rel, ae_stop_rel, threshold_rel = tuple(normal_positions[part] for part in normal_parts); _assert_group_disjoint([X_train[ae_train_rel], X_train[ae_stop_rel], X_train[threshold_rel], X_test]); ae_scaler = StandardScaler().fit(X_train[ae_train_rel]); ae_model = factories["AE"](); ae_model.fit(ae_scaler.transform(X_train[ae_train_rel]), ae_scaler.transform(X_train[ae_stop_rel])); normal_scores = ae_model.anomaly_score(ae_scaler.transform(X_train[threshold_rel])); threshold, _ = threshold_for_budget(normal_scores, NORMAL_FPR_BUDGET); scores = ae_model.anomaly_score(ae_scaler.transform(X_test)); oof["AE"][test_rel] = scores; thresholds["AE"][test_rel] = threshold
         histories["AE"].append({"fold": fold, "best_epoch": int(ae_model.best_epoch_), "epochs_ran": int(ae_model.epochs_ran_), "best_calibration_loss": float(ae_model.best_cal_loss_), "train_loss": [float(v) for v in ae_model.history_["train_loss"]], "validation_loss": [float(v) for v in ae_model.history_["cal_loss"]], "normal_threshold_rows": len(threshold_rel), "normal_fpr_budget": NORMAL_FPR_BUDGET}); fold_metrics.append({"fold": fold, "family": "AE", "train_rows": len(train_rel), "test_rows": len(test_rel), "threshold": float(threshold), "normal_fpr_budget": NORMAL_FPR_BUDGET, **summarize_metrics(y_test, scores, threshold), **_confusion(y_test, scores, threshold)})
         checkpoint = checkpoint_dir / f"fold_{fold:02d}_ae.joblib"; joblib.dump({"family": "AE", "model": ae_model, "scaler": ae_scaler, "threshold": float(threshold), "best_epoch": int(ae_model.best_epoch_), "best_weight_restored": True, "normal_only_threshold_calibration": True}, checkpoint, compress=3); checkpoint_names.append(str(checkpoint.relative_to(output)))
     if any(not np.isfinite(values).all() for values in list(oof.values()) + list(thresholds.values())): raise ValueError("OOF CV predictions are incomplete")
@@ -344,7 +405,8 @@ def _write_hash_manifest(output: Path, data: PreprocessingResult, partition: dic
     files = {str(path.relative_to(output)).replace("\\", "/"): sha256(path) for path in output.rglob("*") if path.is_file() and path.name != "manifest.json"}
     v02_summary = json.loads((V02_DIR / "summary.json").read_text(encoding="utf-8"))
     v02_model_hashes = {family: item["model_sha256"] for family, item in v02_summary["selected"].items()}
-    manifest = {"experiment": "unsw_v03_research_completeness", "status": "COMPLETED", "dataset": "UNSW-NB15", "seed": SEED, "folds": FOLDS, "feature_names": list(FEATURES), "official_test_accessed": False, "official_test_policy": "never opened by v03", "raw_training_file": str(TRAIN_FILE), "raw_training_sha256": sha256(TRAIN_FILE), "raw_rows": data.original_rows, "processed_rows": data.processed_rows, "removed_rows": data.removed_rows, "v02_split_sha256": partition["split_sha256"], "v02_development_artifact_sha256": sha256(V02_DIR / "summary.json"), "v02_frozen_model_hashes": v02_model_hashes, "figures": figures, "checkpoints": checkpoints, "file_sha256": files, "provenance": {"cv": "StratifiedGroupKFold on frozen v02 Development partition only", "group": "exact equality of four transformed features", "scaler_fit_scope": "inside each fold; MLP/AE scaler fit on inner training-only data", "ae_threshold": "Normal-only inner calibration with empirical FPR budget 0.01", "v02_artifacts_overwritten": False, "runtime_and_suricata_pipeline_changed": False}}
+    checkpoint_hashes = {name.replace("\\", "/"): files[name.replace("\\", "/")] for name in checkpoints}
+    manifest = {"experiment": "unsw_v03_research_completeness", "status": "COMPLETED", "dataset": "UNSW-NB15", "seed": SEED, "folds": FOLDS, "feature_names": list(FEATURES), "official_test_accessed": False, "official_test_policy": "never opened by v03", "raw_training_file": str(TRAIN_FILE), "raw_training_sha256": sha256(TRAIN_FILE), "raw_rows": data.original_rows, "processed_rows": data.processed_rows, "removed_rows": data.removed_rows, "v02_split_sha256": partition["split_sha256"], "v02_development_artifact_sha256": sha256(V02_DIR / "summary.json"), "v02_frozen_model_hashes": v02_model_hashes, "figures": figures, "checkpoints": checkpoints, "checkpoint_sha256": checkpoint_hashes, "file_sha256": files, "provenance": {"cv": "StratifiedGroupKFold on frozen v02 Development partition only", "group": "exact equality of four transformed features", "scaler_fit_scope": "inside each fold; MLP/AE scaler fit on inner training-only data", "ae_threshold": "Normal-only inner calibration with empirical FPR budget 0.01", "v02_artifacts_overwritten": False, "runtime_and_suricata_pipeline_changed": False}}
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
@@ -385,7 +447,7 @@ def verify(output: str | Path = OUTPUT) -> None:
         if manifest.get("numbers_generated") is not False or manifest.get("cv_executed") is not False or not (output / "BLOCKED.md").is_file(): raise ValueError("Invalid blocked report")
         print("BLOCKED REPORT VERIFIED: no numbers, CV or figures generated"); return
     if manifest.get("status") != "COMPLETED": raise ValueError("Unknown v03 status")
-    required = ("preprocessing_report.json", "before_after_samples.csv", "class_distribution_before_after.csv", "quantiles_and_outliers.csv", "leakage_audit.json", "cv_fold_metrics.csv", "cv_summary.csv", "cv_oof_scores.npz", "training_history.json", "model_comparison.json")
+    required = ("preprocessing_report.json", "data_quality_audit.json", "before_after_samples.csv", "class_distribution_before_after.csv", "quantiles_and_outliers.csv", "leakage_audit.json", "cv_fold_metrics.csv", "cv_summary.csv", "cv_oof_scores.npz", "training_history.json", "model_comparison.json")
     for filename in required:
         if not (output / filename).is_file(): raise ValueError(f"Missing v03 artifact: {filename}")
     folds = pd.read_csv(output / "cv_fold_metrics.csv")
