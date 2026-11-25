@@ -170,6 +170,8 @@ def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeyp
     }
     values = iter((candidate, replay, owner))
     lifecycle_created = []
+    runtime_created = []
+    activation_calls = []
     monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
     monkeypatch.setattr(operate_frozen_rst_once, "_read_json", lambda _path: next(values))
     monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_candidate", lambda *args: {})
@@ -183,6 +185,14 @@ def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeyp
         "RuleLifecycle",
         lambda *args, **kwargs: lifecycle_created.append(True),
     )
+    class RuntimeProbe:
+        def __init__(self, *args, **kwargs):
+            runtime_created.append(True)
+
+        def activate(self, *args, **kwargs):
+            activation_calls.append(True)
+
+    monkeypatch.setattr(operate_frozen_rst_once, "IsolatedSuricataRuntime", RuntimeProbe)
     with pytest.raises(OperationError, match="runtime private/public key mismatch"):
         operate_frozen_rst_once.execute_frozen_once(
             candidate_file=tmp_path / "candidate.json",
@@ -202,3 +212,44 @@ def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeyp
             runtime_private_password=b"wrong-password",
         )
     assert lifecycle_created == []
+    assert runtime_created == []
+    assert activation_calls == []
+    assert not (tmp_path / "isolated" / "audit" / "owner-once.jsonl").exists()
+    assert not (tmp_path / "isolated" / "rules").exists()
+
+
+def test_frozen_cli_forwards_exact_runtime_public_key_path(monkeypatch, tmp_path):
+    runtime_public_file = tmp_path / "keys" / "runtime.pub.pem"
+    runtime_private_file = tmp_path / "keys" / "runtime.pem"
+    runtime_public_file.parent.mkdir()
+    runtime_public_file.write_bytes(b"runtime-public")
+    runtime_private_file.write_bytes(b"test-private-placeholder")
+    evidence_file = tmp_path / "evidence.json"
+    failure_file = tmp_path / "failure.json"
+    captured = {}
+
+    def fake_execute_frozen_once(**kwargs):
+        captured.update(kwargs)
+        return {"outcome": "test"}
+
+    monkeypatch.setattr(operate_frozen_rst_once, "execute_frozen_once", fake_execute_frozen_once)
+    monkeypatch.setattr(operate_frozen_rst_once.getpass, "getpass", lambda _prompt: "test-password")
+
+    assert operate_frozen_rst_once.main([
+        "--candidate", str(tmp_path / "candidate.json"),
+        "--replay", str(tmp_path / "replay.json"),
+        "--owner-authorization", str(tmp_path / "owner.json"),
+        "--replay-public", str(tmp_path / "replay.pub.pem"),
+        "--owner-public", str(tmp_path / "owner.pub.pem"),
+        "--runtime-public", str(runtime_public_file),
+        "--production-yaml", str(tmp_path / "production.yaml"),
+        "--production-rules", str(tmp_path / "production.rules"),
+        "--isolated-yaml", str(tmp_path / "isolated.yaml"),
+        "--isolated-root", str(tmp_path / "isolated"),
+        "--audit-path", str(tmp_path / "isolated" / "audit" / "owner-once.jsonl"),
+        "--runtime-private", str(runtime_private_file),
+        "--evidence-output", str(evidence_file),
+        "--failure-output", str(failure_file),
+        "--probe", "ATTACK=/unused/attack.pcap",
+    ]) == 0
+    assert captured["runtime_public_file"] == runtime_public_file

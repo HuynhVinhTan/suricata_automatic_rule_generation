@@ -237,7 +237,8 @@ def main(argv=None):
     evidence = execute_frozen_once(
         candidate_file=args.candidate, replay_file=args.replay,
         owner_file=args.owner_authorization, replay_public_file=args.replay_public,
-        owner_public_file=args.owner_public, production_yaml=args.production_yaml,
+        owner_public_file=args.owner_public, runtime_public_file=args.runtime_public,
+        production_yaml=args.production_yaml,
         production_rules=args.production_rules, isolated_yaml=args.isolated_yaml,
         isolated_root=args.isolated_root, probe_specs=args.probe,
         audit_path=args.audit_path,
