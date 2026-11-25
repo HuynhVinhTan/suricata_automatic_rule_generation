@@ -307,6 +307,7 @@ def execute_one_time(
         attack_sha256=attack_digest,
         normal_pcap=normal_pcap,
         normal_sha256=normal_digest,
+        attempt_id=proposed["run_id"],
     )
     started = datetime.now(timezone.utc)
     outcome = "FAILED"
@@ -410,7 +411,7 @@ def execute_candidate_one_time(
             config=isolated_yaml, attack_pcap=attack_pcap, attack_sha256=attack_sha256,
             normal_pcap=normal_pcap, normal_sha256=normal_sha256,
             candidate_sid=candidate["sid"], candidate_rule_sha256=candidate["rule_sha256"],
-            root=root,
+            root=root, attempt_id=proposed["run_id"],
         )
         staged = lifecycle.stage(proposed, root / "rules", activate=True, runtime=runtime)
         if staged.get("status") != "active_in_isolated_lab":

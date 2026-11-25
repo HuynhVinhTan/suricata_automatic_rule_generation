@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from netids.isolated_suricata_runtime import (
     IsolatedSuricataRuntime, IsolatedRuntimeError, is_verified_vm1_host,
@@ -160,6 +161,91 @@ outputs:
     runtime._validate_isolated_configuration()
 
 
+def test_attempt_namespace_rewrites_effective_config_without_touching_template(tmp_path):
+    root = tmp_path / "isolated"
+    root.mkdir()
+    template = root / "isolated.yaml"
+    template.write_text(
+        "default-rule-path: {root}/rules\n"
+        "rule-files:\n"
+        "  - active.rules\n"
+        "unix-command:\n"
+        "  enabled: yes\n"
+        "  filename: {root}/runtime/lab-suricata.socket\n"
+        "af-packet:\n"
+        "  - interface: lo\n"
+        "outputs:\n"
+        "  - eve-log:\n"
+        "      enabled: yes\n"
+        "      filename: eve.json\n".format(root=root),
+        encoding="utf-8",
+    )
+    original = template.read_bytes()
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = root
+    runtime.config_source = template
+    runtime.attempt_id = "attempt-20261125-01"
+    runtime.attempt_root = root / "attempts" / runtime.attempt_id
+    runtime.config = runtime.attempt_root / "suricata.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "lab-suricata.socket"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "lab-suricata.pid"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+
+    runtime._prepare_attempt_namespace()
+
+    assert template.read_bytes() == original
+    effective = yaml.safe_load(runtime.config.read_text(encoding="utf-8"))
+    assert effective["default-rule-path"] == str(runtime.active_rules.parent)
+    assert effective["rule-files"] == ["active.rules"]
+    assert effective["unix-command"]["filename"] == str(runtime.socket_path)
+    assert runtime.config.is_relative_to(runtime.attempt_root)
+    assert runtime.diagnostic_path.is_relative_to(runtime.attempt_root)
+
+
+def test_attempt_namespace_refuses_reuse_and_preserves_prior_attempt(tmp_path):
+    root = tmp_path / "isolated"
+    root.mkdir()
+    template = root / "isolated.yaml"
+    template.write_text(
+        "default-rule-path: rules\n"
+        "rule-files: [active.rules]\n"
+        "unix-command: {enabled: true, filename: runtime/socket}\n"
+        "af-packet: [{interface: lo}]\n"
+        "outputs: [{eve-log: {enabled: true, filename: eve.json}}]\n",
+        encoding="utf-8",
+    )
+
+    def make_runtime():
+        runtime = object.__new__(IsolatedSuricataRuntime)
+        runtime.root = root
+        runtime.config_source = template
+        runtime.attempt_id = "attempt-01"
+        runtime.attempt_root = root / "attempts" / runtime.attempt_id
+        runtime.config = runtime.attempt_root / "suricata.yaml"
+        runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+        runtime.socket_path = runtime.attempt_root / "runtime" / "socket"
+        runtime.pidfile = runtime.attempt_root / "runtime" / "pid"
+        runtime.logdir = runtime.attempt_root / "logs"
+        runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+        return runtime
+
+    runtime = make_runtime()
+    runtime._prepare_attempt_namespace()
+    marker = runtime.attempt_root / "failure.json"
+    marker.write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(IsolatedRuntimeError, match="already exists"):
+        make_runtime()._prepare_attempt_namespace()
+    assert marker.read_text(encoding="utf-8") == "preserve"
+
+
+def test_historical_sid9103003_config_declares_loopback_af_packet():
+    config = yaml.safe_load(Path("configs/suricata/isolated-lifecycle-9103003.yaml").read_text(encoding="utf-8"))
+    assert config["af-packet"] == [{"interface": "lo"}]
+
+
 def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_path):
     runtime = object.__new__(IsolatedSuricataRuntime)
     runtime.root = tmp_path
@@ -260,8 +346,9 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
     }
     values = iter((candidate, replay, owner))
     audit_path = tmp_path / "isolated" / "audit" / "owner-once.jsonl"
-    failure_path = tmp_path / "attempt-02" / "failure.json"
-    runtime_diag = tmp_path / "attempt-02" / "runtime-diagnostics.jsonl"
+    attempt_root = tmp_path / "isolated" / "attempts" / "attempt-02"
+    failure_path = attempt_root / "failure.json"
+    runtime_diag = attempt_root / "runtime-diagnostics.jsonl"
     runtime_diag.parent.mkdir(parents=True)
     runtime_diag.write_text(
         json.dumps({"phase": "reload", "status": "failed", "error": "socket rejected"}) + "\n",
@@ -299,9 +386,10 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
             self.rollback_verified = False
             self.post_rollback_verified = False
             self.diagnostic_path = runtime_diag
-            self.pidfile = tmp_path / "attempt-02" / "runtime.pid"
-            self.socket_path = tmp_path / "attempt-02" / "runtime.sock"
-            self.active_rules = tmp_path / "attempt-02" / "active.rules"
+            self.attempt_root = attempt_root
+            self.pidfile = attempt_root / "runtime.pid"
+            self.socket_path = attempt_root / "runtime.sock"
+            self.active_rules = attempt_root / "active.rules"
             self.process = SimpleNamespace(poll=lambda: 0)
 
         def shutdown(self):
@@ -335,6 +423,7 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
             production_rules=tmp_path / "rules.rules",
             isolated_yaml=tmp_path / "isolated.yaml",
             isolated_root=tmp_path / "isolated",
+            attempt_id="attempt-02",
             probe_specs=[], audit_path=audit_path, failure_path=failure_path,
             runtime_private_pem=b"private", runtime_private_password=b"password",
         )
@@ -348,6 +437,8 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
     assert report["production_state"] == "unchanged"
     assert report["lifecycle_audit_records"] == 11
     assert report["diagnostic_log_sha256"]
+    assert report["attempt_id"] == "attempt-02"
+    assert report["attempt_evidence_root"] == str((tmp_path / "isolated" / "attempts" / "attempt-02").resolve())
 
 
 def test_isolated_runtime_records_probe_boundary_in_supplied_trace(monkeypatch, tmp_path):
@@ -442,9 +533,10 @@ def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeyp
             production_rules=tmp_path / "rules.rules",
             isolated_yaml=tmp_path / "isolated.yaml",
             isolated_root=tmp_path / "isolated",
+            attempt_id="attempt-keypair",
             probe_specs=[],
             audit_path=tmp_path / "isolated" / "audit" / "owner-once.jsonl",
-            failure_path=tmp_path / "failure.json",
+            failure_path=tmp_path / "isolated" / "attempts" / "attempt-keypair" / "failure.json",
             runtime_private_pem=b"wrong-private-key",
             runtime_private_password=b"wrong-password",
         )
@@ -461,8 +553,8 @@ def test_frozen_cli_forwards_exact_runtime_public_key_path(monkeypatch, tmp_path
     runtime_public_file.parent.mkdir()
     runtime_public_file.write_bytes(b"runtime-public")
     runtime_private_file.write_bytes(b"test-private-placeholder")
-    evidence_file = tmp_path / "evidence.json"
-    failure_file = tmp_path / "failure.json"
+    evidence_file = tmp_path / "isolated" / "attempts" / "attempt-cli" / "evidence.json"
+    failure_file = tmp_path / "isolated" / "attempts" / "attempt-cli" / "failure.json"
     captured = {}
 
     def fake_execute_frozen_once(**kwargs):
@@ -483,6 +575,7 @@ def test_frozen_cli_forwards_exact_runtime_public_key_path(monkeypatch, tmp_path
         "--production-rules", str(tmp_path / "production.rules"),
         "--isolated-yaml", str(tmp_path / "isolated.yaml"),
         "--isolated-root", str(tmp_path / "isolated"),
+        "--attempt-id", "attempt-cli",
         "--audit-path", str(tmp_path / "isolated" / "audit" / "owner-once.jsonl"),
         "--runtime-private", str(runtime_private_file),
         "--evidence-output", str(evidence_file),

@@ -41,6 +41,7 @@ _PRIVATE_KEY = re.compile(
 _SECRET_FIELD = re.compile(
     r"(?i)(password|passphrase|private[_ -]?key|secret|token|credential)(\s*[:=]\s*)\S+",
 )
+_ATTEMPT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _redact_diagnostic(value: object) -> str:
@@ -163,13 +164,23 @@ class IsolatedSuricataRuntime:
         normal_pcap: Path, normal_sha256: str, suricata="/usr/bin/suricata",
         suricatasc="/usr/bin/suricatasc", tcpreplay="/usr/bin/tcpreplay",
         candidate_sid: int = SID, candidate_rule_sha256: str = RULE_SHA,
-        root: Path = ROOT, negative_pcaps=(), negative_sha256s=(), probe_plan=(),
+        root: Path = ROOT, attempt_id: str | None = None,
+        negative_pcaps=(), negative_sha256s=(), probe_plan=(),
         deadline_monotonic=None, latency_trace=None,
     ):
         self.root = Path(root)
+        self.config_source = Path(config)
+        self.attempt_id = self._validate_attempt_id(attempt_id)
+        self.attempt_root = (
+            self.root / "attempts" / self.attempt_id
+            if self.attempt_id is not None else self.root
+        )
         self.sid = candidate_sid
         self.rule_sha256 = candidate_rule_sha256
-        self.config = Path(config)
+        self.config = (
+            self.attempt_root / "suricata.yaml"
+            if self.attempt_id is not None else self.config_source
+        )
         self.attack_pcap = Path(attack_pcap)
         self.normal_pcap = Path(normal_pcap)
         self.attack_sha256 = attack_sha256
@@ -182,11 +193,11 @@ class IsolatedSuricataRuntime:
         self.suricata = str(suricata)
         self.suricatasc = str(suricatasc)
         self.tcpreplay = str(tcpreplay)
-        self.socket_path = self.root / "runtime" / "lab-suricata.socket"
-        self.pidfile = self.root / "runtime" / "lab-suricata.pid"
-        self.active_rules = self.root / "rules" / "active.rules"
-        self.logdir = self.root / "logs"
-        self.diagnostic_path = self.root / "logs" / "runtime-diagnostics.jsonl"
+        self.socket_path = self.attempt_root / "runtime" / "lab-suricata.socket"
+        self.pidfile = self.attempt_root / "runtime" / "lab-suricata.pid"
+        self.active_rules = self.attempt_root / "rules" / "active.rules"
+        self.logdir = self.attempt_root / "logs"
+        self.diagnostic_path = self.attempt_root / "logs" / "runtime-diagnostics.jsonl"
         self.process = None
         self._output_collectors = []
         self._old_rules = None
@@ -199,6 +210,14 @@ class IsolatedSuricataRuntime:
         self._last_attack_eve = ""
         self.probe_results = []
         self._preflight()
+
+    @staticmethod
+    def _validate_attempt_id(attempt_id: str | None) -> str | None:
+        if attempt_id is None:
+            return None
+        if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id):
+            raise IsolatedRuntimeError("Invalid attempt-specific evidence identifier")
+        return attempt_id
 
     def _check_deadline(self):
         if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
@@ -221,8 +240,11 @@ class IsolatedSuricataRuntime:
             raise IsolatedRuntimeError("Wrong host or ens33 address; isolated VM1 only")
         if not self.root.is_dir() or self.root.is_symlink():
             raise IsolatedRuntimeError("Exact isolated runtime root is missing/unsafe")
+        if self.attempt_id is None:
+            raise IsolatedRuntimeError("Attempt-specific evidence identifier is required")
         if not Path("/sys/class/net/lo").exists():
             raise IsolatedRuntimeError("Loopback interface is unavailable")
+        self._prepare_attempt_namespace()
         _config_safe(self.config, self.root)
         self._validate_isolated_configuration()
         if len(self.negative_pcaps) != len(self.negative_sha256s):
@@ -253,6 +275,50 @@ class IsolatedSuricataRuntime:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.active_rules.exists():
             raise IsolatedRuntimeError("Unexpected existing isolated ruleset; refuse overwrite")
+
+    def _prepare_attempt_namespace(self) -> None:
+        """Create one exclusive runtime evidence namespace without touching prior attempts."""
+        if self.attempt_id is None:
+            raise IsolatedRuntimeError("Attempt-specific evidence identifier is required")
+        if not self.root.is_dir() or self.root.is_symlink():
+            raise IsolatedRuntimeError("Exact isolated runtime root is missing/unsafe")
+        if self.config_source.is_symlink() or not self.config_source.is_file():
+            raise IsolatedRuntimeError("Isolated configuration template is missing or unsafe")
+        _config_safe(self.config_source, self.root)
+        try:
+            configuration = yaml.safe_load(self.config_source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise IsolatedRuntimeError("Invalid isolated Suricata configuration template") from exc
+        if not isinstance(configuration, dict):
+            raise IsolatedRuntimeError("Isolated Suricata configuration template is not an object")
+
+        attempts = self.root / "attempts"
+        if attempts.is_symlink():
+            raise IsolatedRuntimeError("Attempt evidence directory is symlinked")
+        attempts.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.attempt_root.exists() or self.attempt_root.is_symlink():
+            raise IsolatedRuntimeError("Attempt evidence namespace already exists; refuse reuse")
+        self.attempt_root.mkdir(mode=0o700)
+        for directory in (self.socket_path.parent, self.active_rules.parent, self.logdir):
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        configuration["default-rule-path"] = str(self.active_rules.parent)
+        configuration["rule-files"] = ["active.rules"]
+        if configuration.get("unix-command") is not None and not isinstance(
+            configuration.get("unix-command"), dict
+        ):
+            raise IsolatedRuntimeError("Isolated UNIX command configuration is invalid")
+        unix_command = dict(configuration.get("unix-command") or {})
+        unix_command["enabled"] = True
+        unix_command["filename"] = str(self.socket_path)
+        configuration["unix-command"] = unix_command
+        try:
+            _atomic(
+                self.config,
+                (yaml.safe_dump(configuration, sort_keys=False) + "\n").encode("utf-8"),
+            )
+        except (OSError, UnicodeError, TypeError, ValueError, yaml.YAMLError) as exc:
+            raise IsolatedRuntimeError("Could not create effective attempt configuration") from exc
 
     def _validate_isolated_configuration(self) -> None:
         try:

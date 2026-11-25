@@ -23,15 +23,23 @@ the persistent hash chain; it must not be removed, rewritten, or replayed.
    Suricata 8.0.3 configuration contract, AF_PACKET loopback-only scope,
    attempt-specific UNIX socket, isolated `active.rules` path, six pinned PCAP
    hashes, frozen replay signature, trust anchors, and the existing deadline
-   and rollback gates. If native `suricata -T` is unavailable, record that gap;
-   offline tests are not a native verification substitute.
+   and rollback gates. The standalone procedure is
+   `docs/g5-native-readiness-procedure-2026-11-25.md`; it runs only
+   `suricata -V` and native `suricata -T -S` syntax validation. If native
+   `suricata -T` is unavailable, record that gap; offline tests are not a
+   native verification substitute.
 3. After a separately reviewed owner decision, issue a new authorization with a
    new nonce. The old authorization is never reused. No code path performs an
    automatic retry.
-4. Allocate a new attempt-specific evidence directory and diagnostic log. Keep
-   the persistent audit ledger as the source of truth and append through its
-   existing hash-chain writer; never reset it. Failure and signed-success
-   outputs are exclusive-create artifacts and must not overwrite the originals.
+4. Allocate a new attempt-specific evidence directory at
+   `<isolated-root>/attempts/<attempt-id>`. The runtime creates an effective
+   `suricata.yaml`, `rules/active.rules`, `runtime/lab-suricata.socket`, PID
+   file, logs, and bounded `logs/runtime-diagnostics.jsonl` there. The
+   namespace is exclusive-create and cannot be reused. Keep the persistent
+   audit ledger at `<isolated-root>/audit/owner-once.jsonl` as the source of
+   truth and append through its existing hash-chain writer; never reset it.
+   Failure and signed-success outputs must also be inside the new namespace
+   and must not overwrite the original failure evidence.
 5. Run only the isolated AF_PACKET/`lo` runtime. The daemon configuration
    names the isolated `active.rules` file and UNIX socket; no production rules,
    configuration, interface, or socket may be opened.

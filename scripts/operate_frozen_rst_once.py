@@ -80,7 +80,7 @@ def execute_frozen_once(
     *, candidate_file, replay_file, owner_file, replay_public_file, owner_public_file,
     runtime_public_file,
     production_yaml, production_rules, isolated_yaml, isolated_root,
-    probe_specs, audit_path, failure_path,
+    attempt_id, probe_specs, audit_path, failure_path,
     runtime_private_pem, runtime_private_password,
 ):
     if not is_verified_vm1_host():
@@ -131,6 +131,9 @@ def execute_frozen_once(
         raise OperationError("frozen owner authorization scope mismatch")
     if Path(audit_path).resolve() != Path(isolated_root).resolve() / "audit" / "owner-once.jsonl":
         raise OperationError("audit path must be the candidate-specific persistent one-shot ledger")
+    attempt_evidence_root = Path(isolated_root).resolve() / "attempts" / str(attempt_id)
+    if not Path(failure_path).resolve().is_relative_to(attempt_evidence_root):
+        raise OperationError("attempt evidence output must remain inside its attempt namespace")
     with latency.stage("production_safety_snapshot_before", component="runtime"):
         before = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
     _require_candidate_baseline(candidate, before)
@@ -168,7 +171,7 @@ def execute_frozen_once(
             normal_sha256=next(probe["pcap_sha256"] for probe in probe_plan if probe["label"] == "NORMAL"),
             probe_plan=probe_plan, deadline_monotonic=deadline,
             candidate_sid=SID, candidate_rule_sha256=candidate["rule_sha256"],
-            root=isolated_root, latency_trace=latency,
+            root=isolated_root, attempt_id=attempt_id, latency_trace=latency,
         )
         staged = lifecycle.stage(proposed, Path(isolated_root) / "rules", activate=True, runtime=runtime)
         if staged.get("status") != "active_in_isolated_lab":
@@ -265,6 +268,10 @@ def execute_frozen_once(
             "schema_version": "g5_frozen_runtime_failure_v1",
             "candidate_id": candidate.get("candidate_id"),
             "sid": SID,
+            "attempt_id": attempt_id,
+            "attempt_evidence_root": str(
+                getattr(runtime, "attempt_root", attempt_evidence_root)
+            ),
             "failure_phase": getattr(runtime, "failure_phase", None) or "operator",
             "failure_reason": str(operation_error),
             "outcome": "FAILED",
@@ -304,10 +311,16 @@ def main(argv=None):
     )
     for name in paths:
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--probe", action="append", required=True, help="six CASE=ABSOLUTE_PATH entries from the signed cohort")
     args = parser.parse_args(argv)
     if args.evidence_output.exists() or args.failure_output.exists():
         parser.error("evidence/failure output exists; never overwrite")
+    attempt_evidence_root = Path(args.isolated_root).resolve() / "attempts" / args.attempt_id
+    if not args.evidence_output.resolve().is_relative_to(attempt_evidence_root):
+        parser.error("evidence output must remain inside its attempt namespace")
+    if not args.failure_output.resolve().is_relative_to(attempt_evidence_root):
+        parser.error("failure output must remain inside its attempt namespace")
     password = getpass.getpass("Runtime encrypted signing key passphrase: ").encode()
     evidence = execute_frozen_once(
         candidate_file=args.candidate, replay_file=args.replay,
@@ -315,7 +328,7 @@ def main(argv=None):
         owner_public_file=args.owner_public, runtime_public_file=args.runtime_public,
         production_yaml=args.production_yaml,
         production_rules=args.production_rules, isolated_yaml=args.isolated_yaml,
-        isolated_root=args.isolated_root, probe_specs=args.probe,
+        isolated_root=args.isolated_root, attempt_id=args.attempt_id, probe_specs=args.probe,
         audit_path=args.audit_path,
         failure_path=args.failure_output, runtime_private_pem=args.runtime_private.read_bytes(),
         runtime_private_password=password,
