@@ -31,10 +31,22 @@ Only its public fingerprint is committed:
 
 The historical replay pin remains unchanged at
 `b360fc9660513611a09287c9e6269c4bac4ac354ee85cecc0bbdbd4534f4d982` and is
-not accepted by this G5 path. The existing owner pin remains
-`92b2fb2fffa9da9ac82011fca030b4d5d822046c1fbe6c375ee08d5237cc4de7`.
-Replay, owner and runtime signing roles must be independent; the runtime key
-is bound to the owner authorization and cannot equal either other role.
+not accepted by this G5 path. The historical owner pin remains
+`92b2fb2fffa9da9ac82011fca030b4d5d822046c1fbe6c375ee08d5237cc4de7` for
+historical workflows only. Active frozen G5 uses the candidate-specific owner
+pin `6ac452b8966780e1dacd1b1d19f6c6a83de2c83d24b95c7e5a6ce7610fd13f63`.
+The owner public key is stored outside the repository using this Windows
+convention:
+
+`%LOCALAPPDATA%\SuricataAI\keys\g5-owner-9103005\owner.pem`
+
+`%LOCALAPPDATA%\SuricataAI\keys\g5-owner-9103005\owner.pub.pem`
+
+Replay, owner and runtime signing roles must be independent. The independent
+runtime signer fingerprint used by the owner authorization is
+`35050afe9d85194fff5c889601ff8a3cab35b717e2edc42e1bac69bc6abd0c44`.
+The runtime key is bound to the signed owner authorization and cannot equal
+either other role.
 
 The new replay private/public files are provisioned on VM1 at:
 
@@ -43,9 +55,10 @@ The new replay private/public files are provisioned on VM1 at:
 `/home/tanhv/.config/suricata-ai/g5-replay-9103005/replay.pub.pem`
 
 Never copy the replay private key into Git, `.runtime-staging/`, an archive or
-the owner workstation. Generate a fresh signed replay attestation from the
-exact frozen candidate and six-case cohort after this reviewed source commit
-is staged. Do not reuse historical signed replay JSON.
+the owner workstation. The existing signed replay attestation
+`73a81eb8ef2c99a324ce1f720125d8b1f12eef50c0cd6b390efc5defc78f4989` remains
+the verified evidence for candidate `bfd6891a14dd3e648737e0a43d20f602d160085cefc92aa5f7fcfa8d32e0f1f6`;
+do not regenerate or edit it unless the signed evidence itself changes.
 
 ## 1. Read-only candidate import
 
@@ -143,8 +156,8 @@ python -m scripts.approve_frozen_rst_activation `
   --candidate C:\g5-signed\sid9103005-candidate.json `
   --replay-attestation C:\g5-signed\sid9103005-replay-attestation.json `
   --replay-public C:\keys\g5-replay-9103005.pub.pem `
-  --owner-private C:\keys\g5-owner-9103005.pem `
-  --owner-public C:\keys\g5-owner-9103005.pub.pem `
+  --owner-private $env:LOCALAPPDATA\SuricataAI\keys\g5-owner-9103005\owner.pem `
+  --owner-public $env:LOCALAPPDATA\SuricataAI\keys\g5-owner-9103005\owner.pub.pem `
   --runtime-public C:\keys\g5-runtime-9103005.pub.pem `
   --isolated-root /home/tanhv/suricata-rule-review/isolated-lifecycle-9103005 `
   --runtime-id suricata-vm1:isolated-lifecycle-9103005:lo `
@@ -154,7 +167,8 @@ python -m scripts.approve_frozen_rst_activation `
   --output C:\g5-signed\sid9103005-owner-authorization.json
 ```
 
-The owner public key must satisfy the pinned owner fingerprint. The new replay
+The owner public key must satisfy the candidate-specific frozen G5 owner
+fingerprint; the historical owner pin is rejected on this path. The new replay
 public key must satisfy the candidate-specific G5 pin, never the historical
 replay pin. The runtime public key must be a third, independent role, and its
 fingerprint is bound into the owner authorization; the VM command must use the

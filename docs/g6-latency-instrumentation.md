@@ -16,8 +16,8 @@ evidence; it must not be presented as a historical measurement contract.
 
 | Stage | Definition | Host | Existing source | Clock type | Available evidence | Missing instrumentation / status |
 |---|---|---|---|---|---|---|
-| T0 | Capture start | VM2 | `backend/pcap_capture.py` status metadata | UTC wall-clock | Capture manifests contain bounded timestamps | No cross-host offset proof; proposed mapping |
-| T1 | Capture sealing | VM2 | `backend/pcap_capture.py`, `backend/pcap_handoff.py` | monotonic/UTC | Sealed PCAP, manifest and ready hashes | No unified elapsed trace; proposed mapping |
+| T0 | Capture start | VM1 | `backend/pcap_capture.py` status metadata | UTC wall-clock | Capture manifests contain bounded timestamps | No cross-host offset proof; proposed mapping |
+| T1 | Capture sealing | VM1 | `backend/pcap_capture.py`, `backend/pcap_handoff.py` | monotonic/UTC | Sealed PCAP, manifest and ready hashes | No unified elapsed trace; proposed mapping |
 | T2 | Handoff transport | VM1→VM3 | `backend/pcap_handoff.py` | UTC + verified clock offset | `.sent.json` receipt has `sent_at` | No verified receive-side offset/elapsed duration |
 | T3 | Handoff receipt | VM3 | `backend/pcap_handoff.py` | UTC wall-clock | `.done.json` receipt has completion time | No paired transport trace |
 | T4 | Worker queue wait | VM3 | `backend/worker.py` / ledger | monotonic | Ledger timestamps are available in selected historical evidence | No normalized queue boundary in current evidence |
@@ -125,14 +125,14 @@ this offline implementation.
    reviewed source release are present. The new runtime trace is written inside
    the signed runtime result; failures retain an unsigned failure trace.
 
-### VM2 (Ubuntu capture host)
+### VM2 (Kali controlled lab traffic generator)
 
 Run only read-only checks locally: `hostname`, `date -u --iso-8601=ns`,
 `timedatectl show -p NTPSynchronized -p TimeUSec`, `df -h`, and inspect the
-existing capture retention/status metadata. Do not run capture, tcpreplay,
-traffic generation, sudo or cleanup as part of this preparation.
+existing generator/probe metadata. Do not run tcpreplay, traffic generation,
+sudo or cleanup as part of this preparation.
 
-### VM3 (Kali worker/ledger host)
+### VM3 (Ubuntu AI worker and ELK)
 
 Run only read-only checks locally: `hostname`, `date -u --iso-8601=ns`,
 `timedatectl show -p NTPSynchronized -p TimeUSec`, `df -h`, and inspect the
@@ -146,7 +146,7 @@ private evidence. The owner may stage only the tracked runtime closure from the
 final reviewed commit. This command is prepared, not executed here:
 
 ```bash
-FINAL_RELEASE_COMMIT="a7e879c0fc8ea0692cb8e62ce5af6c4582acef98"
+FINAL_RELEASE_COMMIT="<final-reviewed-commit-sha>"
 ARCHIVE="suricata-ai-g5-runtime-${FINAL_RELEASE_COMMIT}.tar"
 git archive --format=tar --output="$ARCHIVE" "$FINAL_RELEASE_COMMIT" \
   src/netids/__init__.py \

@@ -65,6 +65,11 @@ def _probe_paths(specs, probe_plan):
     return [dict(probe, path=paths[probe["case"]]) for probe in probe_plan]
 
 
+def _require_runtime_keypair(runtime_private_pem, runtime_private_password, runtime_public_pem):
+    if not private_key_matches_public(runtime_private_pem, runtime_private_password, runtime_public_pem):
+        raise OperationError("runtime private/public key mismatch")
+
+
 def execute_frozen_once(
     *, candidate_file, replay_file, owner_file, replay_public_file, owner_public_file,
     runtime_public_file,
@@ -120,6 +125,7 @@ def execute_frozen_once(
     _require_candidate_baseline(candidate, before)
     with latency.stage("probe_hash_verification", component="runtime"):
         probe_plan = _probe_paths(probe_specs, replay["probe_plan"])
+        _require_runtime_keypair(runtime_private_pem, runtime_private_password, runtime_public)
     lifecycle = None
     runtime = None
     started = datetime.now(timezone.utc)

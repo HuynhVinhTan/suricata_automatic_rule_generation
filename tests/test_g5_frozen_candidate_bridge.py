@@ -462,7 +462,7 @@ def test_frozen_bridge_owner_contract_reaches_real_lifecycle(tmp_path, monkeypat
     )
     monkeypatch.setattr(
         key_pins,
-        "PINNED_OWNER_ED25519_SHA256",
+        "PINNED_G5_FROZEN_OWNER_ED25519_SHA256",
         public_key_fingerprint(owner_public),
     )
     owner = build_frozen_owner_authorization(

@@ -12,6 +12,8 @@ from netids.latency import LatencyTrace
 from scripts.operate_isolated_once import (
     OperationError, _require_candidate_baseline, production_snapshot,
 )
+from scripts import operate_frozen_rst_once
+from netids.lifecycle_ed25519 import generate_encrypted_keypair
 
 
 def test_runtime_refuses_non_vm1_even_with_synthetic_pcap(monkeypatch, tmp_path):
@@ -146,3 +148,57 @@ def test_isolated_runtime_trace_marks_false_operation_as_failed():
     stage = runtime.latency_trace.as_dict()["stages"][0]
     assert stage["status"] == "error"
     assert stage["error_type"] == "operation_returned_false"
+
+
+def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeypatch, tmp_path):
+    _, runtime_public = generate_encrypted_keypair(b"runtime-test-password")
+    runtime_public_file = tmp_path / "runtime.pub.pem"
+    runtime_public_file.write_bytes(runtime_public)
+    (tmp_path / "replay.pub.pem").write_bytes(b"replay-public")
+    (tmp_path / "owner.pub.pem").write_bytes(b"owner-public")
+    candidate = {
+        "run_id": "g5-run",
+        "candidate_id": "candidate-id",
+        "rule_sha256": "a" * 64,
+        "rule_file_sha256": "b" * 64,
+    }
+    replay = {"probe_plan": []}
+    owner = {
+        "runtime_id": operate_frozen_rst_once.RUNTIME_ID,
+        "target_vm": operate_frozen_rst_once.VM1_HOST,
+        "interface": "lo",
+    }
+    values = iter((candidate, replay, owner))
+    lifecycle_created = []
+    monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "_read_json", lambda _path: next(values))
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_candidate", lambda *args: {})
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_replay_attestation", lambda *args: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_owner_authorization", lambda *args: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "production_snapshot", lambda *args, **kwargs: {"production_rules_sha256": "b" * 64})
+    monkeypatch.setattr(operate_frozen_rst_once, "_require_candidate_baseline", lambda *args: None)
+    monkeypatch.setattr(operate_frozen_rst_once, "_probe_paths", lambda *args: [])
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "RuleLifecycle",
+        lambda *args, **kwargs: lifecycle_created.append(True),
+    )
+    with pytest.raises(OperationError, match="runtime private/public key mismatch"):
+        operate_frozen_rst_once.execute_frozen_once(
+            candidate_file=tmp_path / "candidate.json",
+            replay_file=tmp_path / "replay.json",
+            owner_file=tmp_path / "owner.json",
+            replay_public_file=tmp_path / "replay.pub.pem",
+            owner_public_file=tmp_path / "owner.pub.pem",
+            runtime_public_file=runtime_public_file,
+            production_yaml=tmp_path / "suricata.yaml",
+            production_rules=tmp_path / "rules.rules",
+            isolated_yaml=tmp_path / "isolated.yaml",
+            isolated_root=tmp_path / "isolated",
+            probe_specs=[],
+            audit_path=tmp_path / "isolated" / "audit" / "owner-once.jsonl",
+            failure_path=tmp_path / "failure.json",
+            runtime_private_pem=b"wrong-private-key",
+            runtime_private_password=b"wrong-password",
+        )
+    assert lifecycle_created == []
