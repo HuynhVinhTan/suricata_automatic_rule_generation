@@ -1,0 +1,11 @@
+{
+  "experiment": "unsw_v03_research_completeness",
+  "status": "BLOCKED_MISSING_DATASET",
+  "dataset": "UNSW-NB15",
+  "raw_training_file": "data\\raw\\unsw-nb15\\UNSW_NB15_training-set.csv",
+  "official_test_accessed": false,
+  "numbers_generated": false,
+  "figures_generated": false,
+  "cv_executed": false,
+  "reason": "Authorized raw dataset is missing: data\\raw\\unsw-nb15\\UNSW_NB15_training-set.csv"
+}

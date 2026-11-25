@@ -1,0 +1,10 @@
+{
+  "status": "BLOCKED",
+  "raw_training_file": "data/raw/unsw-nb15/UNSW_NB15_training-set.csv",
+  "official_test_accessed": false,
+  "v02_artifacts_modified": false,
+  "g4_g5_evidence_modified": false,
+  "runtime_staging_modified": false,
+  "production_suricata_pipeline_modified": false,
+  "numbers_or_figures_generated": false
+}
