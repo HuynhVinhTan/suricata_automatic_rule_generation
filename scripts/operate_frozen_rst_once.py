@@ -7,6 +7,7 @@ import argparse
 import getpass
 import json
 import os
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from netids.g5_frozen_candidate import (
 )
 from netids.isolated_suricata_runtime import IsolatedSuricataRuntime, VM1_HOST, is_verified_vm1_host
 from netids.lifecycle_ed25519 import private_key_matches_public, sha256_file, sign_record
+from netids.latency import LatencyTrace
 from netids.rule_lifecycle import RuleLifecycle
 from scripts.operate_isolated_once import OperationError, _digest, _read_json, _require_candidate_baseline, production_snapshot
 
@@ -75,24 +77,49 @@ def execute_frozen_once(
     candidate = _read_json(candidate_file)
     replay = _read_json(replay_file)
     owner = _read_json(owner_file)
+    trace_run_id = candidate.get("run_id") if isinstance(candidate.get("run_id"), str) else f"invalid-g5-{SID}"
+    latency = LatencyTrace(
+        run_id=trace_run_id,
+        host=socket.gethostname(),
+        clock_sync={"status": "same_process_monotonic", "offset_ms": 0.0},
+    )
+    for name, component in (
+        ("capture", "capture"),
+        ("capture_sealing", "capture"),
+        ("handoff_transport", "transport"),
+        ("handoff_receipt", "transport"),
+        ("worker_queue", "worker"),
+        ("worker_processing", "worker"),
+        ("feature_extraction", "ai"),
+        ("model_inference", "ai"),
+        ("hybrid_evaluation", "hybrid"),
+        ("candidate_generation", "hybrid"),
+        ("owner_approval_wait", "human"),
+    ):
+        latency.record(name, status="not_measured", component=component)
     replay_public = Path(replay_public_file).read_bytes()
     owner_public = Path(owner_public_file).read_bytes()
     runtime_public = Path(runtime_public_file).read_bytes()
     try:
-        verify_frozen_candidate(candidate, candidate.get("baseline_comparison"))
+        with latency.stage("candidate_validation", component="hybrid"):
+            verify_frozen_candidate(candidate, candidate.get("baseline_comparison"))
     except FrozenCandidateError as exc:
         raise OperationError(str(exc)) from exc
-    if not verify_frozen_replay_attestation(candidate, replay, replay_public):
-        raise OperationError("untrusted or mismatched frozen replay attestation")
-    if not verify_frozen_owner_authorization(candidate, replay, owner, replay_public, owner_public, runtime_public):
-        raise OperationError("untrusted or mismatched frozen owner authorization")
+    with latency.stage("replay_attestation", component="human"):
+        if not verify_frozen_replay_attestation(candidate, replay, replay_public):
+            raise OperationError("untrusted or mismatched frozen replay attestation")
+    with latency.stage("owner_authorization_verification", component="human"):
+        if not verify_frozen_owner_authorization(candidate, replay, owner, replay_public, owner_public, runtime_public):
+            raise OperationError("untrusted or mismatched frozen owner authorization")
     if owner.get("runtime_id") != RUNTIME_ID or owner.get("target_vm") != VM1_HOST or owner.get("interface") != "lo":
         raise OperationError("frozen owner authorization scope mismatch")
     if Path(audit_path).resolve() != Path(isolated_root).resolve() / "audit" / "owner-once.jsonl":
         raise OperationError("audit path must be the candidate-specific persistent one-shot ledger")
-    before = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
+    with latency.stage("production_safety_snapshot_before", component="runtime"):
+        before = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
     _require_candidate_baseline(candidate, before)
-    probe_plan = _probe_paths(probe_specs, replay["probe_plan"])
+    with latency.stage("probe_hash_verification", component="runtime"):
+        probe_plan = _probe_paths(probe_specs, replay["probe_plan"])
     lifecycle = None
     runtime = None
     started = datetime.now(timezone.utc)
@@ -118,7 +145,7 @@ def execute_frozen_once(
             normal_sha256=next(probe["pcap_sha256"] for probe in probe_plan if probe["label"] == "NORMAL"),
             probe_plan=probe_plan, deadline_monotonic=deadline,
             candidate_sid=SID, candidate_rule_sha256=candidate["rule_sha256"],
-            root=isolated_root,
+            root=isolated_root, latency_trace=latency,
         )
         staged = lifecycle.stage(proposed, Path(isolated_root) / "rules", activate=True, runtime=runtime)
         if staged.get("status") != "active_in_isolated_lab":
@@ -129,7 +156,8 @@ def execute_frozen_once(
         elapsed_seconds = round(__import__("time").monotonic() - started_monotonic, 3)
         if elapsed_seconds > 300:
             raise OperationError("owner-authorized operation exceeded 300 seconds")
-        after = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
+        with latency.stage("production_safety_snapshot_after", component="runtime"):
+            after = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
         if before != after:
             raise OperationError("production before/after state changed")
         result = {
@@ -157,6 +185,8 @@ def execute_frozen_once(
             "outcome": "VERIFIED_ISOLATED_ACTIVATION_AND_ROLLBACK",
             "approved": False,
             "deployed": False,
+            "latency_trace_binding": "signed_runtime_result_field",
+            "latency_trace": latency.as_dict(),
         }
         if not private_key_matches_public(runtime_private_pem, runtime_private_password, runtime_public):
             raise OperationError("runtime private key does not match the trusted runtime public key")
@@ -173,6 +203,8 @@ def execute_frozen_once(
             "production_before": before,
             "production_unchanged": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "latency_trace_binding": "unsigned_failure_record_field",
+            "latency_trace": latency.as_dict(),
         }
         _write_exclusive(failure_path, report)
         raise

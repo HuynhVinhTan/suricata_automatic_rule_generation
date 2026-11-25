@@ -19,6 +19,7 @@ from netids.g5_frozen_candidate import (
     verify_frozen_runtime_result,
 )
 from netids.lifecycle_ed25519 import generate_encrypted_keypair, private_key_matches_public, public_key_fingerprint, sign_record
+from netids.latency import LatencyTrace
 from netids.rule_lifecycle import RuleLifecycle
 
 
@@ -357,6 +358,52 @@ def test_runtime_result_requires_rollback_cleanup_and_unchanged_production():
         broken[field] = value
         with pytest.raises(FrozenCandidateError, match="runtime"):
             verify_frozen_runtime_result(candidate, replay, broken, runtime_public)
+
+
+def test_runtime_result_latency_trace_is_bound_to_candidate_run():
+    candidate = _candidate()
+    replay = _runtime_evidence(candidate)
+    runtime_private, runtime_public = generate_encrypted_keypair(b"runtime-password")
+    probe_results = []
+    for phase in ("active", "rollback"):
+        for probe in replay["probe_plan"]:
+            probe_results.append({
+                "case": probe["case"], "label": probe["label"],
+                "scenario": probe["scenario"], "phase": phase,
+                "pcap_sha256": probe["pcap_sha256"],
+                "expected_alert": probe["expected_alert"] if phase == "active" else False,
+                "candidate_alerts": 1 if phase == "active" and probe["expected_alert"] else 0,
+            })
+    trace = LatencyTrace(run_id=candidate["run_id"], host="vm1", clock_sync={"status": "same_host_monotonic", "offset_ms": 0.0})
+    with trace.stage("isolated_runtime_activation", component="runtime"):
+        pass
+    result = {
+        "schema_version": "g5_frozen_runtime_acceptance_v1",
+        "candidate_id": candidate["candidate_id"], "sid": candidate["sid"],
+        "rule_file_sha256": candidate["rule_file_sha256"],
+        "replay_evidence_sha256": hashlib.sha256(json.dumps(replay, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "owner_authorization_sha256": "2" * 64, "elapsed_seconds": 1,
+        "max_runtime_seconds": 300, "deadline_enforced": True,
+        "candidate_loaded": True, "attack_replay_passed": True,
+        "normal_replay_passed": True, "negative_control_passed": True,
+        "rollback_verified": True, "post_rollback_verified": True,
+        "child_process_cleanup_verified": True, "production_unchanged": True,
+        "probe_results": probe_results,
+        "outcome": "VERIFIED_ISOLATED_ACTIVATION_AND_ROLLBACK",
+        "approved": False, "deployed": False,
+        "latency_trace_binding": "signed_runtime_result_field",
+        "latency_trace": trace.as_dict(),
+    }
+    signed = sign_record(result, runtime_private, b"runtime-password", domain="g5-frozen-runtime-v1")
+    assert verify_frozen_runtime_result(candidate, replay, signed, runtime_public) is True
+    broken_record = {
+        key: value for key, value in signed.items()
+        if not key.startswith("attestation_")
+    }
+    broken_record["latency_trace"] = LatencyTrace(run_id="different-run").as_dict()
+    broken = sign_record(broken_record, runtime_private, b"runtime-password", domain="g5-frozen-runtime-v1")
+    with pytest.raises(FrozenCandidateError, match="latency"):
+        verify_frozen_runtime_result(candidate, replay, broken, runtime_public)
 
 
 def test_frozen_schema_uses_existing_lifecycle_with_versioned_domains(tmp_path):

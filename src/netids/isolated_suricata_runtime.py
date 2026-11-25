@@ -88,7 +88,7 @@ class IsolatedSuricataRuntime:
         suricatasc="/usr/bin/suricatasc", tcpreplay="/usr/bin/tcpreplay",
         candidate_sid: int = SID, candidate_rule_sha256: str = RULE_SHA,
         root: Path = ROOT, negative_pcaps=(), negative_sha256s=(), probe_plan=(),
-        deadline_monotonic=None,
+        deadline_monotonic=None, latency_trace=None,
     ):
         self.root = Path(root)
         self.sid = candidate_sid
@@ -102,6 +102,7 @@ class IsolatedSuricataRuntime:
         self.negative_sha256s = tuple(negative_sha256s)
         self.probe_plan = tuple(dict(probe) for probe in probe_plan)
         self.deadline_monotonic = deadline_monotonic
+        self.latency_trace = latency_trace
         self.suricata = str(suricata)
         self.suricatasc = str(suricatasc)
         self.tcpreplay = str(tcpreplay)
@@ -119,6 +120,18 @@ class IsolatedSuricataRuntime:
     def _check_deadline(self):
         if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
             raise IsolatedRuntimeError("Isolated runtime deadline exceeded")
+
+    def _measure_bool(self, name: str, component: str, operation) -> bool:
+        if self.latency_trace is None:
+            return operation()
+        with self.latency_trace.stage(name, component=component):
+            result = operation()
+        if result is False:
+            self.latency_trace.stages[-1].update({
+                "status": "error",
+                "error_type": "operation_returned_false",
+            })
+        return result
 
     def _preflight(self) -> None:
         if not is_verified_vm1_host():
@@ -218,6 +231,19 @@ class IsolatedSuricataRuntime:
         raise IsolatedRuntimeError("Isolated UNIX socket was not ready")
 
     def _pcap_probe(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
+        stage_name = f"probe_{phase}_{case or file.stem}"
+        if self.latency_trace is None:
+            return self._pcap_probe_impl(
+                file, expect_alert=expect_alert, case=case, label=label,
+                scenario=scenario, phase=phase,
+            )
+        with self.latency_trace.stage(stage_name, component="runtime"):
+            return self._pcap_probe_impl(
+                file, expect_alert=expect_alert, case=case, label=label,
+                scenario=scenario, phase=phase,
+            )
+
+    def _pcap_probe_impl(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
         self._check_deadline()
         eve = self.logdir / "eve.json"
         offset = eve.stat().st_size if eve.exists() else 0
@@ -268,6 +294,11 @@ class IsolatedSuricataRuntime:
         return found == 0
 
     def validate(self, rule: str) -> bool:
+        return self._measure_bool(
+            "candidate_rule_validation", "hybrid", lambda: self._validate_impl(rule)
+        )
+
+    def _validate_impl(self, rule: str) -> bool:
         self._check_deadline()
         if not rule.startswith("alert tcp ") or "\n" in rule or "\r" in rule:
             return False
@@ -291,6 +322,12 @@ class IsolatedSuricataRuntime:
             temporary.unlink(missing_ok=True)
 
     def activate(self, destination: Path, sid: int, rule_sha256: str) -> bool:
+        return self._measure_bool(
+            "isolated_runtime_activation", "runtime",
+            lambda: self._activate_impl(destination, sid, rule_sha256),
+        )
+
+    def _activate_impl(self, destination: Path, sid: int, rule_sha256: str) -> bool:
         if sid != self.sid or rule_sha256 != self.rule_sha256:
             return False
         source = Path(destination)
@@ -308,6 +345,12 @@ class IsolatedSuricataRuntime:
             return False
 
     def verify_active(self, sid: int, rule_sha256: str) -> bool:
+        return self._measure_bool(
+            "probe_verification_active", "runtime",
+            lambda: self._verify_active_impl(sid, rule_sha256),
+        )
+
+    def _verify_active_impl(self, sid: int, rule_sha256: str) -> bool:
         if (
             sid != self.sid or rule_sha256 != self.rule_sha256 or not self._activated
             or self.process is None or self.process.poll() is not None
@@ -339,6 +382,12 @@ class IsolatedSuricataRuntime:
             return False
 
     def rollback(self, destination: Path, sid: int, rule_sha256: str) -> bool:
+        return self._measure_bool(
+            "mandatory_rollback", "runtime",
+            lambda: self._rollback_impl(destination, sid, rule_sha256),
+        )
+
+    def _rollback_impl(self, destination: Path, sid: int, rule_sha256: str) -> bool:
         if sid != self.sid or rule_sha256 != self.rule_sha256 or self.process is None:
             return False
         try:
@@ -349,6 +398,12 @@ class IsolatedSuricataRuntime:
             return False
 
     def verify_rollback(self, sid: int, rule_sha256: str) -> bool:
+        return self._measure_bool(
+            "post_rollback_verification", "runtime",
+            lambda: self._verify_rollback_impl(sid, rule_sha256),
+        )
+
+    def _verify_rollback_impl(self, sid: int, rule_sha256: str) -> bool:
         if sid != self.sid or rule_sha256 != self.rule_sha256 or self.process is None:
             return False
         try:

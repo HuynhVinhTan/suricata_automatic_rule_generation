@@ -19,6 +19,7 @@ from netids.lifecycle_ed25519 import (
     sign_record,
     verify_record,
 )
+from netids.latency import validate_latency_trace
 
 
 FROZEN_CANDIDATE_SCHEMA = "g5_frozen_rst_candidate_v1"
@@ -341,6 +342,15 @@ def verify_frozen_runtime_result(candidate, replay, result, runtime_public_pem):
     _require(result.get("sid") == SID, "runtime SID mismatch")
     _require(result.get("rule_file_sha256") == candidate["rule_file_sha256"], "runtime rule hash mismatch")
     _require(result.get("replay_evidence_sha256") == _digest(replay), "runtime replay evidence hash mismatch")
+    if "latency_trace" in result:
+        _require(
+            result.get("latency_trace_binding") == "signed_runtime_result_field",
+            "runtime latency trace provenance is not bound",
+        )
+        try:
+            validate_latency_trace(result["latency_trace"], expected_run_id=candidate["run_id"])
+        except (TypeError, ValueError) as exc:
+            raise FrozenCandidateError("runtime latency trace is invalid or not bound to candidate") from exc
     _require(_SHA.fullmatch(str(result.get("owner_authorization_sha256", ""))), "runtime owner authorization hash missing")
     _require(type(result.get("elapsed_seconds")) in (int, float) and result["elapsed_seconds"] >= 0, "runtime elapsed time missing")
     _require(result.get("max_runtime_seconds") == 300 and result["elapsed_seconds"] <= 300, "runtime deadline exceeded")

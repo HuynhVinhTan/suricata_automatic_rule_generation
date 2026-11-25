@@ -8,6 +8,7 @@ import pytest
 from netids.isolated_suricata_runtime import (
     IsolatedSuricataRuntime, IsolatedRuntimeError, is_verified_vm1_host,
 )
+from netids.latency import LatencyTrace
 from scripts.operate_isolated_once import (
     OperationError, _require_candidate_baseline, production_snapshot,
 )
@@ -109,3 +110,39 @@ def test_candidate_baseline_must_match_actual_production_rules_hash():
 def test_candidate_baseline_missing_hash_fails_closed():
     with pytest.raises(OperationError, match="baseline rules"):
         _require_candidate_baseline({}, {"production_rules_sha256": "a" * 64})
+
+
+def test_isolated_runtime_records_probe_boundary_in_supplied_trace(monkeypatch, tmp_path):
+    monkeypatch.setattr(IsolatedSuricataRuntime, "_preflight", lambda self: None)
+    def fake_run(*args, **kwargs):
+        (tmp_path / "logs" / "eve.json").write_text('{"event_type":"flow"}\n', encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="")
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    monkeypatch.setattr("netids.isolated_suricata_runtime.time.sleep", lambda seconds: None)
+    pcap = tmp_path / "probe.pcap"
+    pcap.write_bytes(b"synthetic-pcap")
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "eve.json").write_text("", encoding="utf-8")
+    trace = LatencyTrace(run_id="g5-run", host="vm1", clock_sync={"status": "same_host_monotonic", "offset_ms": 0.0})
+    runtime = IsolatedSuricataRuntime(
+        config=tmp_path / "isolated.yaml",
+        attack_pcap=pcap,
+        attack_sha256="a" * 64,
+        normal_pcap=pcap,
+        normal_sha256="a" * 64,
+        root=tmp_path,
+        latency_trace=trace,
+    )
+    runtime._check_deadline = lambda: None
+    assert runtime._pcap_probe(pcap, expect_alert=False, case="N1", label="NORMAL", scenario="normal") is True
+    stages = trace.as_dict()["stages"]
+    assert any(stage["name"] == "probe_active_N1" and stage["elapsed_ms"] >= 0 for stage in stages)
+
+
+def test_isolated_runtime_trace_marks_false_operation_as_failed():
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.latency_trace = LatencyTrace(run_id="g5-run", host="vm1", clock_sync={"status": "same_host_monotonic", "offset_ms": 0.0})
+    assert runtime._measure_bool("activation", "runtime", lambda: False) is False
+    stage = runtime.latency_trace.as_dict()["stages"][0]
+    assert stage["status"] == "error"
+    assert stage["error_type"] == "operation_returned_false"
