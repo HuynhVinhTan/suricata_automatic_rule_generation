@@ -15,8 +15,11 @@ import re
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
+
+import yaml
 
 from netids.lifecycle_ed25519 import sha256_file
 from netids.trusted_replay import SID, RULE_SHA, _config_safe
@@ -29,6 +32,69 @@ VM1_OS_HOSTNAME = "tanhv"
 VM1_INTERFACE = "ens33"
 VM1_INTERFACE_CIDR = "192.168.10.10/24"
 ROOT = Path("/home/tanhv/suricata-rule-review/isolated-lifecycle-9103003")
+DIAGNOSTIC_MAX_BYTES = 64 * 1024
+DIAGNOSTIC_FIELD_MAX_BYTES = 4096
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+_SECRET_FIELD = re.compile(
+    r"(?i)(password|passphrase|private[_ -]?key|secret|token|credential)(\s*[:=]\s*)\S+",
+)
+
+
+def _redact_diagnostic(value: object) -> str:
+    """Keep native diagnostics useful without retaining credential material."""
+    text = str(value)
+    text = _PRIVATE_KEY.sub("[REDACTED_PRIVATE_KEY]", text)
+    text = _SECRET_FIELD.sub(r"\1\2[REDACTED]", text)
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) > DIAGNOSTIC_FIELD_MAX_BYTES:
+        text = encoded[:DIAGNOSTIC_FIELD_MAX_BYTES].decode("utf-8", errors="ignore")
+        text += "…[TRUNCATED]"
+    return text
+
+
+class _BoundedProcessOutput:
+    """Drain a child pipe continuously while retaining only a bounded tail."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._buffer = bytearray()
+        self._truncated = False
+        self._lock = threading.Lock()
+        self._thread = None
+        if stream is not None:
+            self._thread = threading.Thread(target=self._drain, daemon=True)
+            self._thread.start()
+
+    def _drain(self):
+        try:
+            while True:
+                chunk = self._stream.read(4096)
+                if not chunk:
+                    return
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8", errors="replace")
+                with self._lock:
+                    available = DIAGNOSTIC_FIELD_MAX_BYTES - len(self._buffer)
+                    if available > 0:
+                        self._buffer.extend(chunk[:available])
+                    if len(chunk) > available:
+                        self._truncated = True
+        except (OSError, ValueError):
+            return
+
+    def text(self) -> str:
+        with self._lock:
+            value = bytes(self._buffer).decode("utf-8", errors="replace")
+            if self._truncated:
+                value += "…[TRUNCATED]"
+            return _redact_diagnostic(value)
+
+    def close(self):
+        if self._thread is not None:
+            self._thread.join(timeout=1)
 
 
 def is_verified_vm1_host() -> bool:
@@ -61,9 +127,19 @@ def _run(argv: list[str], *, timeout: int = 60, deadline_monotonic=None) -> subp
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise IsolatedRuntimeError("Isolated command failed or timed out") from exc
+        output = ""
+        if isinstance(exc, subprocess.TimeoutExpired):
+            output = _redact_diagnostic(
+                f" stdout={getattr(exc, 'stdout', '')!r} stderr={getattr(exc, 'stderr', '')!r}"
+            )
+        raise IsolatedRuntimeError(f"Isolated command failed or timed out{output}") from exc
     if result.returncode:
-        raise IsolatedRuntimeError("Isolated command returned a nonzero status")
+        details = _redact_diagnostic(
+            f" stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        raise IsolatedRuntimeError(
+            f"Isolated command returned a nonzero status ({result.returncode});{details}"
+        )
     return result
 
 
@@ -110,9 +186,16 @@ class IsolatedSuricataRuntime:
         self.pidfile = self.root / "runtime" / "lab-suricata.pid"
         self.active_rules = self.root / "rules" / "active.rules"
         self.logdir = self.root / "logs"
+        self.diagnostic_path = self.root / "logs" / "runtime-diagnostics.jsonl"
         self.process = None
+        self._output_collectors = []
         self._old_rules = None
         self._activated = False
+        self.activation_attempted = False
+        self.rollback_attempted = False
+        self.rollback_verified = False
+        self.post_rollback_verified = False
+        self.failure_phase = None
         self._last_attack_eve = ""
         self.probe_results = []
         self._preflight()
@@ -141,6 +224,7 @@ class IsolatedSuricataRuntime:
         if not Path("/sys/class/net/lo").exists():
             raise IsolatedRuntimeError("Loopback interface is unavailable")
         _config_safe(self.config, self.root)
+        self._validate_isolated_configuration()
         if len(self.negative_pcaps) != len(self.negative_sha256s):
             raise IsolatedRuntimeError("Negative-control PCAP/hash counts differ")
         pinned_pcaps = [
@@ -170,16 +254,109 @@ class IsolatedSuricataRuntime:
         if self.active_rules.exists():
             raise IsolatedRuntimeError("Unexpected existing isolated ruleset; refuse overwrite")
 
+    def _validate_isolated_configuration(self) -> None:
+        try:
+            configuration = yaml.safe_load(self.config.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise IsolatedRuntimeError("Invalid isolated Suricata configuration") from exc
+        if not isinstance(configuration, dict):
+            raise IsolatedRuntimeError("Isolated Suricata configuration is not an object")
+
+        unix_command = configuration.get("unix-command")
+        if not isinstance(unix_command, dict) or unix_command.get("enabled") is not True:
+            raise IsolatedRuntimeError("Isolated UNIX socket is not enabled in configuration")
+        if Path(str(unix_command.get("filename", ""))).resolve() != self.socket_path.resolve():
+            raise IsolatedRuntimeError("Isolated UNIX socket path is not attempt-specific")
+
+        rule_files = configuration.get("rule-files")
+        if not isinstance(rule_files, list) or len(rule_files) != 1 or not isinstance(rule_files[0], str):
+            raise IsolatedRuntimeError("Isolated configuration must reference exactly one ruleset")
+        default_rule_path = configuration.get("default-rule-path", ".")
+        configured_rules = Path(rule_files[0])
+        if not configured_rules.is_absolute():
+            configured_rules = Path(default_rule_path) / configured_rules
+        if configured_rules.resolve() != self.active_rules.resolve():
+            raise IsolatedRuntimeError("Isolated configuration references a non-isolated ruleset")
+
+        captures = configuration.get("af-packet", [])
+        if not isinstance(captures, list) or not captures or any(
+            not isinstance(entry, dict) or entry.get("interface") != "lo" for entry in captures
+        ):
+            raise IsolatedRuntimeError("Isolated configuration must capture loopback only")
+
+    def _record_diagnostic(self, phase: str, **details) -> None:
+        """Append bounded, redacted structured diagnostics; never mask the failure."""
+        if details.get("status") == "failed":
+            self.failure_phase = phase
+        try:
+            self.diagnostic_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if self.diagnostic_path.exists() and self.diagnostic_path.stat().st_size >= DIAGNOSTIC_MAX_BYTES:
+                return
+            record = {
+                "timestamp": time.time(),
+                "phase": phase,
+                **{key: _redact_diagnostic(value) if not isinstance(value, (bool, int, float)) else value
+                   for key, value in details.items()},
+            }
+            line = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
+            remaining = DIAGNOSTIC_MAX_BYTES - self.diagnostic_path.stat().st_size if self.diagnostic_path.exists() else DIAGNOSTIC_MAX_BYTES
+            if len(line.encode("utf-8")) > remaining:
+                return
+            with self.diagnostic_path.open("a", encoding="utf-8") as stream:
+                stream.write(line)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except (OSError, UnicodeError, TypeError, ValueError):
+            return
+
+    def _process_output(self) -> dict:
+        collectors = getattr(self, "_output_collectors", [])
+        return {
+            "stdout": collectors[0].text() if len(collectors) > 0 else "",
+            "stderr": collectors[1].text() if len(collectors) > 1 else "",
+        }
+
+    def _close_process_output(self) -> dict:
+        collectors = getattr(self, "_output_collectors", [])
+        for collector in collectors:
+            collector.close()
+        return self._process_output()
+
+    def _daemon_arguments(self) -> list[str]:
+        """Build live arguments without selecting Suricata's UNIX_SOCKET run mode."""
+        return [
+            self.suricata, "-c", str(self.config), "-l", str(self.logdir), "--af-packet=lo",
+            "--pidfile", str(self.pidfile), "--init-errors-fatal", "-k", "none",
+        ]
+
+    def _validation_rule_arguments(self, temporary: Path) -> list[str]:
+        return [
+            self.suricata, "-T", "--init-errors-fatal", "-c", str(self.config),
+            "-S", str(temporary), "-l", str(self.logdir),
+        ]
+
     def _command(self, command: str) -> object:
         self._check_deadline()
-        result = _run([
-            self.suricatasc, "-c", command, str(self.socket_path)
-        ], timeout=75, deadline_monotonic=self.deadline_monotonic)
+        try:
+            result = _run([
+                self.suricatasc, "-c", command, str(self.socket_path)
+            ], timeout=75, deadline_monotonic=self.deadline_monotonic)
+        except IsolatedRuntimeError as exc:
+            self._record_diagnostic("socket", status="failed", command=command, error=str(exc))
+            raise
         try:
             output = json.loads(result.stdout)
         except ValueError as exc:
+            self._record_diagnostic(
+                "socket", status="failed", command=command,
+                error="Suricata socket returned invalid JSON", stdout=result.stdout,
+            )
             raise IsolatedRuntimeError("Suricata socket returned invalid JSON") from exc
         if not isinstance(output, dict) or output.get("return") != "OK":
+            self._record_diagnostic(
+                "socket", status="failed", command=command,
+                error="Suricata UNIX command failed", response=output,
+            )
             raise IsolatedRuntimeError("Suricata UNIX command failed")
         return output.get("message")
 
@@ -201,20 +378,29 @@ class IsolatedSuricataRuntime:
             raise IsolatedRuntimeError("Isolated daemon already owned")
         self._old_rules = b"# no active candidate rules in this isolated test\n"
         _atomic(self.active_rules, self._old_rules)
-        arguments = [
-            self.suricata, "-c", str(self.config), "-S", str(self.active_rules),
-            "-l", str(self.logdir), "--af-packet=lo",
-            "--pidfile", str(self.pidfile), f"--unix-socket={self.socket_path}",
-            "--init-errors-fatal", "-k", "none",
-        ]
-        self.process = subprocess.Popen(
-            arguments, cwd=self.root, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-        )
+        arguments = self._daemon_arguments()
+        self._record_diagnostic("startup", status="started", arguments=arguments)
+        try:
+            self.process = subprocess.Popen(
+                arguments, cwd=self.root, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+            )
+            self._output_collectors = [
+                _BoundedProcessOutput(getattr(self.process, "stdout", None)),
+                _BoundedProcessOutput(getattr(self.process, "stderr", None)),
+            ]
+        except (OSError, ValueError) as exc:
+            self._record_diagnostic("startup", status="failed", error=str(exc))
+            raise IsolatedRuntimeError("Suricata startup initialization failed") from exc
+        last_error = None
         for _ in range(40):
             self._check_deadline()
             if self.process.poll() is not None:
-                raise IsolatedRuntimeError("Isolated Suricata exited during startup")
+                output = self._close_process_output()
+                self._record_diagnostic(
+                    "startup", status="failed", exit_status=self.process.poll(), **output,
+                )
+                raise IsolatedRuntimeError("Suricata startup failed: daemon exited during initialization")
             if self.socket_path.exists():
                 try:
                     version = self._command("version")
@@ -224,11 +410,18 @@ class IsolatedSuricataRuntime:
                             raise IsolatedRuntimeError("Wrong isolated capture mode")
                         if not self._rules_loaded(0):
                             raise IsolatedRuntimeError("Isolated baseline is not an empty ruleset")
+                        self._record_diagnostic("startup", status="ready", capture_mode=str(mode))
                         return
-                except IsolatedRuntimeError:
-                    pass
+                except IsolatedRuntimeError as exc:
+                    last_error = exc
             time.sleep(0.25)
-        raise IsolatedRuntimeError("Isolated UNIX socket was not ready")
+        output = self._process_output()
+        self._record_diagnostic(
+            "socket", status="failed", error=str(last_error or "socket was not ready"), **output,
+        )
+        raise IsolatedRuntimeError(
+            f"Isolated UNIX socket was not ready: {last_error or 'startup timeout'}"
+        )
 
     def _pcap_probe(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
         stage_name = f"probe_{phase}_{case or file.stem}"
@@ -310,13 +503,13 @@ class IsolatedSuricataRuntime:
             return False
         try:
             _atomic(temporary, rule.encode("utf-8") + b"\n")
-            result = _run([
-                self.suricata, "-T", "--init-errors-fatal",
-                "-c", str(self.config), "-S", str(temporary),
-                "-l", str(self.logdir),
-            ], timeout=120, deadline_monotonic=self.deadline_monotonic)
+            result = _run(
+                self._validation_rule_arguments(temporary),
+                timeout=120, deadline_monotonic=self.deadline_monotonic,
+            )
             return result.returncode == 0
-        except IsolatedRuntimeError:
+        except IsolatedRuntimeError as exc:
+            self._record_diagnostic("syntax_validation", status="failed", error=str(exc))
             return False
         finally:
             temporary.unlink(missing_ok=True)
@@ -328,6 +521,7 @@ class IsolatedSuricataRuntime:
         )
 
     def _activate_impl(self, destination: Path, sid: int, rule_sha256: str) -> bool:
+        self.activation_attempted = True
         if sid != self.sid or rule_sha256 != self.rule_sha256:
             return False
         source = Path(destination)
@@ -336,12 +530,17 @@ class IsolatedSuricataRuntime:
         try:
             self._start()
             _atomic(self.active_rules, source.read_bytes())
-            self._command("ruleset-reload-rules")
+            try:
+                self._command("ruleset-reload-rules")
+            except IsolatedRuntimeError as exc:
+                self._record_diagnostic("reload", status="failed", error=str(exc))
+                raise
             if not self._rules_loaded(1):
                 raise IsolatedRuntimeError("Exact candidate rule not confirmed loaded")
             self._activated = True
             return True
-        except (IsolatedRuntimeError, OSError):
+        except (IsolatedRuntimeError, OSError) as exc:
+            self._record_diagnostic("activation", status="failed", error=str(exc))
             return False
 
     def verify_active(self, sid: int, rule_sha256: str) -> bool:
@@ -388,13 +587,24 @@ class IsolatedSuricataRuntime:
         )
 
     def _rollback_impl(self, destination: Path, sid: int, rule_sha256: str) -> bool:
+        self.rollback_attempted = True
         if sid != self.sid or rule_sha256 != self.rule_sha256 or self.process is None:
             return False
         try:
             _atomic(self.active_rules, self._old_rules)
-            self._command("ruleset-reload-rules")
-            return self._rules_loaded(0)
-        except (IsolatedRuntimeError, OSError, TypeError):
+            try:
+                self._command("ruleset-reload-rules")
+            except IsolatedRuntimeError as exc:
+                self._record_diagnostic("rollback", status="failed", error=str(exc))
+                raise
+            self.rollback_verified = self._rules_loaded(0)
+            if not self.rollback_verified:
+                self._record_diagnostic(
+                    "rollback", status="failed", error="empty ruleset was not confirmed loaded",
+                )
+            return self.rollback_verified
+        except (IsolatedRuntimeError, OSError, TypeError) as exc:
+            self._record_diagnostic("rollback", status="failed", error=str(exc))
             return False
 
     def verify_rollback(self, sid: int, rule_sha256: str) -> bool:
@@ -420,31 +630,33 @@ class IsolatedSuricataRuntime:
                     )
                     for probe in self.probe_plan
                 )
-                self.shutdown()
-                return no_sid and self.process.poll() is not None
+                cleanup = self.shutdown()
+                self.post_rollback_verified = no_sid and cleanup and self.process.poll() is not None
+                return self.post_rollback_verified
             no_sid = self._pcap_probe(self.attack_pcap, expect_alert=False)
             no_sid = no_sid and self._pcap_probe(self.normal_pcap, expect_alert=False)
             no_sid = no_sid and all(
                 self._pcap_probe(path, expect_alert=False)
                 for path in self.negative_pcaps
             )
-            self.shutdown()
-            return no_sid and self.process.poll() is not None
-        except (IsolatedRuntimeError, OSError):
+            cleanup = self.shutdown()
+            self.post_rollback_verified = no_sid and cleanup and self.process.poll() is not None
+            return self.post_rollback_verified
+        except (IsolatedRuntimeError, OSError) as exc:
+            self._record_diagnostic("rollback", status="failed", error=str(exc))
             return False
 
     def shutdown(self) -> bool:
         """Only shut down the Popen-owned isolated process, never systemd."""
-        if self.process is None:
-            return True
         shutdown_error = False
         try:
-            if self.process.poll() is None:
+            if self.process is not None and self.process.poll() is None:
                 self._command("shutdown")
                 self.process.wait(timeout=20)
         except (IsolatedRuntimeError, subprocess.TimeoutExpired):
             shutdown_error = True
-            if self.process.poll() is None:
+            self._record_diagnostic("cleanup", status="failed", error="graceful shutdown failed")
+            if self.process is not None and self.process.poll() is None:
                 self.process.terminate()
                 try:
                     self.process.wait(timeout=10)
@@ -452,7 +664,19 @@ class IsolatedSuricataRuntime:
                     self.process.kill()
                     self.process.wait(timeout=10)
         finally:
+            output = self._close_process_output()
+            if output["stdout"] or output["stderr"]:
+                self._record_diagnostic("cleanup", status="output", **output)
             self.pidfile.unlink(missing_ok=True)
             self.socket_path.unlink(missing_ok=True)
             self.active_rules.unlink(missing_ok=True)
-        return not shutdown_error and self.process.poll() is not None
+        process_stopped = self.process is None or self.process.poll() is not None
+        artifacts_removed = not any(
+            path.exists() for path in (self.pidfile, self.socket_path, self.active_rules)
+        )
+        cleanup_verified = not shutdown_error and process_stopped and artifacts_removed
+        self._record_diagnostic(
+            "cleanup", status="verified" if cleanup_verified else "failed",
+            process_stopped=process_stopped, artifacts_removed=artifacts_removed,
+        )
+        return cleanup_verified

@@ -7,9 +7,12 @@ vars:
     EXTERNAL_NET: "any"
   port-groups:
     HTTP_PORTS: "80"
-default-rule-path: .
+default-rule-path: /home/tanhv/suricata-rule-review/isolated-lifecycle-9103003/rules
 rule-files:
-  - recovered.rules
+  - active.rules
+unix-command:
+  enabled: yes
+  filename: /home/tanhv/suricata-rule-review/isolated-lifecycle-9103003/runtime/lab-suricata.socket
 outputs:
   - eve-log:
       enabled: yes

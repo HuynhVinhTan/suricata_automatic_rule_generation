@@ -70,6 +70,12 @@ def _require_runtime_keypair(runtime_private_pem, runtime_private_password, runt
         raise OperationError("runtime private/public key mismatch")
 
 
+def _production_state(before, after):
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return "not_verified"
+    return "unchanged" if before == after else "changed"
+
+
 def execute_frozen_once(
     *, candidate_file, replay_file, owner_file, replay_public_file, owner_public_file,
     runtime_public_file,
@@ -116,7 +122,12 @@ def execute_frozen_once(
     with latency.stage("owner_authorization_verification", component="human"):
         if not verify_frozen_owner_authorization(candidate, replay, owner, replay_public, owner_public, runtime_public):
             raise OperationError("untrusted or mismatched frozen owner authorization")
-    if owner.get("runtime_id") != RUNTIME_ID or owner.get("target_vm") != VM1_HOST or owner.get("interface") != "lo":
+    if (
+        owner.get("runtime_id") != RUNTIME_ID
+        or owner.get("target_vm") != VM1_HOST
+        or owner.get("interface") != "lo"
+        or owner.get("isolated_root") != str(Path(isolated_root).resolve())
+    ):
         raise OperationError("frozen owner authorization scope mismatch")
     if Path(audit_path).resolve() != Path(isolated_root).resolve() / "audit" / "owner-once.jsonl":
         raise OperationError("audit path must be the candidate-specific persistent one-shot ledger")
@@ -131,6 +142,12 @@ def execute_frozen_once(
     started = datetime.now(timezone.utc)
     started_monotonic = __import__("time").monotonic()
     deadline = started_monotonic + 300
+    after = None
+    operation_error = None
+    cleanup_verified = False
+    cleanup_process_stopped = False
+    cleanup_artifacts_removed = False
+    signed = None
     try:
         lifecycle = RuleLifecycle(
             audit_path, isolated_root=isolated_root,
@@ -198,25 +215,83 @@ def execute_frozen_once(
             raise OperationError("runtime private key does not match the trusted runtime public key")
         signed = sign_record(result, runtime_private_pem, runtime_private_password, domain=FROZEN_RUNTIME_DOMAIN)
         verify_frozen_runtime_result(candidate, replay, signed, runtime_public)
-        return signed
     except Exception as exc:
+        operation_error = exc
+    finally:
+        if runtime is not None:
+            try:
+                cleanup_verified = runtime.shutdown() is True
+                if not cleanup_verified and operation_error is None:
+                    operation_error = OperationError("isolated runtime cleanup was not verified")
+            except Exception as cleanup_error:
+                cleanup_verified = False
+                operation_error = operation_error or cleanup_error
+            cleanup_process_stopped = runtime.process is None or runtime.process.poll() is not None
+            cleanup_artifacts_removed = not any(
+                path.exists() for path in (runtime.pidfile, runtime.socket_path, runtime.active_rules)
+            )
+        else:
+            cleanup_process_stopped = True
+            cleanup_artifacts_removed = True
+
+    if operation_error is not None:
+        if before is not None:
+            try:
+                after = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
+            except Exception:
+                after = None
+        production_state = _production_state(before, after)
+        audit_records = None
+        if lifecycle is not None:
+            try:
+                audit_records = lifecycle.verify_audit()
+            except Exception:
+                audit_records = None
+        diagnostic_path = getattr(runtime, "diagnostic_path", None) if runtime is not None else None
+        diagnostic_sha256 = (
+            sha256_file(diagnostic_path) if diagnostic_path is not None and diagnostic_path.is_file() else None
+        )
+        rollback_verified = bool(
+            runtime is not None
+            and runtime.rollback_verified
+            and runtime.post_rollback_verified
+        )
+        rollback_status = (
+            "verified" if rollback_verified
+            else "unverified" if runtime is not None and runtime.rollback_attempted
+            else "not_attempted"
+        )
         report = {
             "schema_version": "g5_frozen_runtime_failure_v1",
             "candidate_id": candidate.get("candidate_id"),
             "sid": SID,
-            "failure_reason": str(exc),
-            "rollback_verified": False,
+            "failure_phase": getattr(runtime, "failure_phase", None) or "operator",
+            "failure_reason": str(operation_error),
+            "outcome": "FAILED",
+            "accepted": False,
+            "rollback_status": rollback_status,
+            "rollback_verified": rollback_verified,
+            "cleanup_status": "verified" if cleanup_verified else "failed" if runtime is not None else "not_attempted",
+            "cleanup_verified": cleanup_verified,
+            "cleanup_process_stopped": cleanup_process_stopped,
+            "cleanup_artifacts_removed": cleanup_artifacts_removed,
+            "production_state": production_state,
+            "production_unchanged": production_state == "unchanged",
             "production_before": before,
-            "production_unchanged": False,
+            "production_after": after,
+            "replay_evidence_sha256": _digest(replay),
+            "owner_authorization_sha256": _digest(owner),
+            "lifecycle_audit_records": audit_records,
+            "lifecycle_audit_sha256": sha256_file(audit_path) if Path(audit_path).is_file() else None,
+            "diagnostic_log_path": str(diagnostic_path) if diagnostic_path is not None else None,
+            "diagnostic_log_sha256": diagnostic_sha256,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "latency_trace_binding": "unsigned_failure_record_field",
             "latency_trace": latency.as_dict(),
         }
         _write_exclusive(failure_path, report)
-        raise
-    finally:
-        if runtime is not None:
-            runtime.shutdown()
+        raise operation_error
+    return signed
 
 
 def main(argv=None):
