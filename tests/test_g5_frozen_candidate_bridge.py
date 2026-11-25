@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from netids import key_pins
 from netids.g5_frozen_candidate import (
     FROZEN_CANDIDATE_SCHEMA,
     FrozenCandidateError,
@@ -17,7 +18,7 @@ from netids.g5_frozen_candidate import (
     verify_frozen_replay_attestation,
     verify_frozen_runtime_result,
 )
-from netids.lifecycle_ed25519 import generate_encrypted_keypair, private_key_matches_public, sign_record
+from netids.lifecycle_ed25519 import generate_encrypted_keypair, private_key_matches_public, public_key_fingerprint, sign_record
 from netids.rule_lifecycle import RuleLifecycle
 
 
@@ -185,11 +186,16 @@ def test_frozen_candidate_rejects_manifest_substitution_and_tampered_evidence():
         verify_frozen_candidate(tampered, baseline)
 
 
-def test_signed_frozen_replay_rejects_wrong_identity_and_invalid_signature():
+def test_signed_frozen_replay_rejects_wrong_identity_and_invalid_signature(monkeypatch):
     candidate = _candidate()
     private, public = generate_encrypted_keypair(b"replay-password")
     signed = sign_frozen_replay_attestation(
         candidate, _runtime_evidence(candidate), private, b"replay-password"
+    )
+    monkeypatch.setattr(
+        key_pins,
+        "PINNED_G5_FROZEN_REPLAY_ED25519_SHA256",
+        public_key_fingerprint(public),
     )
     assert verify_frozen_replay_attestation(candidate, signed, public) is True
 
@@ -199,7 +205,27 @@ def test_signed_frozen_replay_rejects_wrong_identity_and_invalid_signature():
     assert verify_frozen_replay_attestation(candidate, signed, b"not-a-key") is False
 
 
-def test_signed_frozen_replay_requires_lifecycle_provenance_and_exact_probe_plan():
+def test_frozen_replay_verification_requires_candidate_specific_anchor(monkeypatch):
+    candidate = _candidate()
+    replay_private, replay_public = generate_encrypted_keypair(b"replay-password")
+    signed = sign_frozen_replay_attestation(
+        candidate, _runtime_evidence(candidate), replay_private, b"replay-password"
+    )
+    monkeypatch.setattr(
+        key_pins,
+        "PINNED_G5_FROZEN_REPLAY_ED25519_SHA256",
+        public_key_fingerprint(replay_public),
+    )
+    assert verify_frozen_replay_attestation(candidate, signed, replay_public) is True
+    monkeypatch.setattr(
+        key_pins,
+        "PINNED_G5_FROZEN_REPLAY_ED25519_SHA256",
+        key_pins.PINNED_REPLAY_ED25519_SHA256,
+    )
+    assert verify_frozen_replay_attestation(candidate, signed, replay_public) is False
+
+
+def test_signed_frozen_replay_requires_lifecycle_provenance_and_exact_probe_plan(monkeypatch):
     candidate = _candidate()
     private, public = generate_encrypted_keypair(b"replay-password")
     evidence = _runtime_evidence(candidate)
@@ -219,6 +245,11 @@ def test_signed_frozen_replay_requires_lifecycle_provenance_and_exact_probe_plan
         sign_frozen_replay_attestation(candidate, duplicate_probe, private, b"replay-password")
 
     signed = sign_frozen_replay_attestation(candidate, evidence, private, b"replay-password")
+    monkeypatch.setattr(
+        key_pins,
+        "PINNED_G5_FROZEN_REPLAY_ED25519_SHA256",
+        public_key_fingerprint(public),
+    )
     assert verify_frozen_replay_attestation(candidate, signed, public) is True
 
 
@@ -377,7 +408,16 @@ def test_frozen_bridge_owner_contract_reaches_real_lifecycle(tmp_path, monkeypat
     )
     owner_private, owner_public = generate_encrypted_keypair(b"owner-password")
     runtime_private, runtime_public = generate_encrypted_keypair(b"runtime-password")
-    monkeypatch.setattr("netids.key_pins.require_pinned_role_keys", lambda *_: None)
+    monkeypatch.setattr(
+        key_pins,
+        "PINNED_G5_FROZEN_REPLAY_ED25519_SHA256",
+        public_key_fingerprint(replay_public),
+    )
+    monkeypatch.setattr(
+        key_pins,
+        "PINNED_OWNER_ED25519_SHA256",
+        public_key_fingerprint(owner_public),
+    )
     owner = build_frozen_owner_authorization(
         candidate, replay, replay_public_pem=replay_public,
         owner_private_pem=owner_private, owner_private_password=b"owner-password",

@@ -322,10 +322,13 @@ def sign_frozen_replay_attestation(candidate, replay, private_pem, password):
 
 
 def verify_frozen_replay_attestation(candidate, replay, public_pem):
+    from netids.key_pins import require_pinned_frozen_g5_replay_key
+
     try:
+        require_pinned_frozen_g5_replay_key(public_pem)
         _verify_candidate_shape(candidate)
         _verify_replay_shape(candidate, replay)
-    except FrozenCandidateError:
+    except (FrozenCandidateError, ValueError, TypeError):
         return False
     return verify_record(replay, public_pem, domain=FROZEN_REPLAY_DOMAIN)
 
@@ -383,11 +386,13 @@ def build_frozen_owner_authorization(
     isolated_root, runtime_id, target_vm, interface, nonce, now=None,
 ):
     """Sign separate, candidate-specific one-shot owner authorization."""
-    from netids.key_pins import require_pinned_role_keys
+    from netids.key_pins import require_pinned_frozen_g5_role_keys
 
     if not verify_frozen_replay_attestation(candidate, replay, replay_public_pem):
         raise FrozenCandidateError("trusted frozen replay evidence is required")
-    require_pinned_role_keys(replay_public_pem, owner_public_pem)
+    require_pinned_frozen_g5_role_keys(
+        replay_public_pem, owner_public_pem, runtime_public_pem
+    )
     _require(private_key_matches_public(owner_private_pem, owner_private_password, owner_public_pem), "owner private/public key mismatch")
     try:
         runtime_signer_sha256 = public_key_fingerprint(runtime_public_pem)
@@ -432,12 +437,14 @@ def verify_frozen_owner_authorization(
     candidate, replay, authorization, replay_public_pem, owner_public_pem,
     runtime_public_pem, *, now=None,
 ):
-    from netids.key_pins import require_pinned_role_keys
+    from netids.key_pins import require_pinned_frozen_g5_role_keys
 
     if not verify_frozen_replay_attestation(candidate, replay, replay_public_pem):
         return False
     try:
-        require_pinned_role_keys(replay_public_pem, owner_public_pem)
+        require_pinned_frozen_g5_role_keys(
+            replay_public_pem, owner_public_pem, runtime_public_pem
+        )
         _require(authorization.get("schema_version") == FROZEN_OWNER_SCHEMA, "owner authorization schema mismatch")
         _require(authorization.get("candidate_id") == candidate["candidate_id"], "owner authorization candidate mismatch")
         _require(authorization.get("run_id") == candidate["run_id"], "owner authorization run mismatch")

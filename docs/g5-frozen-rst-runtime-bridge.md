@@ -22,6 +22,31 @@ The bridge remains review-only. It does not claim Hybrid equivalence or
 production suitability. Legitimate repeated RST traffic outside the tested
 Normal distribution remains a residual risk.
 
+## 0. Candidate-specific trust-anchor rotation
+
+The active frozen SID9103005 path uses a new, owner-reviewed replay signer.
+Only its public fingerprint is committed:
+
+`77af3ee89e4b7a1cbb99369b19e244b0be70a44dfc745ab77a926d9ad98a7b92`
+
+The historical replay pin remains unchanged at
+`b360fc9660513611a09287c9e6269c4bac4ac354ee85cecc0bbdbd4534f4d982` and is
+not accepted by this G5 path. The existing owner pin remains
+`92b2fb2fffa9da9ac82011fca030b4d5d822046c1fbe6c375ee08d5237cc4de7`.
+Replay, owner and runtime signing roles must be independent; the runtime key
+is bound to the owner authorization and cannot equal either other role.
+
+The new replay private/public files are provisioned on VM1 at:
+
+`/home/tanhv/.config/suricata-ai/g5-replay-9103005/replay.pem`
+
+`/home/tanhv/.config/suricata-ai/g5-replay-9103005/replay.pub.pem`
+
+Never copy the replay private key into Git, `.runtime-staging/`, an archive or
+the owner workstation. Generate a fresh signed replay attestation from the
+exact frozen candidate and six-case cohort after this reviewed source commit
+is staged. Do not reuse historical signed replay JSON.
+
 ## 1. Read-only candidate import
 
 Run from the repository checkout. This reads the existing evidence and writes a
@@ -102,9 +127,10 @@ python -m scripts.attest_frozen_rst_replay `
   --output C:\g5-signed\sid9103005-replay-attestation.json
 ```
 
-The CLI enforces the pinned replay fingerprint in `src/netids/key_pins.py` and
-checks that the encrypted private key matches that public key. The private key
-must never enter Git, `.runtime-staging/`, or VM transfer bundles.
+The CLI enforces the candidate-specific replay fingerprint in
+`src/netids/key_pins.py` and checks that the encrypted private key matches that
+public key. The historical replay fingerprint is rejected here. The private
+key must never enter Git, `.runtime-staging/`, or VM transfer bundles.
 
 ## 4. Separate owner authorization
 
@@ -128,16 +154,19 @@ python -m scripts.approve_frozen_rst_activation `
   --output C:\g5-signed\sid9103005-owner-authorization.json
 ```
 
-The owner public key must satisfy the pinned owner fingerprint. The runtime
-public key fingerprint is bound into the owner authorization; the VM command
-must use the matching encrypted runtime private key. The resulting authorization
-is one-shot, nonce-bound, expiry-checked, and scoped to the candidate-specific
-isolated root and 300-second maximum operation.
+The owner public key must satisfy the pinned owner fingerprint. The new replay
+public key must satisfy the candidate-specific G5 pin, never the historical
+replay pin. The runtime public key must be a third, independent role, and its
+fingerprint is bound into the owner authorization; the VM command must use the
+matching encrypted runtime private key. The resulting authorization is
+one-shot, nonce-bound, expiry-checked, and scoped to the candidate-specific
+isolated root and 300-second maximum operation. Mismatched anchors are rejected
+before lifecycle staging or activation.
 
 ## 5. VM1 runtime and rollback
 
 Transfer only the candidate JSON, signed replay attestation, owner authorization,
-both public keys, the isolated YAML, and the encrypted runtime signing key to
+the three public keys, the isolated YAML, and the encrypted runtime signing key to
 VM1. Never transfer either owner or replay private key. Use the actual six
 reviewed PCAP paths only after read-only SHA256 checks against the cohort report.
 The repository evidence contains the hashes but intentionally does not contain
@@ -168,6 +197,27 @@ python3 -m scripts.operate_frozen_rst_once \
   --evidence-output /home/tanhv/g5-signed/sid9103005-runtime-evidence.json \
   --failure-output /home/tanhv/g5-signed/sid9103005-runtime-failure.json
 ```
+
+Before any VM1 execution, an owner must stage the reviewed source commit as a
+new versioned archive and verify its hash. This is the exact archive command
+for the current branch after the commit is known; it is a staging instruction,
+not an execution record:
+
+```bash
+FINAL_RELEASE_COMMIT="<reviewed-commit-sha>"
+ARCHIVE="suricata-ai-tools-${FINAL_RELEASE_COMMIT}.tar"
+git archive --format=tar --prefix="suricata-ai-tools-${FINAL_RELEASE_COMMIT}/" \
+  --output="$ARCHIVE" "$FINAL_RELEASE_COMMIT"
+sha256sum "$ARCHIVE"
+scp -o BatchMode=yes -o StrictHostKeyChecking=yes "$ARCHIVE" \
+  "suricata-vm1:/home/tanhv/.runtime-staging/g5-source-${FINAL_RELEASE_COMMIT}/source.tar"
+```
+
+On VM1, verify the copied archive SHA256 before extracting into a fresh,
+versioned release directory. The existing checkout, production configuration,
+`.runtime-staging/`, and historical evidence remain untouched. Do not execute
+the runtime command until the fresh replay attestation, owner authorization and
+the staged source commit all refer to the same reviewed candidate workflow.
 
 `/ABSOLUTE/VERIFIED/*.pcap` tokens must be replaced only with paths whose bytes
 match the signed six-case cohort. The command refuses guessed, substituted,

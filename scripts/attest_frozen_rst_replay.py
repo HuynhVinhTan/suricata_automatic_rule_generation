@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from netids.g5_frozen_candidate import sign_frozen_replay_attestation, verify_frozen_candidate
-from netids.key_pins import require_pinned_replay_key
+from netids.key_pins import require_pinned_frozen_g5_replay_key
 from netids.lifecycle_ed25519 import private_key_matches_public
 
 
@@ -37,7 +37,7 @@ def main(argv=None):
         evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
         verify_frozen_candidate(candidate, candidate.get("baseline_comparison"))
         replay_public = args.replay_public.read_bytes()
-        require_pinned_replay_key(replay_public)
+        require_pinned_frozen_g5_replay_key(replay_public)
         if evidence.get("cohort_cases") != candidate.get("cohort_cases"):
             raise ValueError("runtime evidence does not bind the exact six-case cohort")
         for key in ("candidate_id", "run_id", "sid", "rule_sha256", "rule_file_sha256", "freeze_sha256", "cohort_results_sha256", "native_holdout_report_sha256", "cohort_cases_sha256", "baseline_rules_sha256"):
