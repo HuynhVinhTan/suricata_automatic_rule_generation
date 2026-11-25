@@ -402,11 +402,11 @@ def _save_evaluation_figures(y: np.ndarray, oof: dict[str, np.ndarray], threshol
 
 
 def _write_hash_manifest(output: Path, data: PreprocessingResult, partition: dict[str, Any], figures: list[str], checkpoints: list[str]) -> None:
-    files = {str(path.relative_to(output)).replace("\\", "/"): sha256(path) for path in output.rglob("*") if path.is_file() and path.name != "manifest.json"}
+    files = {str(path.relative_to(output)).replace("\\", "/"): sha256(path) for path in output.rglob("*") if path.is_file() and path.name != "manifest.json" and "checkpoints" not in path.relative_to(output).parts}
     v02_summary = json.loads((V02_DIR / "summary.json").read_text(encoding="utf-8"))
     v02_model_hashes = {family: item["model_sha256"] for family, item in v02_summary["selected"].items()}
-    checkpoint_hashes = {name.replace("\\", "/"): files[name.replace("\\", "/")] for name in checkpoints}
-    manifest = {"experiment": "unsw_v03_research_completeness", "status": "COMPLETED", "dataset": "UNSW-NB15", "seed": SEED, "folds": FOLDS, "feature_names": list(FEATURES), "official_test_accessed": False, "official_test_policy": "never opened by v03", "raw_training_file": str(TRAIN_FILE), "raw_training_sha256": sha256(TRAIN_FILE), "raw_rows": data.original_rows, "processed_rows": data.processed_rows, "removed_rows": data.removed_rows, "v02_split_sha256": partition["split_sha256"], "v02_development_artifact_sha256": sha256(V02_DIR / "summary.json"), "v02_frozen_model_hashes": v02_model_hashes, "figures": figures, "checkpoints": checkpoints, "checkpoint_sha256": checkpoint_hashes, "file_sha256": files, "provenance": {"cv": "StratifiedGroupKFold on frozen v02 Development partition only", "group": "exact equality of four transformed features", "scaler_fit_scope": "inside each fold; MLP/AE scaler fit on inner training-only data", "ae_threshold": "Normal-only inner calibration with empirical FPR budget 0.01", "v02_artifacts_overwritten": False, "runtime_and_suricata_pipeline_changed": False}}
+    checkpoint_hashes = {name.replace("\\", "/"): sha256(output / name) for name in checkpoints}
+    manifest = {"experiment": "unsw_v03_research_completeness", "status": "COMPLETED", "dataset": "UNSW-NB15", "seed": SEED, "folds": FOLDS, "feature_names": list(FEATURES), "official_test_accessed": False, "official_test_policy": "never opened by v03", "raw_training_file": str(TRAIN_FILE), "raw_training_sha256": sha256(TRAIN_FILE), "raw_rows": data.original_rows, "processed_rows": data.processed_rows, "removed_rows": data.removed_rows, "v02_split_sha256": partition["split_sha256"], "v02_development_artifact_sha256": sha256(V02_DIR / "summary.json"), "v02_frozen_model_hashes": v02_model_hashes, "figures": figures, "checkpoints": checkpoints, "checkpoint_files_committed": False, "checkpoint_sha256": checkpoint_hashes, "file_sha256": files, "provenance": {"cv": "StratifiedGroupKFold on frozen v02 Development partition only", "group": "exact equality of four transformed features", "scaler_fit_scope": "inside each fold; MLP/AE scaler fit on inner training-only data", "ae_threshold": "Normal-only inner calibration with empirical FPR budget 0.01", "checkpoint_policy": "Generated and hash-verified locally; intentionally not committed due size.", "v02_artifacts_overwritten": False, "runtime_and_suricata_pipeline_changed": False}}
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
@@ -462,8 +462,12 @@ def verify(output: str | Path = OUTPUT) -> None:
     for figure in manifest.get("figures", []):
         path = output / figure
         if not path.is_file() or path.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n": raise ValueError(f"Invalid PNG figure: {figure}")
-    for checkpoint in manifest.get("checkpoints", []):
-        if not (output / checkpoint).is_file(): raise ValueError(f"Missing checkpoint: {checkpoint}")
+    for checkpoint, expected_hash in manifest.get("checkpoint_sha256", {}).items():
+        path = output / checkpoint
+        if path.is_file() and sha256(path) != expected_hash:
+            raise ValueError(f"Checkpoint hash mismatch: {checkpoint}")
+        if manifest.get("checkpoint_files_committed") is True and not path.is_file():
+            raise ValueError(f"Missing committed checkpoint: {checkpoint}")
     print("PASS: UNSW V03 RESEARCH COMPLETENESS VERIFIED"); print("OFFICIAL TEST NOT ACCESSED")
 
 
