@@ -39,7 +39,11 @@ the persistent hash chain; it must not be removed, rewritten, or replayed.
    audit ledger at `<isolated-root>/audit/owner-once.jsonl` as the source of
    truth and append through its existing hash-chain writer; never reset it.
    Failure and signed-success outputs must also be inside the new namespace
-   and must not overwrite the original failure evidence.
+   and must not overwrite the original failure evidence. Runtime and readiness
+   use the same effective-configuration generator, including the `%YAML 1.1`
+   and `---` header, exact isolated ruleset and control-socket paths, and the
+   encoded Linux UNIX socket pathname limit. Attempt IDs are never truncated,
+   and the production socket is never a fallback.
 5. Run only the isolated AF_PACKET/`lo` runtime. The daemon configuration
    names the isolated `active.rules` file and UNIX socket; no production rules,
    configuration, interface, or socket may be opened.

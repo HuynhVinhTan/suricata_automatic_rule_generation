@@ -22,6 +22,8 @@ def _template(root: Path) -> Path:
 
 
 def test_native_readiness_uses_non_live_syntax_command_and_exact_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    monkeypatch.setattr("scripts.validate_g5_native_readiness.validate_unix_socket_path", lambda path: path)
     root = tmp_path / "isolated"
     root.mkdir()
     config = _template(root)
@@ -52,6 +54,7 @@ def test_native_readiness_uses_non_live_syntax_command_and_exact_paths(monkeypat
     assert "-T" in syntax and "-S" in syntax and "-r" not in syntax
     assert "--af-packet=lo" not in syntax
     effective = yaml.safe_load(Path(result["effective_config"]).read_text(encoding="utf-8"))
+    assert Path(result["effective_config"]).read_bytes().startswith(b"%YAML 1.1\n---\n")
     assert effective["rule-files"] == ["active.rules"]
     assert effective["af-packet"] == [{"interface": "lo"}]
     assert Path(effective["default-rule-path"]).is_relative_to(root / "readiness" / "attempt-readiness")
@@ -59,14 +62,16 @@ def test_native_readiness_uses_non_live_syntax_command_and_exact_paths(monkeypat
     assert json.loads(report.read_text(encoding="utf-8"))["status"] == result["status"]
 
 
-def test_native_readiness_refuses_reused_attempt_and_production_rule_paths(tmp_path):
+def test_native_readiness_refuses_reused_attempt_and_production_rule_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    monkeypatch.setattr("scripts.validate_g5_native_readiness.validate_unix_socket_path", lambda path: path)
     root = tmp_path / "isolated"
     root.mkdir()
     config = _template(root)
     candidate = root / "candidate.rules"
     candidate.write_text("alert tcp any any -> any any (sid:9103005; rev:1;)\n", encoding="utf-8")
     (root / "attempts" / "attempt-reused").mkdir(parents=True)
-    with pytest.raises(NativeReadinessError, match="attempt namespace"):
+    with pytest.raises(NativeReadinessError, match="evidence namespace"):
         validate_native_readiness(
             template_config=config,
             isolated_root=root,

@@ -18,7 +18,7 @@ their reviewed VM1 locations:
 ```bash
 cd /home/tanhv/suricata-rule-review/repository
 ROOT=/home/tanhv/suricata-rule-review/isolated-lifecycle-9103005
-ATTEMPT_ID=g5-readiness-20261125-01
+ATTEMPT_ID=g5r1
 TEMPLATE_CONFIG="$ROOT/isolated.yaml"
 CANDIDATE_RULES="$ROOT/evidence/candidate.rules"
 READINESS_REPORT="$ROOT/readiness/$ATTEMPT_ID/native-readiness.json"
@@ -33,6 +33,27 @@ test ! -e "$ROOT/attempts/$ATTEMPT_ID"
 test -f "$TEMPLATE_CONFIG"
 test -f "$CANDIDATE_RULES"
 ```
+
+The short attempt ID is intentional: on the reviewed VM1 layout the future
+runtime socket pathname is 101 encoded bytes, below Linux's 107-byte pathname
+limit. Check the exact bytes before running the validator:
+
+```bash
+python3 - "$ROOT" "$ATTEMPT_ID" <<'PY'
+import os
+import pathlib
+import sys
+
+socket_path = pathlib.Path(sys.argv[1]) / "attempts" / sys.argv[2] / "runtime" / "lab-suricata.socket"
+length = len(os.fsencode(str(socket_path)))
+assert length <= 107, (length, socket_path)
+print(f"future socket pathname bytes: {length}")
+PY
+```
+
+The validator repeats this check, validates the unused attempt namespace before
+any lifecycle or authorization work, and refuses to truncate the ID or fall
+back to a production socket.
 
 The candidate rule file must be the reviewed isolated candidate, never a file
 under `/etc/suricata`, `/var/lib/suricata`, `/run/suricata`, or
@@ -92,6 +113,7 @@ owner decision:
   `runtime/lab-suricata.socket`;
 - the future runtime path is a new
   `<isolated-root>/attempts/<attempt-id>` namespace;
+- the generated native YAML begins with `%YAML 1.1` followed by `---`;
 - the persistent audit path remains
   `<isolated-root>/audit/owner-once.jsonl` and is not reset or replaced;
 - the original failure JSON, signed authorization, audit ledger, `.runtime-staging/`,

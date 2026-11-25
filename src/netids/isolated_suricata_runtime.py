@@ -42,6 +42,103 @@ _SECRET_FIELD = re.compile(
     r"(?i)(password|passphrase|private[_ -]?key|secret|token|credential)(\s*[:=]\s*)\S+",
 )
 _ATTEMPT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SURICATA_YAML_HEADER = "%YAML 1.1\n---\n"
+LINUX_UNIX_SOCKET_PATH_MAX_BYTES = 107
+
+
+def validate_attempt_id(attempt_id: str) -> str:
+    if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id):
+        raise ValueError("Invalid attempt-specific evidence identifier")
+    return attempt_id
+
+
+def validate_unix_socket_path(path: Path) -> Path:
+    encoded = os.fsencode(os.fspath(path))
+    if len(encoded) > LINUX_UNIX_SOCKET_PATH_MAX_BYTES:
+        raise ValueError(
+            "UNIX socket pathname exceeds Linux limit "
+            f"({len(encoded)} > {LINUX_UNIX_SOCKET_PATH_MAX_BYTES} bytes)"
+        )
+    return Path(path)
+
+
+def validate_isolated_configuration(
+    configuration: dict, *, active_rules: Path, socket_path: Path,
+) -> None:
+    if not isinstance(configuration, dict):
+        raise ValueError("Isolated Suricata configuration is not an object")
+    unix_command = configuration.get("unix-command")
+    if not isinstance(unix_command, dict) or unix_command.get("enabled") is not True:
+        raise ValueError("Isolated UNIX socket is not enabled in configuration")
+    configured_socket = Path(str(unix_command.get("filename", "")))
+    validate_unix_socket_path(configured_socket)
+    validate_unix_socket_path(socket_path)
+    if configured_socket.resolve() != socket_path.resolve():
+        raise ValueError("Isolated UNIX socket path is not attempt-specific")
+
+    rule_files = configuration.get("rule-files")
+    if not isinstance(rule_files, list) or len(rule_files) != 1 or not isinstance(rule_files[0], str):
+        raise ValueError("Isolated configuration must reference exactly one ruleset")
+    default_rule_path = configuration.get("default-rule-path", ".")
+    configured_rules = Path(rule_files[0])
+    if not configured_rules.is_absolute():
+        configured_rules = Path(default_rule_path) / configured_rules
+    if configured_rules.resolve() != active_rules.resolve():
+        raise ValueError("Isolated configuration references a non-isolated ruleset")
+
+    captures = configuration.get("af-packet", [])
+    if not isinstance(captures, list) or not captures or any(
+        not isinstance(entry, dict) or entry.get("interface") != "lo" for entry in captures
+    ):
+        raise ValueError("Isolated configuration must capture loopback only")
+
+
+def generate_effective_suricata_configuration(
+    template: Path | dict, *, active_rules: Path, socket_path: Path,
+) -> str:
+    if isinstance(template, dict):
+        configuration = dict(template)
+    else:
+        try:
+            configuration = yaml.safe_load(Path(template).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise ValueError("Invalid isolated Suricata configuration template") from exc
+    if not isinstance(configuration, dict):
+        raise ValueError("Isolated Suricata configuration template is not an object")
+    if configuration.get("unix-command") is not None and not isinstance(
+        configuration.get("unix-command"), dict
+    ):
+        raise ValueError("Isolated UNIX command configuration is invalid")
+    configuration["default-rule-path"] = str(Path(active_rules).parent)
+    configuration["rule-files"] = ["active.rules"]
+    unix_command = dict(configuration.get("unix-command") or {})
+    unix_command["enabled"] = True
+    unix_command["filename"] = str(validate_unix_socket_path(socket_path))
+    configuration["unix-command"] = unix_command
+    validate_isolated_configuration(
+        configuration, active_rules=Path(active_rules), socket_path=Path(socket_path),
+    )
+    return SURICATA_YAML_HEADER + yaml.safe_dump(configuration, sort_keys=False) + "\n"
+
+
+def validate_attempt_namespace(root: Path, attempt_id: str) -> tuple[Path, Path]:
+    """Validate future namespace and socket before lifecycle or authorization use."""
+    attempt_id = validate_attempt_id(attempt_id)
+    root = Path(root)
+    attempt_root = root / "attempts" / attempt_id
+    socket_path = attempt_root / "runtime" / "lab-suricata.socket"
+    validate_unix_socket_path(socket_path)
+    resolved_root = root.resolve()
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("Exact isolated runtime root is missing/unsafe")
+    attempts = root / "attempts"
+    if attempts.is_symlink():
+        raise ValueError("Attempt evidence directory is symlinked")
+    if attempt_root.exists() or attempt_root.is_symlink():
+        raise ValueError("Attempt evidence namespace already exists; refuse reuse")
+    if not attempt_root.resolve().is_relative_to(resolved_root):
+        raise ValueError("Attempt evidence namespace escapes isolated root")
+    return attempt_root, socket_path
 
 
 def _redact_diagnostic(value: object) -> str:
@@ -170,7 +267,10 @@ class IsolatedSuricataRuntime:
     ):
         self.root = Path(root)
         self.config_source = Path(config)
-        self.attempt_id = self._validate_attempt_id(attempt_id)
+        try:
+            self.attempt_id = validate_attempt_id(attempt_id) if attempt_id is not None else None
+        except ValueError as exc:
+            raise IsolatedRuntimeError(str(exc)) from exc
         self.attempt_root = (
             self.root / "attempts" / self.attempt_id
             if self.attempt_id is not None else self.root
@@ -198,6 +298,10 @@ class IsolatedSuricataRuntime:
         self.active_rules = self.attempt_root / "rules" / "active.rules"
         self.logdir = self.attempt_root / "logs"
         self.diagnostic_path = self.attempt_root / "logs" / "runtime-diagnostics.jsonl"
+        try:
+            validate_unix_socket_path(self.socket_path)
+        except ValueError as exc:
+            raise IsolatedRuntimeError(str(exc)) from exc
         self.process = None
         self._output_collectors = []
         self._old_rules = None
@@ -210,14 +314,6 @@ class IsolatedSuricataRuntime:
         self._last_attack_eve = ""
         self.probe_results = []
         self._preflight()
-
-    @staticmethod
-    def _validate_attempt_id(attempt_id: str | None) -> str | None:
-        if attempt_id is None:
-            return None
-        if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id):
-            raise IsolatedRuntimeError("Invalid attempt-specific evidence identifier")
-        return attempt_id
 
     def _check_deadline(self):
         if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
@@ -280,21 +376,15 @@ class IsolatedSuricataRuntime:
         """Create one exclusive runtime evidence namespace without touching prior attempts."""
         if self.attempt_id is None:
             raise IsolatedRuntimeError("Attempt-specific evidence identifier is required")
-        if not self.root.is_dir() or self.root.is_symlink():
-            raise IsolatedRuntimeError("Exact isolated runtime root is missing/unsafe")
+        try:
+            validate_attempt_namespace(self.root, self.attempt_id)
+        except ValueError as exc:
+            raise IsolatedRuntimeError(str(exc)) from exc
         if self.config_source.is_symlink() or not self.config_source.is_file():
             raise IsolatedRuntimeError("Isolated configuration template is missing or unsafe")
         _config_safe(self.config_source, self.root)
-        try:
-            configuration = yaml.safe_load(self.config_source.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, yaml.YAMLError) as exc:
-            raise IsolatedRuntimeError("Invalid isolated Suricata configuration template") from exc
-        if not isinstance(configuration, dict):
-            raise IsolatedRuntimeError("Isolated Suricata configuration template is not an object")
 
         attempts = self.root / "attempts"
-        if attempts.is_symlink():
-            raise IsolatedRuntimeError("Attempt evidence directory is symlinked")
         attempts.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.attempt_root.exists() or self.attempt_root.is_symlink():
             raise IsolatedRuntimeError("Attempt evidence namespace already exists; refuse reuse")
@@ -302,21 +392,12 @@ class IsolatedSuricataRuntime:
         for directory in (self.socket_path.parent, self.active_rules.parent, self.logdir):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-        configuration["default-rule-path"] = str(self.active_rules.parent)
-        configuration["rule-files"] = ["active.rules"]
-        if configuration.get("unix-command") is not None and not isinstance(
-            configuration.get("unix-command"), dict
-        ):
-            raise IsolatedRuntimeError("Isolated UNIX command configuration is invalid")
-        unix_command = dict(configuration.get("unix-command") or {})
-        unix_command["enabled"] = True
-        unix_command["filename"] = str(self.socket_path)
-        configuration["unix-command"] = unix_command
         try:
-            _atomic(
-                self.config,
-                (yaml.safe_dump(configuration, sort_keys=False) + "\n").encode("utf-8"),
+            effective = generate_effective_suricata_configuration(
+                self.config_source, active_rules=self.active_rules,
+                socket_path=self.socket_path,
             )
+            _atomic(self.config, effective.encode("utf-8"))
         except (OSError, UnicodeError, TypeError, ValueError, yaml.YAMLError) as exc:
             raise IsolatedRuntimeError("Could not create effective attempt configuration") from exc
 
@@ -325,30 +406,13 @@ class IsolatedSuricataRuntime:
             configuration = yaml.safe_load(self.config.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise IsolatedRuntimeError("Invalid isolated Suricata configuration") from exc
-        if not isinstance(configuration, dict):
-            raise IsolatedRuntimeError("Isolated Suricata configuration is not an object")
-
-        unix_command = configuration.get("unix-command")
-        if not isinstance(unix_command, dict) or unix_command.get("enabled") is not True:
-            raise IsolatedRuntimeError("Isolated UNIX socket is not enabled in configuration")
-        if Path(str(unix_command.get("filename", ""))).resolve() != self.socket_path.resolve():
-            raise IsolatedRuntimeError("Isolated UNIX socket path is not attempt-specific")
-
-        rule_files = configuration.get("rule-files")
-        if not isinstance(rule_files, list) or len(rule_files) != 1 or not isinstance(rule_files[0], str):
-            raise IsolatedRuntimeError("Isolated configuration must reference exactly one ruleset")
-        default_rule_path = configuration.get("default-rule-path", ".")
-        configured_rules = Path(rule_files[0])
-        if not configured_rules.is_absolute():
-            configured_rules = Path(default_rule_path) / configured_rules
-        if configured_rules.resolve() != self.active_rules.resolve():
-            raise IsolatedRuntimeError("Isolated configuration references a non-isolated ruleset")
-
-        captures = configuration.get("af-packet", [])
-        if not isinstance(captures, list) or not captures or any(
-            not isinstance(entry, dict) or entry.get("interface") != "lo" for entry in captures
-        ):
-            raise IsolatedRuntimeError("Isolated configuration must capture loopback only")
+        try:
+            validate_isolated_configuration(
+                configuration, active_rules=self.active_rules,
+                socket_path=self.socket_path,
+            )
+        except ValueError as exc:
+            raise IsolatedRuntimeError(str(exc)) from exc
 
     def _record_diagnostic(self, phase: str, **details) -> None:
         """Append bounded, redacted structured diagnostics; never mask the failure."""

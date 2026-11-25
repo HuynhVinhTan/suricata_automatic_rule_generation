@@ -22,7 +22,10 @@ from netids.g5_frozen_candidate import (
     verify_frozen_replay_attestation,
     verify_frozen_runtime_result,
 )
-from netids.isolated_suricata_runtime import IsolatedSuricataRuntime, VM1_HOST, is_verified_vm1_host
+from netids.isolated_suricata_runtime import (
+    IsolatedSuricataRuntime, VM1_HOST, is_verified_vm1_host,
+    validate_attempt_namespace,
+)
 from netids.lifecycle_ed25519 import private_key_matches_public, sha256_file, sign_record
 from netids.latency import LatencyTrace
 from netids.rule_lifecycle import RuleLifecycle
@@ -85,6 +88,12 @@ def execute_frozen_once(
 ):
     if not is_verified_vm1_host():
         raise OperationError("owner authorization is only for verified VM1")
+    try:
+        attempt_evidence_root, _ = validate_attempt_namespace(isolated_root, attempt_id)
+    except ValueError as exc:
+        raise OperationError(str(exc)) from exc
+    if not Path(failure_path).resolve().is_relative_to(attempt_evidence_root):
+        raise OperationError("attempt evidence output must remain inside its attempt namespace")
     candidate = _read_json(candidate_file)
     replay = _read_json(replay_file)
     owner = _read_json(owner_file)
@@ -131,9 +140,6 @@ def execute_frozen_once(
         raise OperationError("frozen owner authorization scope mismatch")
     if Path(audit_path).resolve() != Path(isolated_root).resolve() / "audit" / "owner-once.jsonl":
         raise OperationError("audit path must be the candidate-specific persistent one-shot ledger")
-    attempt_evidence_root = Path(isolated_root).resolve() / "attempts" / str(attempt_id)
-    if not Path(failure_path).resolve().is_relative_to(attempt_evidence_root):
-        raise OperationError("attempt evidence output must remain inside its attempt namespace")
     with latency.stage("production_safety_snapshot_before", component="runtime"):
         before = production_snapshot(production_yaml, production_rules, forbidden_sid=SID)
     _require_candidate_baseline(candidate, before)
@@ -316,7 +322,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.evidence_output.exists() or args.failure_output.exists():
         parser.error("evidence/failure output exists; never overwrite")
-    attempt_evidence_root = Path(args.isolated_root).resolve() / "attempts" / args.attempt_id
+    try:
+        attempt_evidence_root, _ = validate_attempt_namespace(args.isolated_root, args.attempt_id)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not args.evidence_output.resolve().is_relative_to(attempt_evidence_root):
         parser.error("evidence output must remain inside its attempt namespace")
     if not args.failure_output.resolve().is_relative_to(attempt_evidence_root):

@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import yaml
 
 from netids.isolated_suricata_runtime import (
     IsolatedSuricataRuntime, IsolatedRuntimeError, is_verified_vm1_host,
+    validate_unix_socket_path,
 )
 from netids.latency import LatencyTrace
 from scripts.operate_isolated_once import (
@@ -135,7 +137,8 @@ def test_daemon_uses_af_packet_only_and_keeps_exclusive_syntax_rule_path_offline
     assert validation[validation.index("-S") + 1] == str(tmp_path / "runtime" / "candidate.rules")
 
 
-def test_isolated_config_declares_only_active_rules_and_attempt_socket(tmp_path):
+def test_isolated_config_declares_only_active_rules_and_attempt_socket(tmp_path, monkeypatch):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     runtime = object.__new__(IsolatedSuricataRuntime)
     runtime.root = tmp_path
     runtime.config = tmp_path / "isolated.yaml"
@@ -161,7 +164,8 @@ outputs:
     runtime._validate_isolated_configuration()
 
 
-def test_attempt_namespace_rewrites_effective_config_without_touching_template(tmp_path):
+def test_attempt_namespace_rewrites_effective_config_without_touching_template(tmp_path, monkeypatch):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     root = tmp_path / "isolated"
     root.mkdir()
     template = root / "isolated.yaml"
@@ -196,6 +200,7 @@ def test_attempt_namespace_rewrites_effective_config_without_touching_template(t
     runtime._prepare_attempt_namespace()
 
     assert template.read_bytes() == original
+    assert runtime.config.read_bytes().startswith(b"%YAML 1.1\n---\n")
     effective = yaml.safe_load(runtime.config.read_text(encoding="utf-8"))
     assert effective["default-rule-path"] == str(runtime.active_rules.parent)
     assert effective["rule-files"] == ["active.rules"]
@@ -204,7 +209,8 @@ def test_attempt_namespace_rewrites_effective_config_without_touching_template(t
     assert runtime.diagnostic_path.is_relative_to(runtime.attempt_root)
 
 
-def test_attempt_namespace_refuses_reuse_and_preserves_prior_attempt(tmp_path):
+def test_attempt_namespace_refuses_reuse_and_preserves_prior_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     root = tmp_path / "isolated"
     root.mkdir()
     template = root / "isolated.yaml"
@@ -244,6 +250,63 @@ def test_attempt_namespace_refuses_reuse_and_preserves_prior_attempt(tmp_path):
 def test_historical_sid9103003_config_declares_loopback_af_packet():
     config = yaml.safe_load(Path("configs/suricata/isolated-lifecycle-9103003.yaml").read_text(encoding="utf-8"))
     assert config["af-packet"] == [{"interface": "lo"}]
+
+
+def test_vm1_socket_path_limit_is_checked_in_encoded_bytes():
+    long_path = Path(
+        "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103005/"
+        "attempts/g5-readiness-20261125-01/runtime/lab-suricata.socket"
+    )
+    short_path = Path(
+        "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103005/"
+        "attempts/g5r1/runtime/lab-suricata.socket"
+    )
+    assert len(os.fsencode(str(long_path))) == 121
+    assert len(os.fsencode(str(short_path))) == 101
+    with pytest.raises(ValueError, match="UNIX socket pathname"):
+        validate_unix_socket_path(long_path)
+    validate_unix_socket_path(short_path)
+
+
+def test_frozen_operator_rejects_long_vm1_socket_before_lifecycle_or_nonce(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "_read_json",
+        lambda _path: (_ for _ in ()).throw(AssertionError("readiness must precede lifecycle inputs")),
+    )
+    lifecycle_created = []
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "RuleLifecycle",
+        lambda *args, **kwargs: lifecycle_created.append(True),
+    )
+    root = Path(
+        "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103005"
+    )
+    attempt_id = "g5-readiness-20261125-01"
+    with pytest.raises(OperationError, match="UNIX socket pathname"):
+        operate_frozen_rst_once.execute_frozen_once(
+            candidate_file=tmp_path / "candidate.json",
+            replay_file=tmp_path / "replay.json",
+            owner_file=tmp_path / "owner.json",
+            replay_public_file=tmp_path / "replay.pub.pem",
+            owner_public_file=tmp_path / "owner.pub.pem",
+            runtime_public_file=tmp_path / "runtime.pub.pem",
+            production_yaml=tmp_path / "suricata.yaml",
+            production_rules=tmp_path / "rules.rules",
+            isolated_yaml=tmp_path / "isolated.yaml",
+            isolated_root=root,
+            attempt_id=attempt_id,
+            probe_specs=[],
+            audit_path=root / "audit" / "owner-once.jsonl",
+            failure_path=root / "attempts" / attempt_id / "failure.json",
+            runtime_private_pem=b"private",
+            runtime_private_password=b"password",
+        )
+    assert lifecycle_created == []
 
 
 def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_path):
@@ -333,6 +396,7 @@ def test_shutdown_cleans_owned_files_even_if_startup_never_created_process(tmp_p
 def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_state(
     monkeypatch, tmp_path,
 ):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     candidate = {"candidate_id": "c" * 64, "run_id": "g5-failure", "rule_sha256": "d" * 64}
     replay = {"probe_plan": [
         {"case": "A1", "label": "ATTACK", "scenario": "attack", "pcap_sha256": "a" * 64},
@@ -347,13 +411,9 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
     values = iter((candidate, replay, owner))
     audit_path = tmp_path / "isolated" / "audit" / "owner-once.jsonl"
     attempt_root = tmp_path / "isolated" / "attempts" / "attempt-02"
+    (tmp_path / "isolated").mkdir()
     failure_path = attempt_root / "failure.json"
     runtime_diag = attempt_root / "runtime-diagnostics.jsonl"
-    runtime_diag.parent.mkdir(parents=True)
-    runtime_diag.write_text(
-        json.dumps({"phase": "reload", "status": "failed", "error": "socket rejected"}) + "\n",
-        encoding="utf-8",
-    )
     for name in ("replay.pub.pem", "owner.pub.pem", "runtime.pub.pem"):
         (tmp_path / name).write_bytes(b"test-key")
 
@@ -381,6 +441,11 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
 
     class RuntimeProbe:
         def __init__(self, *args, **kwargs):
+            attempt_root.mkdir(parents=True)
+            runtime_diag.write_text(
+                json.dumps({"phase": "reload", "status": "failed", "error": "socket rejected"}) + "\n",
+                encoding="utf-8",
+            )
             self.failure_phase = "reload"
             self.rollback_attempted = True
             self.rollback_verified = False
@@ -442,6 +507,7 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
 
 
 def test_isolated_runtime_records_probe_boundary_in_supplied_trace(monkeypatch, tmp_path):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     monkeypatch.setattr(IsolatedSuricataRuntime, "_preflight", lambda self: None)
     def fake_run(*args, **kwargs):
         (tmp_path / "logs" / "eve.json").write_text('{"event_type":"flow"}\n', encoding="utf-8")
@@ -478,7 +544,9 @@ def test_isolated_runtime_trace_marks_false_operation_as_failed():
 
 
 def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeypatch, tmp_path):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     _, runtime_public = generate_encrypted_keypair(b"runtime-test-password")
+    (tmp_path / "isolated").mkdir()
     runtime_public_file = tmp_path / "runtime.pub.pem"
     runtime_public_file.write_bytes(runtime_public)
     (tmp_path / "replay.pub.pem").write_bytes(b"replay-public")
@@ -548,6 +616,8 @@ def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeyp
 
 
 def test_frozen_cli_forwards_exact_runtime_public_key_path(monkeypatch, tmp_path):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    (tmp_path / "isolated").mkdir()
     runtime_public_file = tmp_path / "keys" / "runtime.pub.pem"
     runtime_private_file = tmp_path / "keys" / "runtime.pem"
     runtime_public_file.parent.mkdir()

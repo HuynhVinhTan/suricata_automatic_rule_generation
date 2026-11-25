@@ -11,6 +11,12 @@ from pathlib import Path
 
 import yaml
 
+from netids.isolated_suricata_runtime import (
+    generate_effective_suricata_configuration,
+    validate_attempt_namespace,
+    validate_unix_socket_path,
+)
+
 
 _ATTEMPT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _PRODUCTION_ROOTS = tuple(Path(path) for path in ("/etc/suricata", "/var/lib/suricata", "/run/suricata", "/var/run/suricata"))
@@ -78,9 +84,10 @@ def validate_native_readiness(
         raise NativeReadinessError("isolated root is missing or unsafe")
     if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id):
         raise NativeReadinessError("invalid attempt identifier")
-    attempt_root = root / "attempts" / attempt_id
-    if attempt_root.exists() or attempt_root.is_symlink():
-        raise NativeReadinessError("attempt namespace already exists; refuse reuse")
+    try:
+        attempt_root, future_socket_path = validate_attempt_namespace(root, attempt_id)
+    except ValueError as exc:
+        raise NativeReadinessError(str(exc)) from exc
     candidate = Path(candidate_rules).resolve()
     if _is_production_path(candidate):
         raise NativeReadinessError("production rules may not be loaded for readiness")
@@ -99,18 +106,16 @@ def validate_native_readiness(
         directory.mkdir(mode=0o700)
     (rules_root / "active.rules").write_bytes(b"# readiness baseline: no candidate rules loaded\n")
     socket_path = runtime_root / "lab-suricata.socket"
-    configuration["default-rule-path"] = str(rules_root)
-    configuration["rule-files"] = ["active.rules"]
-    if configuration.get("unix-command") is not None and not isinstance(
-        configuration.get("unix-command"), dict
-    ):
-        raise NativeReadinessError("isolated UNIX command configuration is invalid")
-    unix_command = dict(configuration.get("unix-command") or {})
-    unix_command["enabled"] = True
-    unix_command["filename"] = str(socket_path)
-    configuration["unix-command"] = unix_command
+    try:
+        validate_unix_socket_path(socket_path)
+        effective_text = generate_effective_suricata_configuration(
+            configuration, active_rules=rules_root / "active.rules", socket_path=socket_path,
+        )
+    except ValueError as exc:
+        raise NativeReadinessError(str(exc)) from exc
     effective_config = readiness_root / "suricata.yaml"
-    effective_config.write_text(yaml.safe_dump(configuration, sort_keys=False) + "\n", encoding="utf-8")
+    # Preserve the native YAML header bytes exactly on Windows and Linux.
+    effective_config.write_bytes(effective_text.encode("utf-8"))
 
     version = subprocess.run(
         [suricata, "-V"], capture_output=True, text=True, timeout=30, check=False,
@@ -141,6 +146,7 @@ def validate_native_readiness(
         "suricata_version": "8.0.3",
         "attempt_id": attempt_id,
         "future_attempt_root": str(attempt_root),
+        "future_control_socket": str(future_socket_path),
         "readiness_root": str(readiness_root),
         "effective_config": str(effective_config),
         "active_rules": str(rules_root / "active.rules"),
