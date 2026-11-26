@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -57,10 +58,34 @@ class ServiceAccount:
 
 @dataclass(frozen=True)
 class ProcIdentity:
-    uid: int
-    gid: int
+    uid_fields: tuple[int, ...]
+    gid_fields: tuple[int, ...]
     groups: tuple[int, ...]
     state: str
+
+    @property
+    def uid(self) -> int:
+        return self.uid_fields[0]
+
+    @property
+    def gid(self) -> int:
+        return self.gid_fields[0]
+
+    @property
+    def all_root(self) -> bool:
+        return bool(self.uid_fields) and all(uid == 0 for uid in self.uid_fields) and all(
+            gid == 0 for gid in self.gid_fields
+        )
+
+    def is_expected(self, uid: int = SERVICE_UID, gid: int = SERVICE_GID) -> bool:
+        return (
+            len(self.uid_fields) == 4
+            and len(self.gid_fields) == 4
+            and all(value == uid for value in self.uid_fields)
+            and all(value == gid for value in self.gid_fields)
+            and bool(self.groups)
+            and 0 not in self.groups
+        )
 
 
 @dataclass(frozen=True)
@@ -72,6 +97,53 @@ class AttemptAccessPaths:
     logs_dir: Path
     effective_config: Path
     referenced_files: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class AclMutation:
+    path: Path
+    selector: str
+    previous_entry: str | None
+
+
+class AclTransaction:
+    """Records only this attempt's ACL mutations and reverses them safely."""
+
+    def __init__(self, *, runner=subprocess.run):
+        self.runner = runner
+        self.mutations: list[AclMutation] = []
+        self.rollback_attempted = False
+        self.rolled_back = False
+
+    def add(self, path: Path, selector: str, previous_entry: str | None) -> None:
+        if any(mutation.path == path and mutation.selector == selector for mutation in self.mutations):
+            return
+        self.mutations.append(AclMutation(Path(path), selector, previous_entry))
+
+    def rollback(self) -> None:
+        if self.rollback_attempted:
+            if self.rolled_back:
+                return
+            raise PrivilegeSeparationError("ACL rollback previously failed")
+        self.rollback_attempted = True
+        failures = []
+        for mutation in reversed(self.mutations):
+            try:
+                if mutation.previous_entry is None:
+                    _run_setfacl(
+                        ["setfacl", "-x", mutation.selector, str(mutation.path)],
+                        runner=self.runner, error_prefix="ACL rollback failed",
+                    )
+                else:
+                    _run_setfacl(
+                        ["setfacl", "-m", mutation.previous_entry, str(mutation.path)],
+                        runner=self.runner, error_prefix="ACL rollback failed",
+                    )
+            except PrivilegeSeparationError as exc:
+                failures.append(str(exc))
+        self.rolled_back = not failures
+        if failures:
+            raise PrivilegeSeparationError("ACL rollback failed: " + "; ".join(failures)[:512])
 
 
 def require_root_operator() -> None:
@@ -112,17 +184,17 @@ def lookup_service_account(
     return ServiceAccount(username, SERVICE_UID, SERVICE_GID, group_name, shell, home)
 
 
-def _run_setfacl(argv: list[str], *, runner=subprocess.run) -> None:
+def _run_setfacl(
+    argv: list[str], *, runner=subprocess.run, error_prefix="ACL application failed",
+) -> None:
     try:
         result = runner(
             argv, capture_output=True, text=True, timeout=30, check=False, shell=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PrivilegeSeparationError("ACL application failed") from exc
+        raise PrivilegeSeparationError(error_prefix) from exc
     if result.returncode != 0:
-        raise PrivilegeSeparationError(
-            "ACL application failed: " + str(getattr(result, "stderr", ""))[:512]
-        )
+        raise PrivilegeSeparationError(error_prefix + ": " + str(getattr(result, "stderr", ""))[:512])
 
 
 def _access_specs(paths: AttemptAccessPaths, username: str) -> tuple[tuple[str, Path], ...]:
@@ -137,33 +209,95 @@ def _access_specs(paths: AttemptAccessPaths, username: str) -> tuple[tuple[str, 
     )
 
 
+_PROTECTED_ROOTS = tuple(
+    Path(path) for path in (
+        "/etc/suricata", "/var/lib/suricata", "/var/log/suricata",
+        "/run/suricata", "/var/run/suricata",
+    )
+)
+
+
+def _protected(path: Path) -> bool:
+    resolved = Path(path).resolve()
+    return any(resolved == root or resolved.is_relative_to(root) for root in _PROTECTED_ROOTS)
+
+
+def _validate_acl_targets(paths: AttemptAccessPaths, username: str) -> None:
+    root = Path(paths.attempt_root).resolve()
+    if _protected(root):
+        raise PrivilegeSeparationError("ACL target overlaps protected Suricata path")
+    for _permission, path in _access_specs(paths, username):
+        path = Path(path)
+        if path == paths.active_rules and not path.exists():
+            continue
+        if path.is_symlink() or not path.exists():
+            raise PrivilegeSeparationError(f"ACL target is missing or symlinked: {path}")
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root) or _protected(resolved):
+            raise PrivilegeSeparationError("ACL target is outside the current attempt")
+
+
+def _existing_acl_entry(path: Path, selector: str, *, runner=subprocess.run) -> str | None:
+    try:
+        result = runner(
+            ["getfacl", "--absolute-names", "-cp", str(path)],
+            capture_output=True, text=True, timeout=30, check=False, shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PrivilegeSeparationError("ACL inspection failed") from exc
+    if result.returncode != 0:
+        raise PrivilegeSeparationError(
+            "ACL inspection failed: " + str(getattr(result, "stderr", ""))[:512]
+        )
+    prefix = selector + ":"
+    return next((line for line in result.stdout.splitlines() if line.startswith(prefix)), None)
+
+
 def apply_attempt_acls(
     paths: AttemptAccessPaths, *, username: str = SERVICE_USER, runner=subprocess.run,
-) -> None:
+) -> AclTransaction:
     """Grant only the attempt files needed by the Suricata child."""
-    for permission, path in _access_specs(paths, username):
-        if not path.exists():
-            if path == paths.active_rules:
+    _validate_acl_targets(paths, username)
+    transaction = AclTransaction(runner=runner)
+    try:
+        for permission, path in _access_specs(paths, username):
+            if path == paths.active_rules and not path.exists():
                 continue
-            raise PrivilegeSeparationError(f"ACL target is missing: {path}")
-        _run_setfacl(["setfacl", "-m", f"u:{username}:{permission}", str(path)], runner=runner)
+            selector = f"user:{username}"
+            previous = _existing_acl_entry(path, selector, runner=runner)
+            _run_setfacl(
+                ["setfacl", "-m", f"{selector}:{permission}", str(path)], runner=runner,
+            )
+            transaction.add(path, selector, previous)
+    except PrivilegeSeparationError as exc:
+        try:
+            transaction.rollback()
+        except PrivilegeSeparationError as rollback_exc:
+            raise PrivilegeSeparationError(
+                f"ACL application failed; ACL rollback failed: {rollback_exc}"
+            ) from exc
+        raise PrivilegeSeparationError(f"ACL application failed: {exc}") from exc
+    return transaction
 
 
 def remove_attempt_acls(
     paths: AttemptAccessPaths, *, username: str = SERVICE_USER, runner=subprocess.run,
+    transaction: AclTransaction | None = None,
 ) -> None:
     """Remove only ACL entries previously scoped to this attempt."""
-    for _permission, path in _access_specs(paths, username):
-        if path.exists():
-            _run_setfacl(["setfacl", "-x", f"u:{username}", str(path)], runner=runner)
+    if transaction is None:
+        raise PrivilegeSeparationError("ACL transaction is required for cleanup")
+    transaction.rollback()
 
 
 def atomic_replace_with_acl(
     path: Path, data: bytes, *, username: str = SERVICE_USER, runner=subprocess.run,
+    transaction: AclTransaction | None = None,
 ) -> None:
     """Atomically replace active.rules, then restore the child's read ACL."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    previous = _existing_acl_entry(path, f"user:{username}", runner=runner) if path.exists() else None
     fd, name = tempfile.mkstemp(prefix=".isolated-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as output:
@@ -172,6 +306,8 @@ def atomic_replace_with_acl(
             os.fsync(output.fileno())
         os.replace(name, path)
         _run_setfacl(["setfacl", "-m", f"u:{username}:r--", str(path)], runner=runner)
+        if transaction is not None:
+            transaction.add(path, f"user:{username}", previous)
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -202,11 +338,14 @@ def ensure_root_owned_audit(path: Path) -> None:
             raise PrivilegeSeparationError("persistent audit is not root-owned and root-only")
 
 
-def referenced_configuration_files(configuration: dict, config_path: Path) -> tuple[Path, ...]:
+def referenced_configuration_files(
+    configuration: dict, config_path: Path, *, allowed_root: Path | None = None,
+) -> tuple[Path, ...]:
     """Resolve every external config/rules include without granting directory read access."""
     if not isinstance(configuration, dict):
         raise PrivilegeSeparationError("effective YAML is not an object")
     config_path = Path(config_path).resolve()
+    allowed = Path(allowed_root).resolve() if allowed_root is not None else config_path.parent
     values: list[tuple[object, Path]] = []
     default_rule_path = Path(str(configuration.get("default-rule-path", config_path.parent)))
     if not default_rule_path.is_absolute():
@@ -231,16 +370,71 @@ def referenced_configuration_files(configuration: dict, config_path: Path) -> tu
             raise PrivilegeSeparationError("effective YAML contains an invalid external reference")
         path = Path(raw)
         path = path if path.is_absolute() else Path(base) / path
+        if path.is_symlink():
+            raise PrivilegeSeparationError("effective YAML reference is a symlink")
         resolved = path.resolve()
+        if _protected(resolved) or not resolved.is_relative_to(allowed):
+            raise PrivilegeSeparationError("effective YAML reference escapes the isolated root")
+        if not resolved.is_file():
+            raise PrivilegeSeparationError("effective YAML reference is not a regular file")
         if resolved not in result:
             result.append(resolved)
     return tuple(result)
 
 
+def confine_configuration_references(
+    configuration: dict, source_config: Path, *, attempt_root: Path, allowed_root: Path,
+) -> dict:
+    """Copy approved dependencies into the attempt and rewrite YAML references."""
+    import copy
+
+    confined = copy.deepcopy(configuration)
+    source_config = Path(source_config).resolve()
+    allowed_root = Path(allowed_root).resolve()
+    attempt_root = Path(attempt_root).resolve()
+    references = referenced_configuration_files(
+        configuration, source_config, allowed_root=allowed_root,
+    )
+    mapping = {}
+    for source in references:
+        relative = source.relative_to(allowed_root)
+        destination = attempt_root / "references" / relative
+        if destination.exists() or destination.is_symlink():
+            raise PrivilegeSeparationError("attempt-local reference would overwrite an artifact")
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        mapping[source] = destination.relative_to(attempt_root).as_posix()
+
+    def rewrite(value: object, base: Path) -> str:
+        path = Path(str(value))
+        resolved = path if path.is_absolute() else (base / path)
+        return mapping[resolved.resolve()]
+
+    for key in ("classification-file", "reference-config-file", "threshold-file"):
+        if confined.get(key):
+            confined[key] = rewrite(confined[key], source_config.parent)
+    for key in ("include", "includes"):
+        raw = confined.get(key)
+        if isinstance(raw, str):
+            confined[key] = rewrite(raw, source_config.parent)
+        elif isinstance(raw, list):
+            confined[key] = [rewrite(item, source_config.parent) for item in raw]
+    raw_rules = confined.get("rule-files")
+    default_rule_path = Path(str(configuration.get("default-rule-path", source_config.parent)))
+    if not default_rule_path.is_absolute():
+        default_rule_path = source_config.parent / default_rule_path
+    if isinstance(raw_rules, list):
+        confined["rule-files"] = [
+            item if item == "active.rules" else rewrite(item, default_rule_path)
+            for item in raw_rules
+        ]
+    return confined
+
+
 _STATUS_VALUE = re.compile(r"^(Uid|Gid|Groups|State):\s*(.*)$")
 
 
-def verify_proc_identity_text(status_text: str) -> ProcIdentity:
+def parse_proc_status(status_text: str) -> ProcIdentity:
     values: dict[str, str] = {}
     for line in str(status_text).splitlines():
         match = _STATUS_VALUE.match(line)
@@ -252,15 +446,31 @@ def verify_proc_identity_text(status_text: str) -> ProcIdentity:
         groups = tuple(int(value) for value in values.get("Groups", "").split())
     except (KeyError, ValueError) as exc:
         raise PrivilegeSeparationError("unable to parse Suricata /proc identity") from exc
-    if (
-        len(uids) < 4 or any(uid != SERVICE_UID for uid in uids)
-        or len(gids) < 4 or any(gid != SERVICE_GID for gid in gids)
-        or 0 in groups
-        or not groups
-        or values.get("State", "").startswith("Z")
-    ):
+    if len(uids) != 4 or len(gids) != 4 or not groups or values.get("State", "").startswith("Z"):
+        raise PrivilegeSeparationError("Suricata process identity fields are incomplete or unsafe")
+    return ProcIdentity(uids, gids, groups, values["State"])
+
+
+def verify_proc_identity_text(status_text: str) -> ProcIdentity:
+    identity = parse_proc_status(status_text)
+    if not identity.is_expected():
         raise PrivilegeSeparationError("Suricata process identity or supplementary root group is unsafe")
-    return ProcIdentity(SERVICE_UID, SERVICE_GID, groups, values["State"])
+    return identity
+
+
+def read_process_identity(pid: int, *, proc_root: Path = Path("/proc")) -> ProcIdentity:
+    if pid <= 0:
+        raise PrivilegeSeparationError("invalid Suricata PID")
+    try:
+        status_text = (Path(proc_root) / str(pid) / "status").read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise PrivilegeSeparationError("Suricata /proc status is unavailable") from exc
+    identity = parse_proc_status(status_text)
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError) as exc:
+        raise PrivilegeSeparationError("Suricata process is not alive") from exc
+    return identity
 
 
 def verify_process_identity(
@@ -269,17 +479,9 @@ def verify_process_identity(
 ) -> ProcIdentity:
     if pid <= 0:
         raise PrivilegeSeparationError("invalid Suricata PID")
-    try:
-        status_text = (Path(proc_root) / str(pid) / "status").read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise PrivilegeSeparationError("Suricata /proc status is unavailable") from exc
-    identity = verify_proc_identity_text(status_text)
-    if identity.uid != expected_uid or identity.gid != expected_gid:
+    identity = read_process_identity(pid, proc_root=proc_root)
+    if not identity.is_expected(expected_uid, expected_gid):
         raise PrivilegeSeparationError("Suricata process identity mismatch")
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError) as exc:
-        raise PrivilegeSeparationError("Suricata process is not alive") from exc
     return identity
 
 

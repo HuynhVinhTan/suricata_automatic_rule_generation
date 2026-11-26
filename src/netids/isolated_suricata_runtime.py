@@ -25,8 +25,9 @@ from netids.lifecycle_ed25519 import sha256_file
 from netids.privilege_separation import (
     AttemptAccessPaths, PrivilegeSeparationError, SERVICE_GID, SERVICE_GROUP,
     SERVICE_UID, SERVICE_USER, apply_attempt_acls,
-    atomic_replace_with_acl, lookup_service_account, referenced_configuration_files,
-    remove_attempt_acls, require_root_operator_if_supported, verify_process_identity,
+    atomic_replace_with_acl, confine_configuration_references,
+    lookup_service_account, read_process_identity, referenced_configuration_files,
+    remove_attempt_acls, require_root_operator_if_supported,
     verify_attempt_socket_path,
 )
 from netids.trusted_replay import SID, RULE_SHA, _config_safe
@@ -306,6 +307,7 @@ class IsolatedSuricataRuntime:
         self.expected_gid = SERVICE_GID
         self.service_account = None
         self._acl_paths = None
+        self._acl_transaction = None
         self._referenced_files = ()
         self.socket_path = self.attempt_root / "runtime" / "lab-suricata.socket"
         self.pidfile = self.attempt_root / "runtime" / "lab-suricata.pid"
@@ -394,14 +396,18 @@ class IsolatedSuricataRuntime:
             raise IsolatedRuntimeError("Unexpected existing isolated ruleset; refuse overwrite")
         try:
             configuration = yaml.safe_load(self.config.read_text(encoding="utf-8"))
-            self._referenced_files = referenced_configuration_files(configuration, self.config)
+            self._referenced_files = referenced_configuration_files(
+                configuration, self.config, allowed_root=self.attempt_root,
+            )
             self._acl_paths = AttemptAccessPaths(
                 attempt_root=self.attempt_root, runtime_dir=self.socket_path.parent,
                 rules_dir=self.active_rules.parent, active_rules=self.active_rules,
                 logs_dir=self.logdir, effective_config=self.config,
                 referenced_files=self._referenced_files,
             )
-            apply_attempt_acls(self._acl_paths, username=self.service_user)
+            self._acl_transaction = apply_attempt_acls(
+                self._acl_paths, username=self.service_user,
+            )
         except (OSError, UnicodeError, yaml.YAMLError, PrivilegeSeparationError) as exc:
             raise IsolatedRuntimeError("Attempt ACL preparation failed closed") from exc
 
@@ -426,12 +432,16 @@ class IsolatedSuricataRuntime:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         try:
+            template = yaml.safe_load(self.config_source.read_text(encoding="utf-8"))
+            confined = confine_configuration_references(
+                template, self.config_source, attempt_root=self.attempt_root,
+                allowed_root=self.root,
+            )
             effective = generate_effective_suricata_configuration(
-                self.config_source, active_rules=self.active_rules,
-                socket_path=self.socket_path,
+                confined, active_rules=self.active_rules, socket_path=self.socket_path,
             )
             _atomic(self.config, effective.encode("utf-8"))
-        except (OSError, UnicodeError, TypeError, ValueError, yaml.YAMLError) as exc:
+        except (OSError, UnicodeError, TypeError, ValueError, yaml.YAMLError, PrivilegeSeparationError) as exc:
             raise IsolatedRuntimeError("Could not create effective attempt configuration") from exc
 
     def _validate_isolated_configuration(self) -> None:
@@ -500,6 +510,7 @@ class IsolatedSuricataRuntime:
             return
         atomic_replace_with_acl(
             self.active_rules, data, username=self.service_user,
+            transaction=getattr(self, "_acl_transaction", None),
         )
 
     def _terminate_child(self) -> bool:
@@ -516,6 +527,51 @@ class IsolatedSuricataRuntime:
             except (OSError, subprocess.TimeoutExpired):
                 return False
         return process.poll() is not None
+
+    def _wait_for_privilege_drop(self, timeout: float = 15.0):
+        """Wait for Suricata's documented post-initialization privilege drop."""
+        if self.process is None:
+            raise IsolatedRuntimeError("Suricata child is not started")
+        deadline = time.monotonic() + max(0.0, timeout)
+        last_error = None
+        while True:
+            if self.process.poll() is not None:
+                raise IsolatedRuntimeError("Suricata child exited before privilege drop")
+            try:
+                identity = read_process_identity(self.process.pid)
+            except PrivilegeSeparationError as exc:
+                identity = None
+                last_error = exc
+            if identity is not None:
+                if identity.is_expected(self.expected_uid, self.expected_gid):
+                    return identity
+                if not identity.all_root:
+                    detail = "unexpected non-root process identity"
+                    self._record_diagnostic(
+                        "startup", status="failed", error=detail, detail=str(identity),
+                    )
+                    if not self._terminate_child():
+                        self._record_diagnostic(
+                            "cleanup", status="failed",
+                            error="identity-mismatch child termination unverified",
+                        )
+                    raise IsolatedRuntimeError(
+                        f"Suricata child identity verification failed: {detail}"
+                    )
+            if time.monotonic() >= deadline:
+                detail = str(last_error or "Suricata process remained privileged")
+                self._record_diagnostic(
+                    "startup", status="failed", error="privilege drop timeout", detail=detail,
+                )
+                if not self._terminate_child():
+                    self._record_diagnostic(
+                        "cleanup", status="failed",
+                        error="privilege-drop timeout child termination unverified",
+                    )
+                raise IsolatedRuntimeError(
+                    "Suricata privilege drop timeout; child identity was not accepted"
+                )
+            time.sleep(0.25)
 
     def _validation_rule_arguments(self, temporary: Path) -> list[str]:
         return [
@@ -580,6 +636,19 @@ class IsolatedSuricataRuntime:
         except (OSError, ValueError) as exc:
             self._record_diagnostic("startup", status="failed", error=str(exc))
             raise IsolatedRuntimeError("Suricata startup initialization failed") from exc
+        if self.process.poll() is not None:
+            output = self._close_process_output()
+            self._record_diagnostic(
+                "startup", status="failed", exit_status=self.process.poll(), **output,
+            )
+            raise IsolatedRuntimeError("Suricata startup failed: daemon exited during initialization")
+        identity_timeout = 15.0
+        if getattr(self, "deadline_monotonic", None) is not None:
+            identity_timeout = min(
+                identity_timeout,
+                max(0.0, self.deadline_monotonic - time.monotonic()),
+            )
+        self._wait_for_privilege_drop(timeout=identity_timeout)
         last_error = None
         for _ in range(40):
             self._check_deadline()
@@ -589,21 +658,6 @@ class IsolatedSuricataRuntime:
                     "startup", status="failed", exit_status=self.process.poll(), **output,
                 )
                 raise IsolatedRuntimeError("Suricata startup failed: daemon exited during initialization")
-            try:
-                verify_process_identity(
-                    self.process.pid, expected_uid=self.expected_uid,
-                    expected_gid=self.expected_gid,
-                )
-            except (AttributeError, PrivilegeSeparationError) as exc:
-                self._record_diagnostic(
-                    "startup", status="failed", error="process identity verification failed",
-                    detail=str(exc),
-                )
-                if not self._terminate_child():
-                    self._record_diagnostic(
-                        "cleanup", status="failed", error="identity-mismatch child termination unverified",
-                    )
-                raise IsolatedRuntimeError("Suricata child identity verification failed") from exc
             if self.socket_path.exists():
                 try:
                     verify_attempt_socket_path(self.socket_path, self.attempt_root)
@@ -872,7 +926,10 @@ class IsolatedSuricataRuntime:
         acl_cleanup = True
         if process_stopped and getattr(self, "_acl_paths", None) is not None:
             try:
-                remove_attempt_acls(self._acl_paths, username=self.service_user)
+                remove_attempt_acls(
+                    self._acl_paths, username=self.service_user,
+                    transaction=getattr(self, "_acl_transaction", None),
+                )
             except PrivilegeSeparationError as exc:
                 acl_cleanup = False
                 self._record_diagnostic("cleanup", status="failed", error=str(exc))

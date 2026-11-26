@@ -14,6 +14,7 @@ from netids.isolated_suricata_runtime import (
     IsolatedSuricataRuntime, IsolatedRuntimeError, is_verified_vm1_host,
     validate_unix_socket_path,
 )
+from netids.privilege_separation import PrivilegeSeparationError
 from netids.latency import LatencyTrace
 from scripts.operate_isolated_once import (
     OperationError, _require_candidate_baseline, production_snapshot,
@@ -271,6 +272,7 @@ def test_vm1_socket_path_limit_is_checked_in_encoded_bytes():
 def test_frozen_operator_rejects_long_vm1_socket_before_lifecycle_or_nonce(
     monkeypatch, tmp_path,
 ):
+    monkeypatch.setattr(operate_frozen_rst_once, "require_root_operator_if_supported", lambda: None)
     monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
     monkeypatch.setattr(
         operate_frozen_rst_once,
@@ -307,6 +309,52 @@ def test_frozen_operator_rejects_long_vm1_socket_before_lifecycle_or_nonce(
             runtime_private_password=b"password",
         )
     assert lifecycle_created == []
+
+
+def test_frozen_operator_rejects_non_root_before_any_side_effect(monkeypatch, tmp_path):
+    monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "require_root_operator_if_supported",
+        lambda: (_ for _ in ()).throw(PrivilegeSeparationError("root operator with EUID 0 is required")),
+    )
+    input_reads = []
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "_read_json",
+        lambda path: input_reads.append(path) or (_ for _ in ()).throw(
+            AssertionError("non-root guard must precede input reads")
+        ),
+    )
+    lifecycle_created = []
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "RuleLifecycle",
+        lambda *args, **kwargs: lifecycle_created.append(True),
+    )
+    isolated = tmp_path / "isolated"
+    audit = isolated / "audit" / "owner-once.jsonl"
+    attempt = isolated / "attempts" / "attempt-non-root"
+    with pytest.raises(OperationError, match="EUID 0"):
+        operate_frozen_rst_once.execute_frozen_once(
+            candidate_file=tmp_path / "candidate.json",
+            replay_file=tmp_path / "replay.json",
+            owner_file=tmp_path / "owner.json",
+            replay_public_file=tmp_path / "replay.pub.pem",
+            owner_public_file=tmp_path / "owner.pub.pem",
+            runtime_public_file=tmp_path / "runtime.pub.pem",
+            production_yaml=tmp_path / "suricata.yaml",
+            production_rules=tmp_path / "rules.rules",
+            isolated_yaml=tmp_path / "isolated.yaml",
+            isolated_root=isolated,
+            attempt_id="attempt-non-root",
+            probe_specs=[], audit_path=audit, failure_path=attempt / "failure.json",
+            runtime_private_pem=b"private", runtime_private_password=b"password",
+        )
+    assert input_reads == []
+    assert lifecycle_created == []
+    assert not audit.exists()
+    assert not attempt.exists()
 
 
 def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_path):
@@ -396,6 +444,7 @@ def test_shutdown_cleans_owned_files_even_if_startup_never_created_process(tmp_p
 def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_state(
     monkeypatch, tmp_path,
 ):
+    monkeypatch.setattr(operate_frozen_rst_once, "require_root_operator_if_supported", lambda: None)
     monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     candidate = {"candidate_id": "c" * 64, "run_id": "g5-failure", "rule_sha256": "d" * 64}
     replay = {"probe_plan": [
@@ -544,6 +593,7 @@ def test_isolated_runtime_trace_marks_false_operation_as_failed():
 
 
 def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeypatch, tmp_path):
+    monkeypatch.setattr(operate_frozen_rst_once, "require_root_operator_if_supported", lambda: None)
     monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     _, runtime_public = generate_encrypted_keypair(b"runtime-test-password")
     (tmp_path / "isolated").mkdir()
