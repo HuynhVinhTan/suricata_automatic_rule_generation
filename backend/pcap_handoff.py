@@ -28,6 +28,10 @@ RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 SSH_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 REMOTE_PATH = re.compile(r"^/[A-Za-z0-9_./-]+$")
+VM3_TARGET = "tanhv@192.168.10.30"
+CURRENT_REMOTE_INBOX = "/home/tanhv/suricata-ai-private/incoming-pcaps"
+HISTORICAL_REMOTE_INBOX = "/home/tanhv/suricata-ai-showcase/private/incoming-pcaps"
+APPROVED_REMOTE_INBOXES = frozenset((CURRENT_REMOTE_INBOX, HISTORICAL_REMOTE_INBOX))
 CAPTURE_INTEGRITY_FIELDS = (
     "packet_records_complete",
     "snaplen_truncated",
@@ -100,7 +104,7 @@ def _json_exclusive(path: Path, value: dict) -> None:
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, UnicodeError) as exc:
         raise HandoffError("Invalid JSON handoff document") from exc
     if not isinstance(data, dict):
         raise HandoffError("Handoff document must be an object")
@@ -340,6 +344,24 @@ def _ssh_options() -> list[str]:
     ]
 
 
+def _validate_remote_target(remote_user: str, remote_host: str) -> str:
+    if not SSH_USER.fullmatch(remote_user):
+        raise HandoffError("Invalid SSH user")
+    try:
+        host = str(IPv4Address(remote_host))
+    except ValueError as exc:
+        raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed") from exc
+    target = f"{remote_user}@{host}"
+    if target != VM3_TARGET:
+        raise HandoffError("Only designated lab VM3 tanhv@192.168.10.30 is allowed")
+    return target
+
+
+def _validate_current_remote_inbox(remote_inbox: str) -> None:
+    if remote_inbox != CURRENT_REMOTE_INBOX:
+        raise HandoffError("New transfers require the approved current VM3 inbox")
+
+
 def send(
     *, outbox: Path, run_id: str, remote_user: str, remote_host: str,
     remote_inbox: str, execute: bool,
@@ -347,15 +369,8 @@ def send(
     run_id = _run_id(run_id)
     root = _root(outbox)
     pcap, manifest, ready, doc = verified_bundle(root / run_id, run_id)
-    if not SSH_USER.fullmatch(remote_user):
-        raise HandoffError("Invalid SSH user")
-    # Hosts are pinned lab IPv4 addresses, never arbitrary SSH aliases.
-    host = str(IPv4Address(remote_host))
-    if host != "192.168.10.30":
-        raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed")
-    if not REMOTE_PATH.fullmatch(remote_inbox) or ".." in remote_inbox.split("/"):
-        raise HandoffError("Remote inbox must be a safe absolute path")
-    target = f"{remote_user}@{host}"
+    target = _validate_remote_target(remote_user, remote_host)
+    _validate_current_remote_inbox(remote_inbox)
     receipt = root / run_id / f"{run_id}.sent.json"
     if _validate_sent_receipt(
         root / run_id, run_id, ready, target, remote_inbox
@@ -404,6 +419,7 @@ def send(
 def _validate_sent_receipt(
     run_root: Path, run_id: str, ready: Path, target: str, remote_inbox: str
 ) -> bool:
+    _validate_current_remote_inbox(remote_inbox)
     receipt = run_root / f"{run_id}.sent.json"
     if not receipt.exists() and not receipt.is_symlink():
         return False
@@ -413,11 +429,19 @@ def _validate_sent_receipt(
             "status", "run_id", "ready_sha256", "remote", "remote_inbox",
             "sent_at",
         }
+        or target != VM3_TARGET
+        or type(old.get("status")) is not str
         or old.get("status") != "sent"
+        or type(old.get("run_id")) is not str
         or old.get("run_id") != run_id
+        or type(old.get("ready_sha256")) is not str
+        or not SHA256.fullmatch(old.get("ready_sha256", ""))
         or old.get("ready_sha256") != _hash(ready)
-        or old.get("remote") != target
-        or old.get("remote_inbox") != remote_inbox
+        or type(old.get("remote")) is not str
+        or old.get("remote") != VM3_TARGET
+        or type(old.get("remote_inbox")) is not str
+        or old.get("remote_inbox") not in APPROVED_REMOTE_INBOXES
+        or type(old.get("sent_at")) is not str
         or not _valid_timestamp(old.get("sent_at"))
     ):
         raise HandoffError("Existing transfer receipt is inconsistent with the bundle or destination")
@@ -632,13 +656,10 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 if not SSH_USER.fullmatch(args.remote_user):
                     raise HandoffError("Invalid SSH user")
-                host = str(IPv4Address(args.remote_host))
-                if host != "192.168.10.30":
-                    raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed")
-                if not REMOTE_PATH.fullmatch(args.remote_inbox) or ".." in args.remote_inbox.split("/"):
-                    raise HandoffError("Remote inbox must be a safe absolute path")
+                _validate_remote_target(args.remote_user, args.remote_host)
+                _validate_current_remote_inbox(args.remote_inbox)
                 run_ids = _pending_send_ids(
-                    outbox, f"{args.remote_user}@{host}", args.remote_inbox
+                    outbox, VM3_TARGET, args.remote_inbox
                 )
             result = [
                 send(
