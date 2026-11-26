@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from netids import privilege_separation as ps
 from netids import isolated_suricata_runtime as runtime_module
@@ -234,6 +235,99 @@ def test_referenced_configuration_is_copied_and_yaml_is_rewritten(tmp_path):
     assert classification.read_text(encoding="utf-8") == "class"
 
 
+def test_nested_referenced_files_get_execute_only_parent_acls(tmp_path):
+    root = tmp_path / "attempt"
+    nested = root / "references" / "nested"
+    nested.mkdir(parents=True)
+    reference = nested / "classification.config"
+    reference.write_text("classification", encoding="utf-8")
+    paths = ps.AttemptAccessPaths(
+        attempt_root=root,
+        runtime_dir=root / "runtime",
+        rules_dir=root / "rules",
+        active_rules=root / "rules" / "active.rules",
+        logs_dir=root / "logs",
+        effective_config=root / "suricata.yaml",
+        referenced_files=(reference,),
+    )
+    specs = {path: permission for permission, path in ps._access_specs(paths, "suricata-g5")}
+    assert specs[root / "references"] == "--x"
+    assert specs[nested] == "--x"
+    assert specs[reference] == "r--"
+    assert specs[root / "references"] != "r--"
+    assert specs[nested] != "r--"
+
+
+def test_nested_yaml_dependencies_are_confined_and_rewritten_recursively(tmp_path):
+    root = tmp_path / "isolated"
+    source = root / "suricata.yaml"
+    source.parent.mkdir()
+    include = root / "config" / "main.yaml"
+    nested_include = include.parent / "nested" / "child.yaml"
+    classification = root / "data" / "classification.config"
+    rule = root / "rules" / "child.rules"
+    for path in (include, nested_include, classification, rule):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("include: config/main.yaml\n", encoding="utf-8")
+    include.write_text(
+        "classification-file: ../data/classification.config\n"
+        "include: nested/child.yaml\n",
+        encoding="utf-8",
+    )
+    nested_include.write_text(
+        "default-rule-path: ../../rules\nrule-files: [child.rules]\n",
+        encoding="utf-8",
+    )
+    classification.write_text("class", encoding="utf-8")
+    rule.write_text("alert tcp any any -> any any (msg:\"child\";)\n", encoding="utf-8")
+
+    confined = ps.confine_configuration_references(
+        {"include": "config/main.yaml"}, source,
+        attempt_root=root / "attempts" / "one", allowed_root=root,
+    )
+
+    attempt = root / "attempts" / "one"
+    copied_include = attempt / "references" / "config" / "main.yaml"
+    copied_nested = attempt / "references" / "config" / "nested" / "child.yaml"
+    copied_classification = attempt / "references" / "data" / "classification.config"
+    copied_rule = attempt / "references" / "rules" / "child.rules"
+    assert confined["include"] == "references/config/main.yaml"
+    assert copied_include.exists()
+    assert copied_nested.exists()
+    assert copied_classification.read_text(encoding="utf-8") == "class"
+    assert copied_rule.exists()
+    assert yaml.safe_load(copied_include.read_text(encoding="utf-8")) == {
+        "classification-file": "../data/classification.config",
+        "include": "nested/child.yaml",
+    }
+    assert yaml.safe_load(copied_nested.read_text(encoding="utf-8")) == {
+        "default-rule-path": "../../rules",
+        "rule-files": ["child.rules"],
+    }
+    assert ps.referenced_configuration_files(
+        confined,
+        attempt / "suricata.yaml",
+        allowed_root=attempt,
+    ) == (copied_include, copied_classification, copied_nested, copied_rule)
+
+
+def test_nested_yaml_include_escape_is_rejected_before_copy(tmp_path):
+    root = tmp_path / "isolated"
+    source = root / "suricata.yaml"
+    include = root / "config" / "main.yaml"
+    outside = tmp_path / "outside.yaml"
+    root.mkdir()
+    include.parent.mkdir()
+    source.write_text("include: config/main.yaml\n", encoding="utf-8")
+    include.write_text("include: ../../outside.yaml\n", encoding="utf-8")
+    outside.write_text("classification-file: missing.config\n", encoding="utf-8")
+    with pytest.raises(ps.PrivilegeSeparationError, match="escapes|outside"):
+        ps.confine_configuration_references(
+            {"include": "config/main.yaml"}, source,
+            attempt_root=root / "attempts" / "one", allowed_root=root,
+        )
+
+
 def test_acl_application_uses_argument_arrays_and_no_audit_path(tmp_path):
     calls = []
     paths = ps.AttemptAccessPaths(
@@ -288,8 +382,8 @@ def _acl_paths(tmp_path):
     logs_dir.mkdir()
     active = rules_dir / "active.rules"
     config = root / "suricata.yaml"
-    reference = root / "references" / "classification.config"
-    reference.parent.mkdir()
+    reference = root / "references" / "nested" / "classification.config"
+    reference.parent.mkdir(parents=True)
     active.write_text("baseline", encoding="utf-8")
     config.write_text("{}", encoding="utf-8")
     reference.write_text("classification", encoding="utf-8")
@@ -300,7 +394,7 @@ def _acl_paths(tmp_path):
     )
 
 
-@pytest.mark.parametrize("failure_index", [1, 4, 7])
+@pytest.mark.parametrize("failure_index", [1, 4, 9])
 def test_acl_application_rolls_back_partial_changes_in_reverse_order(tmp_path, failure_index):
     paths = _acl_paths(tmp_path)
     setfacl_calls = []
@@ -362,6 +456,39 @@ def test_acl_transaction_reports_rollback_failure_separately(tmp_path):
 
     with pytest.raises(ps.PrivilegeSeparationError, match="rollback"):
         ps.apply_attempt_acls(paths, runner=runner)
+
+
+def test_acl_transaction_fails_closed_when_rollback_cannot_be_verified(tmp_path):
+    paths = _acl_paths(tmp_path)
+    rollback_started = False
+
+    def runner(argv, **kwargs):
+        nonlocal rollback_started
+        if argv[0] == "getfacl":
+            output = "user:suricata-g5:r--\n" if rollback_started else ""
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+        if "-x" in argv:
+            rollback_started = True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    transaction = ps.apply_attempt_acls(paths, runner=runner)
+    with pytest.raises(ps.PrivilegeSeparationError, match="verification"):
+        transaction.rollback()
+
+
+def test_acl_rejects_symlinked_reference_directory(tmp_path):
+    paths = _acl_paths(tmp_path)
+    nested = paths.attempt_root / "references" / "nested"
+    (nested / "classification.config").unlink()
+    nested.rmdir()
+    try:
+        nested.symlink_to(tmp_path / "outside", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable")
+    with pytest.raises(ps.PrivilegeSeparationError, match="symlink|outside"):
+        ps.apply_attempt_acls(paths, runner=lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="", stderr="",
+        ))
 
 
 def test_atomic_active_rules_reapplies_read_acl(tmp_path):

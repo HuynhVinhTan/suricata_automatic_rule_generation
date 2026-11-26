@@ -11,6 +11,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 try:
     import grp
 except ModuleNotFoundError:  # pragma: no cover - Windows has no POSIX group database.
@@ -139,6 +141,12 @@ class AclTransaction:
                         ["setfacl", "-m", mutation.previous_entry, str(mutation.path)],
                         runner=self.runner, error_prefix="ACL rollback failed",
                     )
+                if _existing_acl_entry(
+                    mutation.path, mutation.selector, runner=self.runner,
+                ) != mutation.previous_entry:
+                    raise PrivilegeSeparationError(
+                        f"ACL rollback verification failed for {mutation.path}"
+                    )
             except PrivilegeSeparationError as exc:
                 failures.append(str(exc))
         self.rolled_back = not failures
@@ -198,15 +206,32 @@ def _run_setfacl(
 
 
 def _access_specs(paths: AttemptAccessPaths, username: str) -> tuple[tuple[str, Path], ...]:
-    return (
+    root = Path(paths.attempt_root).resolve()
+    specs = [
         ("--x", Path(paths.attempt_root)),
         ("-wx", Path(paths.runtime_dir)),
         ("--x", Path(paths.rules_dir)),
         ("r--", Path(paths.active_rules)),
         ("-wx", Path(paths.logs_dir)),
         ("r--", Path(paths.effective_config)),
-        *(("r--", Path(path)) for path in paths.referenced_files),
-    )
+    ]
+    for reference in paths.referenced_files:
+        reference = Path(reference)
+        parent = reference.parent
+        while parent != root:
+            if not parent.is_relative_to(root):
+                raise PrivilegeSeparationError("referenced ACL directory is outside the current attempt")
+            specs.append(("--x", parent))
+            parent = parent.parent
+        specs.append(("r--", reference))
+    deduplicated = []
+    seen = set()
+    for permission, path in specs:
+        key = (permission, Path(path))
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append((permission, Path(path)))
+    return tuple(deduplicated)
 
 
 _PROTECTED_ROOTS = tuple(
@@ -223,6 +248,8 @@ def _protected(path: Path) -> bool:
 
 
 def _validate_acl_targets(paths: AttemptAccessPaths, username: str) -> None:
+    if Path(paths.attempt_root).is_symlink():
+        raise PrivilegeSeparationError("ACL target is missing or symlinked")
     root = Path(paths.attempt_root).resolve()
     if _protected(root):
         raise PrivilegeSeparationError("ACL target overlaps protected Suricata path")
@@ -230,6 +257,7 @@ def _validate_acl_targets(paths: AttemptAccessPaths, username: str) -> None:
         path = Path(path)
         if path == paths.active_rules and not path.exists():
             continue
+        _reject_symlink_components(path)
         if path.is_symlink() or not path.exists():
             raise PrivilegeSeparationError(f"ACL target is missing or symlinked: {path}")
         resolved = path.resolve()
@@ -338,47 +366,103 @@ def ensure_root_owned_audit(path: Path) -> None:
             raise PrivilegeSeparationError("persistent audit is not root-owned and root-only")
 
 
+def _reject_symlink_components(path: Path) -> None:
+    for component in (Path(path), *Path(path).parents):
+        if component.is_symlink():
+            raise PrivilegeSeparationError("effective YAML reference is a symlink")
+
+
+def _resolve_reference(raw: object, base: Path, allowed: Path) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise PrivilegeSeparationError("effective YAML contains an invalid external reference")
+    path = Path(raw)
+    path = path if path.is_absolute() else Path(base) / path
+    _reject_symlink_components(path)
+    resolved = path.resolve()
+    if _protected(resolved) or not resolved.is_relative_to(allowed):
+        raise PrivilegeSeparationError("effective YAML reference escapes the isolated root")
+    if not resolved.is_file():
+        raise PrivilegeSeparationError("effective YAML reference is not a regular file")
+    return resolved
+
+
+def _resolve_reference_directory(raw: object, base: Path, allowed: Path) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise PrivilegeSeparationError("effective YAML contains an invalid default rule path")
+    path = Path(raw)
+    path = path if path.is_absolute() else Path(base) / path
+    _reject_symlink_components(path)
+    resolved = path.resolve()
+    if _protected(resolved) or not resolved.is_relative_to(allowed) or not resolved.is_dir():
+        raise PrivilegeSeparationError("effective YAML default rule path is unsafe")
+    return resolved
+
+
+def _as_reference_list(configuration: dict, key: str) -> tuple[object, ...]:
+    raw = configuration.get(key, ())
+    if isinstance(raw, str):
+        return (raw,)
+    if raw is None:
+        return ()
+    if isinstance(raw, (list, tuple)):
+        return tuple(raw)
+    raise PrivilegeSeparationError(f"effective YAML {key} must be a string or list")
+
+
 def referenced_configuration_files(
     configuration: dict, config_path: Path, *, allowed_root: Path | None = None,
 ) -> tuple[Path, ...]:
-    """Resolve every external config/rules include without granting directory read access."""
-    if not isinstance(configuration, dict):
-        raise PrivilegeSeparationError("effective YAML is not an object")
+    """Resolve supported external dependencies, including nested YAML includes."""
     config_path = Path(config_path).resolve()
     allowed = Path(allowed_root).resolve() if allowed_root is not None else config_path.parent
-    values: list[tuple[object, Path]] = []
-    default_rule_path = Path(str(configuration.get("default-rule-path", config_path.parent)))
-    if not default_rule_path.is_absolute():
-        default_rule_path = config_path.parent / default_rule_path
-    for key in ("classification-file", "reference-config-file", "threshold-file"):
-        if configuration.get(key):
-            values.append((configuration[key], config_path.parent))
-    for key in ("include", "includes"):
-        raw = configuration.get(key, ())
-        if isinstance(raw, str):
-            raw = (raw,)
-        if isinstance(raw, (list, tuple)):
-            values.extend((item, config_path.parent) for item in raw)
-    raw_rules = configuration.get("rule-files", ())
-    if isinstance(raw_rules, str):
-        raw_rules = (raw_rules,)
-    if isinstance(raw_rules, (list, tuple)):
-        values.extend((item, default_rule_path) for item in raw_rules if item != "active.rules")
     result: list[Path] = []
-    for raw, base in values:
-        if not isinstance(raw, str) or not raw.strip():
-            raise PrivilegeSeparationError("effective YAML contains an invalid external reference")
-        path = Path(raw)
-        path = path if path.is_absolute() else Path(base) / path
-        if path.is_symlink():
-            raise PrivilegeSeparationError("effective YAML reference is a symlink")
-        resolved = path.resolve()
-        if _protected(resolved) or not resolved.is_relative_to(allowed):
-            raise PrivilegeSeparationError("effective YAML reference escapes the isolated root")
-        if not resolved.is_file():
-            raise PrivilegeSeparationError("effective YAML reference is not a regular file")
-        if resolved not in result:
-            result.append(resolved)
+    active: set[Path] = set()
+    visited: set[Path] = set()
+
+    def visit(document: object, document_path: Path) -> None:
+        if not isinstance(document, dict):
+            raise PrivilegeSeparationError("effective YAML is not an object")
+        if document_path in active:
+            raise PrivilegeSeparationError("effective YAML include cycle is unsafe")
+        if document_path in visited:
+            return
+        active.add(document_path)
+        try:
+            for key in ("classification-file", "reference-config-file", "threshold-file"):
+                if document.get(key):
+                    reference = _resolve_reference(document[key], document_path.parent, allowed)
+                    if reference not in result:
+                        result.append(reference)
+
+            includes = []
+            for key in ("include", "includes"):
+                includes.extend(_as_reference_list(document, key))
+            for raw in includes:
+                reference = _resolve_reference(raw, document_path.parent, allowed)
+                if reference not in result:
+                    result.append(reference)
+                try:
+                    nested = yaml.safe_load(reference.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                    raise PrivilegeSeparationError("nested YAML include is unreadable") from exc
+                visit(nested, reference)
+
+            rule_values = _as_reference_list(document, "rule-files")
+            non_active_rules = [item for item in rule_values if item != "active.rules"]
+            if non_active_rules:
+                default_rule_path = _resolve_reference_directory(
+                    document.get("default-rule-path", document_path.parent),
+                    document_path.parent, allowed,
+                )
+                for raw in non_active_rules:
+                    reference = _resolve_reference(raw, default_rule_path, allowed)
+                    if reference not in result:
+                        result.append(reference)
+        finally:
+            active.remove(document_path)
+            visited.add(document_path)
+
+    visit(configuration, config_path)
     return tuple(result)
 
 
@@ -388,46 +472,110 @@ def confine_configuration_references(
     """Copy approved dependencies into the attempt and rewrite YAML references."""
     import copy
 
-    confined = copy.deepcopy(configuration)
     source_config = Path(source_config).resolve()
     allowed_root = Path(allowed_root).resolve()
     attempt_root = Path(attempt_root).resolve()
-    references = referenced_configuration_files(
-        configuration, source_config, allowed_root=allowed_root,
-    )
-    mapping = {}
-    for source in references:
-        relative = source.relative_to(allowed_root)
-        destination = attempt_root / "references" / relative
+    if _protected(attempt_root):
+        raise PrivilegeSeparationError("attempt-local reference path is protected")
+    mapping: dict[Path, Path] = {}
+    yaml_rewritten: set[Path] = set()
+    active: set[Path] = set()
+
+    def destination_for(source: Path) -> Path:
+        try:
+            relative = source.relative_to(allowed_root)
+        except ValueError as exc:
+            raise PrivilegeSeparationError("effective YAML reference escapes the isolated root") from exc
+        return attempt_root / "references" / relative
+
+    def relative_to_destination(path: Path, destination_parent: Path) -> str:
+        return os.path.relpath(path, destination_parent).replace(os.sep, "/")
+
+    def copy_dependency(source: Path, *, yaml_required: bool) -> Path:
+        if source in mapping:
+            if yaml_required and source not in yaml_rewritten:
+                raise PrivilegeSeparationError("dependency is used as both YAML and opaque data")
+            return mapping[source]
+        if source in active:
+            raise PrivilegeSeparationError("effective YAML include cycle is unsafe")
+        destination = destination_for(source)
         if destination.exists() or destination.is_symlink():
             raise PrivilegeSeparationError("attempt-local reference would overwrite an artifact")
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        mapping[source] = destination.relative_to(attempt_root).as_posix()
+        active.add(source)
+        try:
+            if yaml_required:
+                try:
+                    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                    raise PrivilegeSeparationError("nested YAML include is unreadable") from exc
+                rewritten = rewrite_document(document, source, destination)
+                with destination.open("x", encoding="utf-8") as output:
+                    yaml.safe_dump(rewritten, output, sort_keys=False)
+                yaml_rewritten.add(source)
+            else:
+                with source.open("rb") as input_file, destination.open("xb") as output_file:
+                    shutil.copyfileobj(input_file, output_file)
+        finally:
+            active.remove(source)
+        mapping[source] = destination
+        return destination
 
-    def rewrite(value: object, base: Path) -> str:
-        path = Path(str(value))
-        resolved = path if path.is_absolute() else (base / path)
-        return mapping[resolved.resolve()]
+    def rewrite_value(value: object, base: Path, destination_parent: Path, *, yaml_required=False) -> str:
+        source = _resolve_reference(value, base, allowed_root)
+        destination = copy_dependency(source, yaml_required=yaml_required)
+        return relative_to_destination(destination, destination_parent)
 
-    for key in ("classification-file", "reference-config-file", "threshold-file"):
-        if confined.get(key):
-            confined[key] = rewrite(confined[key], source_config.parent)
-    for key in ("include", "includes"):
-        raw = confined.get(key)
-        if isinstance(raw, str):
-            confined[key] = rewrite(raw, source_config.parent)
-        elif isinstance(raw, list):
-            confined[key] = [rewrite(item, source_config.parent) for item in raw]
-    raw_rules = confined.get("rule-files")
-    default_rule_path = Path(str(configuration.get("default-rule-path", source_config.parent)))
-    if not default_rule_path.is_absolute():
-        default_rule_path = source_config.parent / default_rule_path
-    if isinstance(raw_rules, list):
-        confined["rule-files"] = [
-            item if item == "active.rules" else rewrite(item, default_rule_path)
-            for item in raw_rules
-        ]
+    def rewrite_document(document: object, source: Path, destination: Path) -> dict:
+        if not isinstance(document, dict):
+            raise PrivilegeSeparationError("nested YAML include is not an object")
+        rewritten = copy.deepcopy(document)
+        for key in ("classification-file", "reference-config-file", "threshold-file"):
+            if rewritten.get(key):
+                rewritten[key] = rewrite_value(
+                    rewritten[key], source.parent, destination.parent,
+                )
+        for key in ("include", "includes"):
+            raw = rewritten.get(key)
+            if isinstance(raw, str):
+                rewritten[key] = rewrite_value(
+                    raw, source.parent, destination.parent, yaml_required=True,
+                )
+            elif isinstance(raw, list):
+                rewritten[key] = [
+                    rewrite_value(item, source.parent, destination.parent, yaml_required=True)
+                    for item in raw
+                ]
+            elif raw is not None:
+                raise PrivilegeSeparationError(f"effective YAML {key} must be a string or list")
+
+        raw_rules = rewritten.get("rule-files")
+        if raw_rules is not None:
+            rule_values = list(_as_reference_list(document, "rule-files"))
+            non_active_rules = [item for item in rule_values if item != "active.rules"]
+            if non_active_rules:
+                default_rule_path = _resolve_reference_directory(
+                    document.get("default-rule-path", source.parent),
+                    source.parent, allowed_root,
+                )
+                destination_default = attempt_root / "references" / default_rule_path.relative_to(allowed_root)
+                destination_default.mkdir(mode=0o700, parents=True, exist_ok=True)
+                for index, item in enumerate(rule_values):
+                    if item != "active.rules":
+                        rule_values[index] = rewrite_value(
+                            item, default_rule_path, destination_default,
+                        )
+                rewritten["default-rule-path"] = relative_to_destination(
+                    destination_default, destination.parent,
+                )
+            rewritten["rule-files"] = rule_values[0] if isinstance(raw_rules, str) else rule_values
+        return rewritten
+
+    active.add(source_config)
+    try:
+        confined = rewrite_document(configuration, source_config, attempt_root / "suricata.yaml")
+    finally:
+        active.remove(source_config)
     return confined
 
 
