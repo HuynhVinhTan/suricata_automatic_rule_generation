@@ -28,6 +28,7 @@ from netids.isolated_suricata_runtime import (
 )
 from netids.lifecycle_ed25519 import private_key_matches_public, sha256_file, sign_record
 from netids.latency import LatencyTrace
+from netids.privilege_separation import require_root_operator_if_supported
 from netids.rule_lifecycle import RuleLifecycle
 from scripts.operate_isolated_once import OperationError, _digest, _read_json, _require_candidate_baseline, production_snapshot
 
@@ -88,6 +89,10 @@ def execute_frozen_once(
 ):
     if not is_verified_vm1_host():
         raise OperationError("owner authorization is only for verified VM1")
+    try:
+        require_root_operator_if_supported()
+    except RuntimeError as exc:
+        raise OperationError(str(exc)) from exc
     try:
         attempt_evidence_root, _ = validate_attempt_namespace(isolated_root, attempt_id)
     except ValueError as exc:

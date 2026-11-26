@@ -22,6 +22,13 @@ from pathlib import Path
 import yaml
 
 from netids.lifecycle_ed25519 import sha256_file
+from netids.privilege_separation import (
+    AttemptAccessPaths, PrivilegeSeparationError, SERVICE_GID, SERVICE_GROUP,
+    SERVICE_UID, SERVICE_USER, apply_attempt_acls,
+    atomic_replace_with_acl, lookup_service_account, referenced_configuration_files,
+    remove_attempt_acls, require_root_operator_if_supported, verify_process_identity,
+    verify_attempt_socket_path,
+)
 from netids.trusted_replay import SID, RULE_SHA, _config_safe
 
 # Logical approval identity remains "suricata-vm1"; the lab VM's
@@ -293,6 +300,13 @@ class IsolatedSuricataRuntime:
         self.suricata = str(suricata)
         self.suricatasc = str(suricatasc)
         self.tcpreplay = str(tcpreplay)
+        self.service_user = SERVICE_USER
+        self.service_group = SERVICE_GROUP
+        self.expected_uid = SERVICE_UID
+        self.expected_gid = SERVICE_GID
+        self.service_account = None
+        self._acl_paths = None
+        self._referenced_files = ()
         self.socket_path = self.attempt_root / "runtime" / "lab-suricata.socket"
         self.pidfile = self.attempt_root / "runtime" / "lab-suricata.pid"
         self.active_rules = self.attempt_root / "rules" / "active.rules"
@@ -334,6 +348,13 @@ class IsolatedSuricataRuntime:
     def _preflight(self) -> None:
         if not is_verified_vm1_host():
             raise IsolatedRuntimeError("Wrong host or ens33 address; isolated VM1 only")
+        try:
+            require_root_operator_if_supported()
+            self.service_account = lookup_service_account(
+                self.service_user, self.service_group,
+            )
+        except PrivilegeSeparationError as exc:
+            raise IsolatedRuntimeError(str(exc)) from exc
         if not self.root.is_dir() or self.root.is_symlink():
             raise IsolatedRuntimeError("Exact isolated runtime root is missing/unsafe")
         if self.attempt_id is None:
@@ -371,6 +392,18 @@ class IsolatedSuricataRuntime:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.active_rules.exists():
             raise IsolatedRuntimeError("Unexpected existing isolated ruleset; refuse overwrite")
+        try:
+            configuration = yaml.safe_load(self.config.read_text(encoding="utf-8"))
+            self._referenced_files = referenced_configuration_files(configuration, self.config)
+            self._acl_paths = AttemptAccessPaths(
+                attempt_root=self.attempt_root, runtime_dir=self.socket_path.parent,
+                rules_dir=self.active_rules.parent, active_rules=self.active_rules,
+                logs_dir=self.logdir, effective_config=self.config,
+                referenced_files=self._referenced_files,
+            )
+            apply_attempt_acls(self._acl_paths, username=self.service_user)
+        except (OSError, UnicodeError, yaml.YAMLError, PrivilegeSeparationError) as exc:
+            raise IsolatedRuntimeError("Attempt ACL preparation failed closed") from exc
 
     def _prepare_attempt_namespace(self) -> None:
         """Create one exclusive runtime evidence namespace without touching prior attempts."""
@@ -457,7 +490,32 @@ class IsolatedSuricataRuntime:
         return [
             self.suricata, "-c", str(self.config), "-l", str(self.logdir), "--af-packet=lo",
             "--pidfile", str(self.pidfile), "--init-errors-fatal", "-k", "none",
+            f"--user={getattr(self, 'service_user', SERVICE_USER)}",
+            f"--group={getattr(self, 'service_group', SERVICE_GROUP)}",
         ]
+
+    def _replace_active_rules(self, data: bytes) -> None:
+        if getattr(self, "_acl_paths", None) is None:
+            _atomic(self.active_rules, data)
+            return
+        atomic_replace_with_acl(
+            self.active_rules, data, username=self.service_user,
+        )
+
+    def _terminate_child(self) -> bool:
+        process = self.process
+        if process is None or process.poll() is not None:
+            return True
+        try:
+            process.terminate()
+            process.wait(timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+                process.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+        return process.poll() is not None
 
     def _validation_rule_arguments(self, temporary: Path) -> list[str]:
         return [
@@ -507,7 +565,7 @@ class IsolatedSuricataRuntime:
         if self.process is not None:
             raise IsolatedRuntimeError("Isolated daemon already owned")
         self._old_rules = b"# no active candidate rules in this isolated test\n"
-        _atomic(self.active_rules, self._old_rules)
+        self._replace_active_rules(self._old_rules)
         arguments = self._daemon_arguments()
         self._record_diagnostic("startup", status="started", arguments=arguments)
         try:
@@ -531,8 +589,24 @@ class IsolatedSuricataRuntime:
                     "startup", status="failed", exit_status=self.process.poll(), **output,
                 )
                 raise IsolatedRuntimeError("Suricata startup failed: daemon exited during initialization")
+            try:
+                verify_process_identity(
+                    self.process.pid, expected_uid=self.expected_uid,
+                    expected_gid=self.expected_gid,
+                )
+            except (AttributeError, PrivilegeSeparationError) as exc:
+                self._record_diagnostic(
+                    "startup", status="failed", error="process identity verification failed",
+                    detail=str(exc),
+                )
+                if not self._terminate_child():
+                    self._record_diagnostic(
+                        "cleanup", status="failed", error="identity-mismatch child termination unverified",
+                    )
+                raise IsolatedRuntimeError("Suricata child identity verification failed") from exc
             if self.socket_path.exists():
                 try:
+                    verify_attempt_socket_path(self.socket_path, self.attempt_root)
                     version = self._command("version")
                     if "8.0.3" in str(version):
                         mode = self._command("capture-mode")
@@ -659,7 +733,7 @@ class IsolatedSuricataRuntime:
             return False
         try:
             self._start()
-            _atomic(self.active_rules, source.read_bytes())
+            self._replace_active_rules(source.read_bytes())
             try:
                 self._command("ruleset-reload-rules")
             except IsolatedRuntimeError as exc:
@@ -721,7 +795,7 @@ class IsolatedSuricataRuntime:
         if sid != self.sid or rule_sha256 != self.rule_sha256 or self.process is None:
             return False
         try:
-            _atomic(self.active_rules, self._old_rules)
+            self._replace_active_rules(self._old_rules)
             try:
                 self._command("ruleset-reload-rules")
             except IsolatedRuntimeError as exc:
@@ -786,25 +860,30 @@ class IsolatedSuricataRuntime:
         except (IsolatedRuntimeError, subprocess.TimeoutExpired):
             shutdown_error = True
             self._record_diagnostic("cleanup", status="failed", error="graceful shutdown failed")
-            if self.process is not None and self.process.poll() is None:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait(timeout=10)
+            if not self._terminate_child():
+                self._record_diagnostic(
+                    "cleanup", status="failed", error="child termination could not be verified",
+                )
         finally:
             output = self._close_process_output()
             if output["stdout"] or output["stderr"]:
                 self._record_diagnostic("cleanup", status="output", **output)
+        process_stopped = self.process is None or self.process.poll() is not None
+        acl_cleanup = True
+        if process_stopped and getattr(self, "_acl_paths", None) is not None:
+            try:
+                remove_attempt_acls(self._acl_paths, username=self.service_user)
+            except PrivilegeSeparationError as exc:
+                acl_cleanup = False
+                self._record_diagnostic("cleanup", status="failed", error=str(exc))
+        if process_stopped and acl_cleanup:
             self.pidfile.unlink(missing_ok=True)
             self.socket_path.unlink(missing_ok=True)
             self.active_rules.unlink(missing_ok=True)
-        process_stopped = self.process is None or self.process.poll() is not None
         artifacts_removed = not any(
             path.exists() for path in (self.pidfile, self.socket_path, self.active_rules)
         )
-        cleanup_verified = not shutdown_error and process_stopped and artifacts_removed
+        cleanup_verified = not shutdown_error and process_stopped and acl_cleanup and artifacts_removed
         self._record_diagnostic(
             "cleanup", status="verified" if cleanup_verified else "failed",
             process_stopped=process_stopped, artifacts_removed=artifacts_removed,

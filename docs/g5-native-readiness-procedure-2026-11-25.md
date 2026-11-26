@@ -130,3 +130,64 @@ A successful report is only a readiness result, not G5 runtime acceptance.
 The owner must make a separate reviewed decision, issue a new authorization
 with a new nonce bound to a new attempt, and use the persistent audit ledger.
 There is no automatic retry and no reuse of the consumed authorization.
+
+## 5. Root operator and privilege-separated runtime procedure
+
+The live operator is a root-owned local process on VM1. Before it can create an
+attempt namespace or append the persistent ledger, verify the invoking shell has
+EUID 0. The operator never runs as `suricata-g5`, never changes production
+configuration or rules, and never invokes `systemctl`:
+
+```bash
+sudo -i
+test "$(id -u)" = 0
+cd /home/tanhv/suricata-rule-review/repository
+PYTHONPATH=src python3 scripts/operate_frozen_rst_once.py \
+  --candidate /home/tanhv/g5-signed/sid9103005-candidate.json \
+  --replay /home/tanhv/g5-signed/sid9103005-replay-attestation.json \
+  --owner-authorization /home/tanhv/g5-signed/sid9103005-owner-authorization.json \
+  --replay-public /home/tanhv/.config/suricata-ai/g5-replay-9103005/replay.pub.pem \
+  --owner-public /home/tanhv/.config/suricata-ai/g5-owner-9103005/owner.pub.pem \
+  --runtime-public /home/tanhv/.config/suricata-ai/g5-runtime-9103005/runtime.pub.pem \
+  --production-yaml /etc/suricata/suricata.yaml \
+  --production-rules /var/lib/suricata/rules/suricata.rules \
+  --isolated-yaml "$ROOT/isolated.yaml" \
+  --isolated-root "$ROOT" \
+  --attempt-id "$ATTEMPT_ID" \
+  --audit-path "$ROOT/audit/owner-once.jsonl" \
+  --runtime-private /home/tanhv/.config/suricata-ai/g5-runtime-9103005/runtime.pem \
+  --evidence-output "$ROOT/attempts/$ATTEMPT_ID/runtime-evidence.json" \
+  --failure-output "$ROOT/attempts/$ATTEMPT_ID/runtime-failure.json" \
+  --probe A1=/ABSOLUTE/VERIFIED/A1.pcap \
+  --probe A2=/ABSOLUTE/VERIFIED/A2.pcap \
+  --probe A3=/ABSOLUTE/VERIFIED/A3.pcap \
+  --probe N1=/ABSOLUTE/VERIFIED/N1.pcap \
+  --probe N2=/ABSOLUTE/VERIFIED/N2.pcap \
+  --probe N3=/ABSOLUTE/VERIFIED/N3.pcap
+```
+
+The operator validates the dedicated account before launch: user and group
+`suricata-g5`, UID 999, GID 982, `nologin` shell, no home, and no supplementary
+root group. Suricata is started by the root operator with
+`--user=suricata-g5 --group=suricata-g5`; only that child drops privileges.
+The operator verifies `/proc/<pid>/status` after startup and before socket
+readiness or replay: every UID is 999, every GID is 982, the process is alive,
+and `Groups:` contains no GID 0. A mismatch terminates the child, verifies
+termination, preserves diagnostics, and blocks replay.
+
+The attempt ACL is narrow and is applied with argument-array `setfacl` calls:
+
+- attempt root and rules directory: execute only;
+- runtime and logs directories: write and execute only;
+- effective YAML and each explicitly referenced classification, reference,
+  threshold, include, or rule file: read only;
+- `active.rules`: read only, reapplied after baseline, activation, and rollback
+  atomic replacement;
+- audit, owner authorization, production paths, and unrelated attempts: no ACL.
+
+The persistent audit ledger remains root:root with mode `0600` in a root-only
+directory. It is append-only and is never chmodded, chowned, deleted, or
+replaced. After the child is verified stopped, the operator removes only ACL
+entries belonging to the current attempt. If process termination or ACL cleanup
+cannot be verified, it reports failure, preserves diagnostics and evidence, and
+does not retry.

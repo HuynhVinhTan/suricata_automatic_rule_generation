@@ -17,6 +17,9 @@ from pathlib import Path
 
 from netids.lifecycle_attestation import verify_attestation
 from netids.lifecycle_ed25519 import verify_record as verify_ed25519_record
+from netids.privilege_separation import (
+    PrivilegeSeparationError, ensure_root_owned_audit, require_root_operator_if_supported,
+)
 from netids.rulegen import REJECTED_SIDS, collect_sids
 
 
@@ -77,6 +80,8 @@ class RuleLifecycle:
         owner_domain: str = "isolated-owner-approval-v1",
     ):
         self.audit_path = Path(audit_path)
+        if self.audit_path.name == "owner-once.jsonl":
+            require_root_operator_if_supported()
         raw_root = Path(isolated_root or self.audit_path.parent / "isolated-lab")
         if raw_root.is_symlink():
             raise LifecycleError("Isolated root must not be a symlink")
@@ -137,6 +142,12 @@ class RuleLifecycle:
         return records
 
     def _audit(self, event: str, candidate: dict, **details) -> None:
+        if self.audit_path.name == "owner-once.jsonl":
+            try:
+                require_root_operator_if_supported()
+                ensure_root_owned_audit(self.audit_path)
+            except PrivilegeSeparationError:
+                raise
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.audit_path.with_name(self.audit_path.name + ".lock")
         try:
@@ -163,10 +174,17 @@ class RuleLifecycle:
                 **details,
             }
             record["record_hash"] = _sha(_canonical(record) + previous)
-            with self.audit_path.open("a", encoding="utf-8") as target:
+            fd = os.open(
+                self.audit_path,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                0o600,
+            )
+            with os.fdopen(fd, "a", encoding="utf-8") as target:
                 target.write(_canonical(record) + "\n")
                 target.flush()
                 os.fsync(target.fileno())
+            if self.audit_path.name == "owner-once.jsonl":
+                ensure_root_owned_audit(self.audit_path)
         finally:
             lock_path.unlink(missing_ok=True)
 
