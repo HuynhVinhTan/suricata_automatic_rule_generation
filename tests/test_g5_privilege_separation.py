@@ -508,6 +508,7 @@ def test_atomic_active_rules_reapplies_read_acl(tmp_path):
 def test_process_identity_mismatch_is_not_ready_and_is_terminated(monkeypatch, tmp_path):
     runtime = object.__new__(IsolatedSuricataRuntime)
     runtime.root = tmp_path
+    runtime.attempt_root = tmp_path
     runtime.config = tmp_path / "suricata.yaml"
     runtime.active_rules = tmp_path / "rules" / "active.rules"
     runtime.logdir = tmp_path / "logs"

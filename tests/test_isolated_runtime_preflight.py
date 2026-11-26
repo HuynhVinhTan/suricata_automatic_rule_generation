@@ -1,6 +1,7 @@
 """Isolated runtime fail-closed preflight tests: never start Suricata in CI."""
 
 import io
+import hashlib
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from netids import isolated_suricata_runtime as runtime_module
 from netids.isolated_suricata_runtime import (
     IsolatedSuricataRuntime, IsolatedRuntimeError, is_verified_vm1_host,
     validate_unix_socket_path,
@@ -106,6 +108,82 @@ def test_vm1_identity_fails_closed_when_ip_command_is_unavailable(monkeypatch):
         raise FileNotFoundError("ip missing")
     monkeypatch.setattr("netids.isolated_suricata_runtime.subprocess.run", missing_ip)
     assert is_verified_vm1_host() is False
+
+
+def test_run_forwards_supplied_working_directory(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime.subprocess.run", fake_run)
+    assert runtime_module._run(["suricata", "-V"], cwd=tmp_path).stdout == "ok"
+    assert calls[0][1]["cwd"] == tmp_path
+
+
+def test_candidate_syntax_validation_uses_exact_attempt_root(monkeypatch, tmp_path):
+    attempt = tmp_path / "attempts" / "g5r3"
+    references = attempt / "references"
+    (attempt / "runtime").mkdir(parents=True)
+    (attempt / "logs").mkdir()
+    (tmp_path / "runtime").mkdir()
+    references.mkdir()
+    (references / "classification.config").write_text("classification", encoding="utf-8")
+    (references / "reference.config").write_text("reference", encoding="utf-8")
+    config = attempt / "suricata.yaml"
+    config.write_text(
+        "classification-file: references/classification.config\n"
+        "reference-config-file: references/reference.config\n",
+        encoding="utf-8",
+    )
+    pcap = tmp_path / "attack.pcap"
+    pcap.write_bytes(b"verified-pcap")
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.attempt_root = attempt
+    runtime.root = tmp_path
+    runtime.config = config
+    runtime.attack_pcap = pcap
+    runtime.attack_sha256 = hashlib.sha256(pcap.read_bytes()).hexdigest()
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.logdir = attempt / "logs"
+    runtime.deadline_monotonic = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = lambda *args, **kwargs: None
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        cwd = kwargs["cwd"]
+        document = yaml.safe_load((cwd / "suricata.yaml").read_text(encoding="utf-8"))
+        assert (cwd / document["classification-file"]).is_file()
+        assert (cwd / document["reference-config-file"]).is_file()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    assert runtime._validate_impl('alert tcp any any -> any any (msg:"candidate";)') is True
+    assert calls[0][1]["cwd"] == attempt
+
+
+def test_suricatasc_commands_use_exact_attempt_root(monkeypatch, tmp_path):
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.attempt_root = attempt
+    runtime.socket_path = attempt / "runtime" / "socket"
+    runtime.suricatasc = "/usr/bin/suricatasc"
+    runtime.deadline_monotonic = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = lambda *args, **kwargs: None
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"return":"OK","message":"ok"}', stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    assert runtime._command("version") == "ok"
+    assert calls[0][1]["cwd"] == attempt
 
 
 def test_candidate_baseline_must_match_actual_production_rules_hash():
@@ -248,6 +326,37 @@ def test_attempt_namespace_refuses_reuse_and_preserves_prior_attempt(tmp_path, m
     assert marker.read_text(encoding="utf-8") == "preserve"
 
 
+@pytest.mark.parametrize("reference", ["missing/classification.config", "../outside.config"])
+def test_attempt_namespace_rejects_missing_or_unsafe_references(tmp_path, monkeypatch, reference):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    root = tmp_path / "isolated"
+    root.mkdir()
+    if reference.startswith("../"):
+        (tmp_path / "outside.config").write_text("outside", encoding="utf-8")
+    template = root / "isolated.yaml"
+    template.write_text(
+        "classification-file: " + reference + "\n"
+        "rule-files: [active.rules]\n"
+        "unix-command: {enabled: true, filename: runtime/socket}\n"
+        "af-packet: [{interface: lo}]\n"
+        "outputs: [{eve-log: {enabled: true, filename: eve.json}}]\n",
+        encoding="utf-8",
+    )
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = root
+    runtime.config_source = template
+    runtime.attempt_id = "attempt-unsafe-reference"
+    runtime.attempt_root = root / "attempts" / runtime.attempt_id
+    runtime.config = runtime.attempt_root / "suricata.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "socket"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "pid"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+    with pytest.raises(IsolatedRuntimeError, match="effective attempt configuration"):
+        runtime._prepare_attempt_namespace()
+
+
 def test_historical_sid9103003_config_declares_loopback_af_packet():
     config = yaml.safe_load(Path("configs/suricata/isolated-lifecycle-9103003.yaml").read_text(encoding="utf-8"))
     assert config["af-packet"] == [{"interface": "lo"}]
@@ -360,11 +469,12 @@ def test_frozen_operator_rejects_non_root_before_any_side_effect(monkeypatch, tm
 def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_path):
     runtime = object.__new__(IsolatedSuricataRuntime)
     runtime.root = tmp_path
-    runtime.config = tmp_path / "isolated.yaml"
-    runtime.active_rules = tmp_path / "rules" / "active.rules"
-    runtime.logdir = tmp_path / "logs"
-    runtime.pidfile = tmp_path / "runtime" / "suricata.pid"
-    runtime.socket_path = tmp_path / "runtime" / "suricata.sock"
+    runtime.attempt_root = tmp_path / "attempt"
+    runtime.config = runtime.attempt_root / "isolated.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "suricata.pid"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "suricata.sock"
     runtime.process = None
     runtime._old_rules = None
     runtime.active_rules.parent.mkdir(parents=True)
@@ -387,6 +497,7 @@ def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_p
     def fake_popen(arguments, **kwargs):
         assert kwargs["stdout"] == subprocess.PIPE
         assert kwargs["stderr"] == subprocess.PIPE
+        assert kwargs["cwd"] == runtime.attempt_root
         return FailedProcess()
 
     monkeypatch.setattr("netids.isolated_suricata_runtime.subprocess.Popen", fake_popen)

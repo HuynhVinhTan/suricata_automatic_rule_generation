@@ -224,14 +224,19 @@ class IsolatedRuntimeError(RuntimeError):
     pass
 
 
-def _run(argv: list[str], *, timeout: int = 60, deadline_monotonic=None) -> subprocess.CompletedProcess:
+def _run(
+    argv: list[str], *, timeout: int = 60, deadline_monotonic=None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
     if deadline_monotonic is not None:
         remaining = deadline_monotonic - time.monotonic()
         if remaining <= 0:
             raise IsolatedRuntimeError("Isolated runtime deadline exceeded")
         timeout = min(timeout, max(1, int(remaining)))
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        result = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, check=False, cwd=cwd,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         output = ""
         if isinstance(exc, subprocess.TimeoutExpired):
@@ -584,7 +589,7 @@ class IsolatedSuricataRuntime:
         try:
             result = _run([
                 self.suricatasc, "-c", command, str(self.socket_path)
-            ], timeout=75, deadline_monotonic=self.deadline_monotonic)
+            ], timeout=75, deadline_monotonic=self.deadline_monotonic, cwd=self.attempt_root)
         except IsolatedRuntimeError as exc:
             self._record_diagnostic("socket", status="failed", command=command, error=str(exc))
             raise
@@ -626,7 +631,7 @@ class IsolatedSuricataRuntime:
         self._record_diagnostic("startup", status="started", arguments=arguments)
         try:
             self.process = subprocess.Popen(
-                arguments, cwd=self.root, stdout=subprocess.PIPE,
+                arguments, cwd=self.attempt_root, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
             )
             self._output_collectors = [
@@ -755,7 +760,7 @@ class IsolatedSuricataRuntime:
             return False
         if sha256_file(self.attack_pcap) != self.attack_sha256:
             return False
-        directory = self.root / "runtime"
+        directory = self.attempt_root / "runtime"
         temporary = directory / "validate-candidate.rules"
         if temporary.exists():
             return False
@@ -764,6 +769,7 @@ class IsolatedSuricataRuntime:
             result = _run(
                 self._validation_rule_arguments(temporary),
                 timeout=120, deadline_monotonic=self.deadline_monotonic,
+                cwd=self.attempt_root,
             )
             return result.returncode == 0
         except IsolatedRuntimeError as exc:
