@@ -64,6 +64,7 @@ class ProcIdentity:
     gid_fields: tuple[int, ...]
     groups: tuple[int, ...]
     state: str
+    cap_eff: str = ""
 
     @property
     def uid(self) -> int:
@@ -85,7 +86,6 @@ class ProcIdentity:
             and len(self.gid_fields) == 4
             and all(value == uid for value in self.uid_fields)
             and all(value == gid for value in self.gid_fields)
-            and bool(self.groups)
             and 0 not in self.groups
         )
 
@@ -702,7 +702,19 @@ def confine_configuration_references(
     return confined
 
 
-_STATUS_VALUE = re.compile(r"^(Uid|Gid|Groups|State):\s*(.*)$")
+_STATUS_VALUE = re.compile(r"^(Uid|Gid|Groups|State|CapEff):[ \t]*(.*)$")
+
+
+def _identity_parse_error(message: str, values: dict[str, str]) -> PrivilegeSeparationError:
+    error = PrivilegeSeparationError(message)
+    error.observed_fields = {
+        "state": values.get("State", ""),
+        "uid_fields": values.get("Uid", ""),
+        "gid_fields": values.get("Gid", ""),
+        "supplementary_groups": values.get("Groups", ""),
+        "cap_eff": values.get("CapEff", ""),
+    }
+    return error
 
 
 def parse_proc_status(status_text: str) -> ProcIdentity:
@@ -710,16 +722,28 @@ def parse_proc_status(status_text: str) -> ProcIdentity:
     for line in str(status_text).splitlines():
         match = _STATUS_VALUE.match(line)
         if match:
-            values[match.group(1)] = match.group(2).strip()
+            field = match.group(1)
+            if field in values:
+                raise _identity_parse_error(
+                    f"duplicate Suricata /proc identity field: {field}", values,
+                )
+            values[field] = match.group(2).strip()
+    if not {"Uid", "Gid", "Groups", "State"}.issubset(values):
+        raise _identity_parse_error(
+            "Suricata process identity fields are incomplete or unsafe", values,
+        )
     try:
         uids = tuple(int(value) for value in values["Uid"].split())
         gids = tuple(int(value) for value in values["Gid"].split())
-        groups = tuple(int(value) for value in values.get("Groups", "").split())
+        groups = tuple(int(value) for value in values["Groups"].split())
     except (KeyError, ValueError) as exc:
-        raise PrivilegeSeparationError("unable to parse Suricata /proc identity") from exc
-    if len(uids) != 4 or len(gids) != 4 or not groups or values.get("State", "").startswith("Z"):
-        raise PrivilegeSeparationError("Suricata process identity fields are incomplete or unsafe")
-    return ProcIdentity(uids, gids, groups, values["State"])
+        raise _identity_parse_error("unable to parse Suricata /proc identity", values) from exc
+    state = values["State"].strip()
+    if len(uids) != 4 or len(gids) != 4 or not state or state[0] in {"Z", "X"}:
+        raise _identity_parse_error(
+            "Suricata process identity fields are incomplete or unsafe", values,
+        )
+    return ProcIdentity(uids, gids, groups, state, values.get("CapEff", ""))
 
 
 def verify_proc_identity_text(status_text: str) -> ProcIdentity:

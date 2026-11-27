@@ -58,8 +58,110 @@ def test_proc_status_accepts_dedicated_identity():
     assert identity.groups == (982,)
 
 
+def test_proc_status_accepts_present_empty_groups_from_native_fixture():
+    status = """Name:\tsuricata
+State:\tS (sleeping)
+Uid:\t999\t999\t999\t999
+Gid:\t982\t982\t982\t982
+Groups:
+CapEff:\t0000000000000000
+"""
+    identity = ps.verify_proc_identity_text(status)
+    assert identity.groups == ()
+    assert identity.cap_eff == "0000000000000000"
+
+
+def test_proc_status_rejects_missing_groups_field():
+    status = """Name:\tsuricata
+State:\tS (sleeping)
+Uid:\t999\t999\t999\t999
+Gid:\t982\t982\t982\t982
+"""
+    with pytest.raises(ps.PrivilegeSeparationError, match="incomplete|Groups"):
+        ps.verify_proc_identity_text(status)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("Uid", "999 999 999"),
+        ("Uid", "999 nope 999 999"),
+        ("Gid", "982 982 982"),
+        ("Gid", "982 nope 982 982"),
+        ("Groups", "982 nope"),
+    ],
+)
+def test_proc_status_rejects_malformed_or_incomplete_identity_fields(field, value):
+    fields = {
+        "State": "S (sleeping)",
+        "Uid": "999 999 999 999",
+        "Gid": "982 982 982 982",
+        "Groups": "982",
+    }
+    fields[field] = value
+    status = "\n".join(f"{name}:\t{content}" for name, content in fields.items()) + "\n"
+    with pytest.raises(ps.PrivilegeSeparationError):
+        ps.verify_proc_identity_text(status)
+
+
+def test_proc_status_rejects_duplicate_identity_fields():
+    status = """State:\tS (sleeping)
+Uid:\t999\t999\t999\t999
+Uid:\t999\t999\t999\t999
+Gid:\t982\t982\t982\t982
+Groups:\t982
+"""
+    with pytest.raises(ps.PrivilegeSeparationError, match="duplicate"):
+        ps.verify_proc_identity_text(status)
+
+
+@pytest.mark.parametrize("state", ["Z (zombie)", "X (dead)"])
+def test_proc_status_rejects_zombie_or_dead_process(state):
+    status = f"""State:\t{state}
+Uid:\t999\t999\t999\t999
+Gid:\t982\t982\t982\t982
+Groups:\t982
+"""
+    with pytest.raises(ps.PrivilegeSeparationError, match="incomplete|unsafe"):
+        ps.verify_proc_identity_text(status)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="/proc is unavailable on Windows")
+def test_read_process_identity_supports_harmless_real_linux_process():
+    identity = ps.read_process_identity(os.getpid())
+    assert len(identity.uid_fields) == 4
+    assert len(identity.gid_fields) == 4
+    assert identity.cap_eff
+
+
 def test_proc_status_rejects_mismatched_saved_or_filesystem_identity_fields():
     status = """Name:\tsuricata\nState:\tS (sleeping)\nUid:\t999\t999\t999\t1000\nGid:\t982\t982\t982\t982\nGroups:\t982\n"""
+    with pytest.raises(ps.PrivilegeSeparationError, match="identity"):
+        ps.verify_proc_identity_text(status)
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_proc_status_rejects_each_uid_position_that_does_not_match(index):
+    uid_fields = [999, 999, 999, 999]
+    uid_fields[index] = 1000
+    status = f"""State:\tS (sleeping)
+Uid:\t{' '.join(str(value) for value in uid_fields)}
+Gid:\t982\t982\t982\t982
+Groups:\t982
+"""
+    with pytest.raises(ps.PrivilegeSeparationError, match="identity"):
+        ps.verify_proc_identity_text(status)
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_proc_status_rejects_each_gid_position_that_does_not_match(index):
+    gid_fields = [982, 982, 982, 982]
+    gid_fields[index] = 981
+    status = f"""State:\tS (sleeping)
+Uid:\t999\t999\t999\t999
+Gid:\t{' '.join(str(value) for value in gid_fields)}
+Groups:\t982
+"""
     with pytest.raises(ps.PrivilegeSeparationError, match="identity"):
         ps.verify_proc_identity_text(status)
 
@@ -159,6 +261,105 @@ def test_identity_gate_does_not_reach_socket_or_replay_before_pass(monkeypatch):
     with pytest.raises(IsolatedRuntimeError):
         runtime._wait_for_privilege_drop(timeout=0)
     assert commands == []
+
+
+def _socket_start_runtime(tmp_path, *, socket_after_poll=None):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = tmp_path
+    runtime.attempt_root = tmp_path / "attempt"
+    runtime.config = runtime.attempt_root / "suricata.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "suricata.pid"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "lab-suricata.socket"
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.suricatasc = "/usr/bin/suricatasc"
+    runtime.service_user = "suricata-g5"
+    runtime.service_group = "suricata-g5"
+    runtime.expected_uid = 999
+    runtime.expected_gid = 982
+    runtime.process = None
+    runtime._old_rules = None
+    runtime._output_collectors = []
+    runtime._check_deadline = lambda: None
+    runtime._replace_active_rules = lambda data: None
+    runtime._daemon_arguments = lambda: ["suricata"]
+    runtime._wait_for_privilege_drop = lambda timeout: None
+    runtime._record_diagnostic = lambda *args, **kwargs: None
+    runtime.deadline_monotonic = None
+
+    class Process:
+        pid = 4242
+        stdout = None
+        stderr = None
+
+        def __init__(self):
+            self.polls = 0
+            self.terminated = False
+
+        def poll(self):
+            self.polls += 1
+            if (
+                socket_after_poll is not None
+                and self.polls >= socket_after_poll
+                and not runtime.socket_path.exists()
+            ):
+                runtime.socket_path.parent.mkdir(parents=True, exist_ok=True)
+                runtime.socket_path.write_text("socket placeholder", encoding="utf-8")
+            return 0 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.terminated = True
+            return 0
+
+        def kill(self):
+            self.terminated = True
+
+    return runtime, Process
+
+
+def test_socket_readiness_is_polled_after_identity_pass(monkeypatch, tmp_path):
+    runtime, process_type = _socket_start_runtime(tmp_path, socket_after_poll=3)
+    process = process_type()
+    calls = []
+    monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(runtime_module, "verify_attempt_socket_path", lambda path, root: None)
+    runtime._command = lambda command: calls.append(command) or {
+        "version": "Suricata 8.0.3",
+        "capture-mode": "AF_PACKET",
+        "ruleset-stats": [{"rules_loaded": 0, "rules_failed": 0, "rules_skipped": 0}],
+    }[command]
+    runtime._start()
+    assert process.terminated is False
+    assert calls == ["version", "capture-mode", "ruleset-stats"]
+    assert runtime.socket_path.exists()
+
+
+def test_socket_timeout_terminates_child_after_identity_pass(monkeypatch, tmp_path):
+    runtime, process_type = _socket_start_runtime(tmp_path)
+    process = process_type()
+    runtime.deadline_monotonic = runtime_module.time.monotonic() + 0.01
+    monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    with pytest.raises(IsolatedRuntimeError, match="socket"):
+        runtime._start()
+    assert process.terminated is True
+
+
+def test_identity_parser_exception_is_preserved_in_startup_diagnostics(monkeypatch):
+    runtime = _identity_runtime()
+    diagnostics = []
+    runtime._record_diagnostic = lambda phase, **details: diagnostics.append((phase, details))
+    error = ps.PrivilegeSeparationError("unable to parse Suricata /proc identity")
+    monkeypatch.setattr(runtime_module, "read_process_identity", lambda pid: (_ for _ in ()).throw(error))
+    with pytest.raises(IsolatedRuntimeError, match="privilege drop"):
+        runtime._wait_for_privilege_drop(timeout=0)
+    _, record = diagnostics[-1]
+    assert record["error"] == "privilege drop timeout"
+    assert "unable to parse" in record["identity_parser_error"]
+    assert record["pid"] == 4242
 
 
 def test_effective_yaml_references_are_explicit_and_narrow(tmp_path):

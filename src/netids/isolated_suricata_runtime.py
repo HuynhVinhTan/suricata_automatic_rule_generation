@@ -554,8 +554,32 @@ class IsolatedSuricataRuntime:
             raise IsolatedRuntimeError("Suricata child is not started")
         deadline = time.monotonic() + max(0.0, timeout)
         last_error = None
+        last_identity = None
+
+        def identity_details(identity=None, error=None):
+            details = {"pid": self.process.pid}
+            if identity is not None:
+                details.update({
+                    "state": identity.state,
+                    "uid_fields": identity.uid_fields,
+                    "gid_fields": identity.gid_fields,
+                    "supplementary_groups": identity.groups,
+                    "cap_eff": identity.cap_eff,
+                })
+            if error is not None:
+                details["identity_parser_error"] = str(error)
+                observed = getattr(error, "observed_fields", {})
+                if observed:
+                    details.update(observed)
+            return details
+
         while True:
-            if self.process.poll() is not None:
+            exit_status = self.process.poll()
+            if exit_status is not None:
+                self._record_diagnostic(
+                    "startup", status="failed", error="daemon exited before privilege drop",
+                    exit_status=exit_status, **identity_details(last_identity, last_error),
+                )
                 raise IsolatedRuntimeError("Suricata child exited before privilege drop")
             try:
                 identity = read_process_identity(self.process.pid)
@@ -563,12 +587,17 @@ class IsolatedSuricataRuntime:
                 identity = None
                 last_error = exc
             if identity is not None:
+                last_identity = identity
                 if identity.is_expected(self.expected_uid, self.expected_gid):
+                    self._record_diagnostic(
+                        "startup", status="identity-verified", **identity_details(identity),
+                    )
                     return identity
                 if not identity.all_root:
                     detail = "unexpected non-root process identity"
                     self._record_diagnostic(
-                        "startup", status="failed", error=detail, detail=str(identity),
+                        "startup", status="failed", error=detail,
+                        **identity_details(identity),
                     )
                     if not self._terminate_child():
                         self._record_diagnostic(
@@ -580,8 +609,14 @@ class IsolatedSuricataRuntime:
                     )
             if time.monotonic() >= deadline:
                 detail = str(last_error or "Suricata process remained privileged")
+                details = identity_details(last_identity, last_error)
+                details.update({
+                    "error": "privilege drop timeout",
+                    "first_causal_error": detail,
+                    "exit_status": self.process.poll(),
+                })
                 self._record_diagnostic(
-                    "startup", status="failed", error="privilege drop timeout", detail=detail,
+                    "startup", status="failed", **details,
                 )
                 if not self._terminate_child():
                     self._record_diagnostic(
@@ -678,7 +713,10 @@ class IsolatedSuricataRuntime:
             )
             raise
         last_error = None
-        for _ in range(40):
+        socket_deadline = time.monotonic() + 10.0
+        if getattr(self, "deadline_monotonic", None) is not None:
+            socket_deadline = min(socket_deadline, self.deadline_monotonic)
+        while time.monotonic() < socket_deadline:
             self._check_deadline()
             if self.process.poll() is not None:
                 output = self._close_process_output()
@@ -705,6 +743,11 @@ class IsolatedSuricataRuntime:
         self._record_diagnostic(
             "startup", status="failed", error=str(last_error or "socket was not ready"), **output,
         )
+        if not self._terminate_child():
+            self._record_diagnostic(
+                "cleanup", status="failed",
+                error="socket-readiness timeout child termination unverified",
+            )
         raise IsolatedRuntimeError(
             f"Isolated UNIX socket was not ready: {last_error or 'startup timeout'}"
         )

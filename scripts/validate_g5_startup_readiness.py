@@ -167,6 +167,14 @@ def run_startup_readiness(
     identity_verified = False
     socket_verified = False
     startup_error = None
+    first_causal_error = None
+    cleanup_error = None
+    identity_observations = []
+
+    def record_identity_observation(observation: dict) -> None:
+        if len(identity_observations) < 64:
+            identity_observations.append(observation)
+
     try:
         configuration = yaml.safe_load(source.read_text(encoding="utf-8"))
         confined = confine_configuration_references(
@@ -232,38 +240,97 @@ def run_startup_readiness(
         ]
         deadline = time.monotonic() + startup_timeout
         while time.monotonic() < deadline:
-            if process.poll() is not None:
+            exit_status = process.poll()
+            if exit_status is not None:
+                first_causal_error = f"daemon exited before privilege drop ({exit_status})"
+                record_identity_observation({
+                    "pid": process.pid, "exit_status": exit_status,
+                })
                 raise StartupReadinessError(
-                    f"daemon exited before privilege drop ({process.poll()})"
+                    first_causal_error
                 )
             try:
                 identity = read_process_identity(process.pid)
-            except PrivilegeSeparationError:
+            except PrivilegeSeparationError as exc:
                 identity = None
+                observed = getattr(exc, "observed_fields", {})
+                record_identity_observation({
+                    "pid": process.pid,
+                    "identity_parser_error": str(exc),
+                    **observed,
+                })
             if identity is not None:
+                record_identity_observation({
+                    "pid": process.pid,
+                    "state": identity.state,
+                    "uid_fields": identity.uid_fields,
+                    "gid_fields": identity.gid_fields,
+                    "supplementary_groups": identity.groups,
+                    "cap_eff": identity.cap_eff,
+                })
                 if identity.is_expected(SERVICE_UID, SERVICE_GID):
                     identity_verified = True
                     break
                 if not identity.all_root:
-                    raise StartupReadinessError("daemon identity mismatch")
+                    first_causal_error = "daemon identity mismatch"
+                    raise StartupReadinessError(first_causal_error)
             time.sleep(0.25)
         if not identity_verified:
-            raise StartupReadinessError("daemon privilege-drop timeout")
+            first_causal_error = "daemon privilege-drop timeout"
+            parser_error = next(
+                (item.get("identity_parser_error") for item in reversed(identity_observations)
+                 if item.get("identity_parser_error")),
+                None,
+            )
+            if parser_error:
+                first_causal_error += f"; first causal error: {parser_error}"
+            raise StartupReadinessError(first_causal_error)
 
-        verify_attempt_socket_path(socket_path, readiness_root)
-        _socket_command(
-            runner, suricatasc=suricatasc, command="version",
-            socket_path=socket_path, cwd=readiness_root,
-        )
-        stats = _socket_command(
-            runner, suricatasc=suricatasc, command="ruleset-stats",
-            socket_path=socket_path, cwd=readiness_root,
-        )
-        if not isinstance(stats, list) or len(stats) != 1 or stats[0].get("rules_loaded") != 0:
-            raise StartupReadinessError("startup readiness ruleset was not empty")
-        socket_verified = True
+        last_socket_error = None
+        while time.monotonic() < deadline:
+            exit_status = process.poll()
+            if exit_status is not None:
+                first_causal_error = f"daemon exited before socket readiness ({exit_status})"
+                raise StartupReadinessError(first_causal_error)
+            if socket_path.exists():
+                try:
+                    verify_attempt_socket_path(socket_path, readiness_root)
+                    version = _socket_command(
+                        runner, suricatasc=suricatasc, command="version",
+                        socket_path=socket_path, cwd=readiness_root,
+                    )
+                    if "8.0.3" not in str(version):
+                        raise StartupReadinessError("unexpected Suricata version")
+                    mode = _socket_command(
+                        runner, suricatasc=suricatasc, command="capture-mode",
+                        socket_path=socket_path, cwd=readiness_root,
+                    )
+                    if "AF_PACKET" not in str(mode):
+                        raise StartupReadinessError("unexpected Suricata capture mode")
+                    stats = _socket_command(
+                        runner, suricatasc=suricatasc, command="ruleset-stats",
+                        socket_path=socket_path, cwd=readiness_root,
+                    )
+                    if (
+                        not isinstance(stats, list) or len(stats) != 1
+                        or not isinstance(stats[0], dict)
+                        or stats[0].get("rules_loaded") != 0
+                        or stats[0].get("rules_failed") != 0
+                        or stats[0].get("rules_skipped") != 0
+                    ):
+                        raise StartupReadinessError("startup readiness ruleset was not empty")
+                    socket_verified = True
+                    break
+                except (OSError, PrivilegeSeparationError, StartupReadinessError) as exc:
+                    last_socket_error = exc
+            time.sleep(0.25)
+        if not socket_verified:
+            first_causal_error = str(last_socket_error or "startup socket readiness timeout")
+            raise StartupReadinessError(first_causal_error)
     except Exception as exc:
         startup_error = exc
+        if first_causal_error is None:
+            first_causal_error = str(exc)
     finally:
         if process is not None:
             try:
@@ -286,8 +353,9 @@ def run_startup_readiness(
             try:
                 remove_attempt_acls(access_paths, transaction=transaction, runner=runner)
                 cleanup_verified = True
-            except PrivilegeSeparationError:
+            except PrivilegeSeparationError as exc:
                 cleanup_verified = False
+                cleanup_error = str(exc)
         if process_stopped and cleanup_verified:
             pidfile.unlink(missing_ok=True)
             socket_path.unlink(missing_ok=True)
@@ -315,6 +383,9 @@ def run_startup_readiness(
         "process_stopped": process is None or process.poll() is not None,
         "acl_cleanup_verified": cleanup_verified,
         "diagnostics": diagnostics,
+        "identity_observations": identity_observations,
+        "first_causal_error": first_causal_error,
+        "cleanup_error": cleanup_error,
         "error": _redact_diagnostic(startup_error) if startup_error else None,
     }
     report = Path(report_path) if report_path is not None else readiness_root / "startup-readiness.json"
