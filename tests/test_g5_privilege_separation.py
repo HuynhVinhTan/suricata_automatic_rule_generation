@@ -361,7 +361,7 @@ def test_runtime_output_artifacts_fail_closed_before_startup(tmp_path, kind):
     else:
         (logs / "unexpected.txt").write_text("unexpected", encoding="utf-8")
 
-    with pytest.raises(ps.PrivilegeSeparationError, match="unsafe|hardlink|unexpected"):
+    with pytest.raises(ps.PrivilegeSeparationError, match="unsafe|hardlink|unexpected|symlink"):
         ps.prepare_runtime_output_files(
             {"outputs": [{"eve-log": {"enabled": True, "filename": "eve.json"}}]},
             logs,
