@@ -841,18 +841,23 @@ class IsolatedSuricataRuntime:
                 raise ValueError("truncated probe PCAP packet")
             frame = raw[pos:pos + caplen]
             pos += caplen
-            if len(frame) < 14 or struct.unpack_from("!H", frame, 12)[0] != 0x0800:
-                continue
+            if len(frame) < 14:
+                raise ValueError("truncated Ethernet frame in probe PCAP")
+            if struct.unpack_from("!H", frame, 12)[0] != 0x0800:
+                raise ValueError("probe PCAP contains an unsupported Ethernet protocol")
             ip = frame[14:]
             if len(ip) < 20 or ip[0] >> 4 != 4:
-                continue
+                raise ValueError("probe PCAP contains a truncated or unsupported IP packet")
             ihl = (ip[0] & 15) * 4
             if ihl < 20 or len(ip) < ihl:
                 raise ValueError("malformed IPv4 packet in probe PCAP")
+            total_len = struct.unpack_from("!H", ip, 2)[0]
+            if total_len < ihl or total_len > len(ip):
+                raise ValueError("truncated IPv4 payload in probe PCAP")
             proto = ip[9]
             if proto not in (6, 17):
-                continue
-            if struct.unpack_from("!H", ip, 6)[0] & 0x1fff:
+                raise ValueError("probe PCAP contains an unsupported transport protocol")
+            if struct.unpack_from("!H", ip, 6)[0] & 0x3fff:
                 raise ValueError("fragmented probe packet cannot be correlated")
             if len(ip) < ihl + 4:
                 raise ValueError("truncated transport header in probe PCAP")
