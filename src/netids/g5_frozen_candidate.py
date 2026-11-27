@@ -25,7 +25,7 @@ from netids.latency import validate_latency_trace
 FROZEN_CANDIDATE_SCHEMA = "g5_frozen_rst_candidate_v1"
 FROZEN_REPLAY_SCHEMA = "g5_frozen_rst_replay_attestation_v1"
 FROZEN_OWNER_SCHEMA = "g5_frozen_owner_authorization_v1"
-FROZEN_RUNTIME_SCHEMA = "g5_frozen_runtime_acceptance_v1"
+FROZEN_RUNTIME_SCHEMA = "g5_frozen_runtime_acceptance_v2"
 FROZEN_REPLAY_DOMAIN = "g5-frozen-replay-v1"
 FROZEN_OWNER_DOMAIN = "g5-frozen-owner-v1"
 FROZEN_RUNTIME_DOMAIN = "g5-frozen-runtime-v1"
@@ -373,6 +373,33 @@ def verify_frozen_runtime_result(candidate, replay, result, runtime_public_pem):
         expected_alert = expected[name]["expected_alert"] if phase == "active" else False
         _require(probe.get("expected_alert") is expected_alert, "runtime probe expectation mismatch")
         _require(type(probe.get("candidate_alerts")) is int and probe["candidate_alerts"] >= 0, "runtime probe alert count invalid")
+        _require(probe.get("outcome") == "PASS" and probe.get("result") is True, "runtime probe did not pass independently")
+        _require(probe.get("clock_type") == "monotonic", "runtime probe elapsed clock is not monotonic")
+        _require(probe.get("failure_reason") is None, "passing runtime probe has a failure reason")
+        _require(probe.get("traffic_proof") is True, "runtime probe has no traffic proof")
+        counters = ("capture.kernel_packets", "decoder.pkts")
+        baseline = probe.get("counter_baseline")
+        delta = probe.get("counter_delta")
+        _require(isinstance(baseline, dict) and isinstance(delta, dict), "runtime probe counter evidence is missing")
+        _require(all(type(baseline.get(key)) is int and baseline[key] >= 0 for key in counters), "runtime probe counter baseline is invalid")
+        _require(all(type(delta.get(key)) is int and delta[key] > 0 for key in counters), "runtime probe counter delta is invalid")
+        probe_times = {}
+        for field in ("replay_started_at", "replay_ended_at", "observation_started_at", "observation_ended_at"):
+            _require(isinstance(probe.get(field), str) and probe[field], f"runtime probe {field} is missing")
+            try:
+                probe_times[field] = datetime.fromisoformat(probe[field].replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise FrozenCandidateError(f"runtime probe {field} is invalid") from exc
+            _require(probe_times[field].tzinfo is not None, f"runtime probe {field} has no timezone")
+        _require(
+            probe_times["observation_started_at"] <= probe_times["replay_started_at"]
+            <= probe_times["replay_ended_at"] <= probe_times["observation_ended_at"],
+            "runtime probe observation boundaries are inconsistent",
+        )
+        for field in ("eve_offset_start", "eve_offset_end"):
+            _require(type(probe.get(field)) is int and probe[field] >= 0, f"runtime probe {field} is invalid")
+        _require(probe["eve_offset_end"] >= probe["eve_offset_start"], "runtime probe EVE offsets regressed")
+        _require(type(probe.get("elapsed_ms")) in (int, float) and probe["elapsed_ms"] >= 0, "runtime probe elapsed time is invalid")
         if phase == "active":
             _require((probe["candidate_alerts"] > 0) is expected_alert, "runtime active probe result mismatch")
         else:

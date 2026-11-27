@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -31,6 +32,8 @@ from netids.privilege_separation import (
     verify_attempt_socket_path,
 )
 from netids.trusted_replay import SID, RULE_SHA, _config_safe
+
+PROBE_OBSERVATION_SECONDS = 15.0
 
 # Logical approval identity remains "suricata-vm1"; the lab VM's
 # observed actual OS hostname is "tanhv", with ens33 = 192.168.10.10/24.
@@ -754,66 +757,175 @@ class IsolatedSuricataRuntime:
 
     def _pcap_probe(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
         stage_name = f"probe_{phase}_{case or file.stem}"
-        if self.latency_trace is None:
-            return self._pcap_probe_impl(
+        return self._measure_bool(
+            stage_name, "runtime", lambda: self._pcap_probe_impl(
                 file, expect_alert=expect_alert, case=case, label=label,
                 scenario=scenario, phase=phase,
-            )
-        with self.latency_trace.stage(stage_name, component="runtime"):
-            return self._pcap_probe_impl(
-                file, expect_alert=expect_alert, case=case, label=label,
-                scenario=scenario, phase=phase,
-            )
+            ),
+        )
 
-    def _pcap_probe_impl(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
-        self._check_deadline()
-        eve = self.logdir / "eve.json"
-        offset = eve.stat().st_size if eve.exists() else 0
-        _run([
-            self.tcpreplay, "--intf1=lo", "--pps=150", str(file),
-        ], timeout=180, deadline_monotonic=self.deadline_monotonic)
-        if self.deadline_monotonic is None:
-            time.sleep(2)
-        else:
-            remaining = self.deadline_monotonic - time.monotonic()
-            if remaining <= 0:
-                raise IsolatedRuntimeError("Isolated runtime deadline exceeded")
-            time.sleep(min(2, remaining))
-        self._check_deadline()
-        if not eve.is_file():
-            return False
-        with eve.open("rb") as reader:
-            reader.seek(offset)
-            events = reader.read().decode("utf-8").splitlines()
-        found = 0
-        for line in events:
+    @staticmethod
+    def _eve_timestamp(record):
+        value = record.get("timestamp")
+        if not isinstance(value, str):
+            raise ValueError("EVE timestamp is missing")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("EVE timestamp has no timezone")
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _eve_records(path: Path, offset: int):
+        """Read only newline-terminated JSONL records, retaining a partial tail."""
+        if not path.is_file():
+            return [], offset, offset
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read()
+        records = []
+        consumed = 0
+        for line in data.splitlines(keepends=True):
+            if not line.endswith(b"\n"):
+                break
+            consumed += len(line)
             if not line.strip():
                 continue
             try:
-                data = json.loads(line)
-            except ValueError:
-                return False
-            if (
-                data.get("event_type") == "alert"
-                and data.get("alert", {}).get("signature_id") == self.sid
-            ):
-                found += 1
-        self.probe_results.append({
-            "case": case,
-            "label": label,
-            "scenario": scenario,
-            "phase": phase,
-            "pcap_sha256": sha256_file(file),
-            "expected_alert": expect_alert,
-            "candidate_alerts": found,
-            "events_seen": len([line for line in events if line.strip()]),
-        })
-        if not events:
-            return False  # No new EVE events cannot prove the probe reached Suricata.
-        if expect_alert:
-            self._last_attack_eve = sha256_file(eve)
-            return found > 0
-        return found == 0
+                record = json.loads(line)
+            except (UnicodeError, ValueError) as exc:
+                raise ValueError("malformed complete EVE JSON record") from exc
+            if not isinstance(record, dict):
+                raise ValueError("EVE record is not an object")
+            records.append((record, offset + consumed))
+        return records, offset + consumed, offset + len(data)
+
+    @classmethod
+    def _stats_counters(cls, record):
+        if record.get("event_type") != "stats":
+            return None
+        stats = record.get("stats")
+        if not isinstance(stats, dict):
+            raise ValueError("stats event body is missing")
+        counters = {}
+        for name, section in (("capture.kernel_packets", "capture"), ("decoder.pkts", "decoder")):
+            value = stats.get(section, {}).get(name.split(".", 1)[1]) if isinstance(stats.get(section), dict) else None
+            if type(value) is not int or value < 0:
+                raise ValueError(f"stats counter {name} is missing or invalid")
+            counters[name] = value
+        return counters
+
+    def _pcap_probe_impl(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
+        started = time.monotonic()
+        observation_deadline = started + PROBE_OBSERVATION_SECONDS
+        if self.deadline_monotonic is not None:
+            observation_deadline = min(observation_deadline, self.deadline_monotonic)
+        result = {
+            "case": case, "label": label, "scenario": scenario, "phase": phase,
+            "pcap_sha256": None, "expected_alert": expect_alert,
+            "candidate_alerts": 0, "result": False, "outcome": "FAIL",
+            "failure_reason": "probe_observation_incomplete", "traffic_proof": False,
+            "counter_baseline": None, "counter_delta": None,
+            "eve_offset_start": None, "eve_offset_end": None,
+            "replay_started_at": None, "replay_ended_at": None,
+            "observation_started_at": datetime.now(timezone.utc).isoformat(),
+            "observation_ended_at": None, "clock_type": "monotonic",
+        }
+        candidate_alerts = 0
+        eve = self.logdir / "eve.json"
+        try:
+            self._check_deadline()
+            result["pcap_sha256"] = sha256_file(file)
+            # A valid, pre-replay stats sample is mandatory; arbitrary EVE events
+            # and shutdown-only flow records cannot establish packet processing.
+            cursor = 0
+            baseline_record = None
+            last_baseline_time = None
+            last_baseline_counters = None
+            while time.monotonic() < observation_deadline and baseline_record is None:
+                if not eve.is_file():
+                    raise ValueError("EVE file is missing")
+                records, cursor, _ = self._eve_records(eve, cursor)
+                for record, _ in records:
+                    counters = self._stats_counters(record)
+                    if counters is not None:
+                        stats_time = self._eve_timestamp(record)
+                        if last_baseline_time is not None and (
+                            stats_time < last_baseline_time
+                            or any(counters[key] < last_baseline_counters[key] for key in counters)
+                        ):
+                            raise ValueError("pre-replay Suricata counters reset or timestamp regressed")
+                        last_baseline_time, last_baseline_counters = stats_time, counters
+                        baseline_record = (stats_time, counters)
+                if baseline_record is None:
+                    time.sleep(min(0.1, max(0.0, observation_deadline - time.monotonic())))
+            if baseline_record is None:
+                raise ValueError("valid pre-replay stats baseline was not observed")
+            baseline_time, baseline = baseline_record
+            replay_start = datetime.now(timezone.utc)
+            if baseline_time > replay_start:
+                raise ValueError("pre-replay stats timestamp is in the future")
+            result["counter_baseline"] = dict(baseline)
+            result["replay_started_at"] = replay_start.isoformat()
+            result["eve_offset_start"] = cursor
+            _run([
+                self.tcpreplay, "--intf1=lo", "--pps=150", str(file),
+            ], timeout=180, deadline_monotonic=self.deadline_monotonic)
+            replay_end = datetime.now(timezone.utc)
+            result["replay_ended_at"] = replay_end.isoformat()
+            cursor = result["eve_offset_start"]
+            traffic_stats = None
+            previous_counters = baseline
+            while time.monotonic() < observation_deadline:
+                self._check_deadline()
+                records, cursor, current_end = self._eve_records(eve, cursor)
+                result["eve_offset_end"] = current_end
+                for record, _ in records:
+                    stats_counters = self._stats_counters(record)
+                    timestamp = self._eve_timestamp(record) if record.get("event_type") in ("stats", "alert") else None
+                    if stats_counters is not None and timestamp >= replay_start:
+                        if any(stats_counters[key] < previous_counters[key] for key in previous_counters):
+                            raise ValueError("Suricata counters reset during probe observation")
+                        previous_counters = stats_counters
+                        if timestamp > replay_end:
+                            traffic_stats = stats_counters
+                    if record.get("event_type") == "alert":
+                        alert = record.get("alert")
+                        if not isinstance(alert, dict) or type(alert.get("signature_id")) is not int:
+                            raise ValueError("alert event has invalid signature identity")
+                        if (
+                            replay_start <= timestamp <= datetime.now(timezone.utc)
+                            and alert["signature_id"] == self.sid
+                        ):
+                            candidate_alerts += 1
+                if traffic_stats is not None:
+                    delta = {key: traffic_stats[key] - baseline[key] for key in baseline}
+                    if all(value > 0 for value in delta.values()):
+                        result["traffic_proof"] = True
+                        result["counter_delta"] = delta
+                        result["candidate_alerts"] = candidate_alerts
+                        result["failure_reason"] = None
+                        result["result"] = (candidate_alerts > 0) if expect_alert else (candidate_alerts == 0)
+                        result["outcome"] = "PASS" if result["result"] else "FAIL"
+                        if not result["result"]:
+                            result["failure_reason"] = "candidate_alert_expectation_mismatch"
+                        if expect_alert and result["result"]:
+                            self._last_attack_eve = sha256_file(eve)
+                        return result["result"]
+                time.sleep(min(0.1, max(0.0, observation_deadline - time.monotonic())))
+            raise ValueError("traffic proof was not observed before probe deadline")
+        except (IsolatedRuntimeError, OSError, UnicodeError, ValueError, TypeError) as exc:
+            result["failure_reason"] = str(exc) if isinstance(exc, ValueError) else "probe_observation_error"
+            return False
+        finally:
+            result["candidate_alerts"] = candidate_alerts
+            result["observation_ended_at"] = datetime.now(timezone.utc).isoformat()
+            result["elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
+            try:
+                if eve.is_file():
+                    result["eve_offset_end"] = eve.stat().st_size
+            except OSError:
+                pass
+            self.probe_results.append(result)
 
     def validate(self, rule: str) -> bool:
         return self._measure_bool(
@@ -885,29 +997,25 @@ class IsolatedSuricataRuntime:
             or self.process is None or self.process.poll() is not None
             or sha256_file(self.active_rules) != self.rule_sha256
         ):
+            if self.probe_plan:
+                self._record_not_run("active", "active runtime prerequisites failed")
             return False
         try:
             if not self._rules_loaded(1):
+                if self.probe_plan:
+                    self._record_not_run("active", "candidate ruleset was not verified")
                 return False
             if self.probe_plan:
-                return all(
-                    self._pcap_probe(
-                        Path(probe["path"]),
-                        expect_alert=probe["label"] == "ATTACK",
-                        case=probe["case"], label=probe["label"],
-                        scenario=probe.get("scenario"), phase="active",
-                    )
-                    for probe in self.probe_plan
-                )
-            return (
-                self._pcap_probe(self.attack_pcap, expect_alert=True)
-                and self._pcap_probe(self.normal_pcap, expect_alert=False)
-                and all(
-                    self._pcap_probe(path, expect_alert=False)
-                    for path in self.negative_pcaps
-                )
-            )
+                return self._run_probe_plan("active", stop_on_failure=True)
+            outcomes = [
+                self._pcap_probe(self.attack_pcap, expect_alert=True),
+                self._pcap_probe(self.normal_pcap, expect_alert=False),
+            ]
+            outcomes.extend(self._pcap_probe(path, expect_alert=False) for path in self.negative_pcaps)
+            return all(outcomes)
         except (IsolatedRuntimeError, OSError):
+            if self.probe_plan:
+                self._record_not_run("active", "active verification stopped after runtime error")
             return False
 
     def rollback(self, destination: Path, sid: int, rule_sha256: str) -> bool:
@@ -945,36 +1053,78 @@ class IsolatedSuricataRuntime:
 
     def _verify_rollback_impl(self, sid: int, rule_sha256: str) -> bool:
         if sid != self.sid or rule_sha256 != self.rule_sha256 or self.process is None:
+            if self.probe_plan:
+                self._record_not_run("rollback", "rollback runtime prerequisites failed")
             return False
         try:
             if self.process.poll() is not None:
+                if self.probe_plan:
+                    self._record_not_run("rollback", "isolated process is not running")
                 return False
-            if not self._rules_loaded(0):
-                return False
+            rules_empty = self._rules_loaded(0)
             if self.probe_plan:
-                no_sid = all(
-                    self._pcap_probe(
-                        Path(probe["path"]), expect_alert=False,
-                        case=probe["case"], label=probe["label"],
-                        scenario=probe.get("scenario"), phase="rollback",
-                    )
-                    for probe in self.probe_plan
-                )
-                cleanup = self.shutdown()
-                self.post_rollback_verified = no_sid and cleanup and self.process.poll() is not None
-                return self.post_rollback_verified
-            no_sid = self._pcap_probe(self.attack_pcap, expect_alert=False)
-            no_sid = no_sid and self._pcap_probe(self.normal_pcap, expect_alert=False)
-            no_sid = no_sid and all(
-                self._pcap_probe(path, expect_alert=False)
-                for path in self.negative_pcaps
-            )
-            cleanup = self.shutdown()
-            self.post_rollback_verified = no_sid and cleanup and self.process.poll() is not None
-            return self.post_rollback_verified
+                if rules_empty:
+                    no_sid = self._run_probe_plan("rollback", stop_on_failure=False)
+                else:
+                    self._record_not_run("rollback", "empty rollback ruleset was not verified")
+                    no_sid = False
+            elif rules_empty:
+                no_sid = self._pcap_probe(self.attack_pcap, expect_alert=False)
+                no_sid = self._pcap_probe(self.normal_pcap, expect_alert=False) and no_sid
+                for path in self.negative_pcaps:
+                    no_sid = self._pcap_probe(path, expect_alert=False) and no_sid
+            else:
+                no_sid = False
         except (IsolatedRuntimeError, OSError) as exc:
             self._record_diagnostic("rollback", status="failed", error=str(exc))
-            return False
+            if self.probe_plan:
+                self._record_not_run("rollback", "rollback verification stopped after runtime error")
+            no_sid = False
+        finally:
+            cleanup = self.shutdown()
+            stopped = self.process is None or self.process.poll() is not None
+            self.post_rollback_verified = bool(locals().get("no_sid", False) and cleanup and stopped)
+        return self.post_rollback_verified
+
+    def _record_not_run(self, phase: str, reason: str) -> None:
+        completed = {
+            (item.get("phase"), item.get("case")) for item in self.probe_results
+        }
+        for probe in self.probe_plan:
+            if (phase, probe["case"]) in completed:
+                continue
+            self.probe_results.append({
+                "case": probe["case"], "label": probe["label"],
+                "scenario": probe.get("scenario"), "phase": phase,
+                "pcap_sha256": probe["pcap_sha256"],
+                "expected_alert": probe["expected_alert"] if phase == "active" else False,
+                "candidate_alerts": 0, "result": False, "outcome": "NOT_RUN",
+                "failure_reason": reason, "traffic_proof": False,
+                "counter_baseline": None, "counter_delta": None,
+                "replay_started_at": None, "replay_ended_at": None,
+                "observation_started_at": None, "observation_ended_at": None,
+                "eve_offset_start": None, "eve_offset_end": None,
+                "elapsed_ms": None, "clock_type": "monotonic",
+            })
+
+    def _run_probe_plan(self, phase: str, *, stop_on_failure: bool) -> bool:
+        all_passed = True
+        for probe in self.probe_plan:
+            passed = self._pcap_probe(
+                Path(probe["path"]),
+                expect_alert=probe["label"] == "ATTACK" if phase == "active" else False,
+                case=probe["case"], label=probe["label"],
+                scenario=probe.get("scenario"), phase=phase,
+            )
+            all_passed = passed and all_passed
+            if not passed and stop_on_failure:
+                self._record_not_run(phase, "stopped after failed active probe")
+                break
+            if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
+                self._record_not_run(phase, "lifecycle deadline reached")
+                all_passed = False
+                break
+        return all_passed
 
     def shutdown(self) -> bool:
         """Only shut down the Popen-owned isolated process, never systemd."""

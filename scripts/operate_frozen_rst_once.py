@@ -306,6 +306,7 @@ def execute_frozen_once(
             "lifecycle_audit_sha256": sha256_file(audit_path) if Path(audit_path).is_file() else None,
             "diagnostic_log_path": str(diagnostic_path) if diagnostic_path is not None else None,
             "diagnostic_log_sha256": diagnostic_sha256,
+            "probe_results": list(getattr(runtime, "probe_results", ())) if runtime is not None else [],
             "created_at": datetime.now(timezone.utc).isoformat(),
             "latency_trace_binding": "unsigned_failure_record_field",
             "latency_trace": latency.as_dict(),

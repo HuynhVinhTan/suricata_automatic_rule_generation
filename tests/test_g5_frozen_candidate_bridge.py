@@ -316,9 +316,19 @@ def test_runtime_result_requires_rollback_cleanup_and_unchanged_production():
                 "pcap_sha256": probe["pcap_sha256"],
                 "expected_alert": probe["expected_alert"] if phase == "active" else False,
                 "candidate_alerts": 1 if phase == "active" and probe["expected_alert"] else 0,
+                "result": True, "outcome": "PASS", "failure_reason": None,
+                "traffic_proof": True,
+                "counter_baseline": {"capture.kernel_packets": 10, "decoder.pkts": 10},
+                "counter_delta": {"capture.kernel_packets": 1, "decoder.pkts": 1},
+                "replay_started_at": "2026-11-27T00:00:00+00:00",
+                "replay_ended_at": "2026-11-27T00:00:01+00:00",
+                "observation_started_at": "2026-11-27T00:00:00+00:00",
+                "observation_ended_at": "2026-11-27T00:00:02+00:00",
+                "eve_offset_start": 0, "eve_offset_end": 100, "elapsed_ms": 2000.0,
+                "clock_type": "monotonic",
             })
     result = {
-        "schema_version": "g5_frozen_runtime_acceptance_v1",
+        "schema_version": "g5_frozen_runtime_acceptance_v2",
         "candidate_id": candidate["candidate_id"],
         "sid": candidate["sid"],
         "rule_file_sha256": candidate["rule_file_sha256"],
@@ -373,12 +383,22 @@ def test_runtime_result_latency_trace_is_bound_to_candidate_run():
                 "pcap_sha256": probe["pcap_sha256"],
                 "expected_alert": probe["expected_alert"] if phase == "active" else False,
                 "candidate_alerts": 1 if phase == "active" and probe["expected_alert"] else 0,
+                "result": True, "outcome": "PASS", "failure_reason": None,
+                "traffic_proof": True,
+                "counter_baseline": {"capture.kernel_packets": 10, "decoder.pkts": 10},
+                "counter_delta": {"capture.kernel_packets": 1, "decoder.pkts": 1},
+                "replay_started_at": "2026-11-27T00:00:00+00:00",
+                "replay_ended_at": "2026-11-27T00:00:01+00:00",
+                "observation_started_at": "2026-11-27T00:00:00+00:00",
+                "observation_ended_at": "2026-11-27T00:00:02+00:00",
+                "eve_offset_start": 0, "eve_offset_end": 100, "elapsed_ms": 2000.0,
+                "clock_type": "monotonic",
             })
     trace = LatencyTrace(run_id=candidate["run_id"], host="vm1", clock_sync={"status": "same_host_monotonic", "offset_ms": 0.0})
     with trace.stage("isolated_runtime_activation", component="runtime"):
         pass
     result = {
-        "schema_version": "g5_frozen_runtime_acceptance_v1",
+        "schema_version": "g5_frozen_runtime_acceptance_v2",
         "candidate_id": candidate["candidate_id"], "sid": candidate["sid"],
         "rule_file_sha256": candidate["rule_file_sha256"],
         "replay_evidence_sha256": hashlib.sha256(json.dumps(replay, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
@@ -396,6 +416,14 @@ def test_runtime_result_latency_trace_is_bound_to_candidate_run():
     }
     signed = sign_record(result, runtime_private, b"runtime-password", domain="g5-frozen-runtime-v1")
     assert verify_frozen_runtime_result(candidate, replay, signed, runtime_public) is True
+    unproven_record = {
+        key: value for key, value in signed.items()
+        if not key.startswith("attestation_")
+    }
+    unproven_record["probe_results"][0]["traffic_proof"] = False
+    unproven = sign_record(unproven_record, runtime_private, b"runtime-password", domain="g5-frozen-runtime-v1")
+    with pytest.raises(FrozenCandidateError, match="traffic proof"):
+        verify_frozen_runtime_result(candidate, replay, unproven, runtime_public)
     broken_record = {
         key: value for key, value in signed.items()
         if not key.startswith("attestation_")

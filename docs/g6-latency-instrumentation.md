@@ -12,6 +12,56 @@ It establishes only that activation-dependent T8–T11 remain NOT_MEASURED. The
 mapping below is therefore explicitly proposed for future owner-reviewed
 evidence; it must not be presented as a historical measurement contract.
 
+## G5R4 observer repair (code-only)
+
+G5R4's supplied run report records successful startup, privilege drop,
+AF_PACKET readiness, syntax validation, isolated activation, mandatory rollback
+reload, cleanup and unchanged production state. Active verification failed at
+N1, and post-rollback verification also failed. EVE contained 50 records: 48
+shutdown-reason flow records and two stats records, with no alert records.
+The stats snapshots showed increasing `capture.kernel_packets`, `decoder.pkts`,
+and `tcp.sessions`, while `detect.alert` remained zero.
+
+The observer defect was that `_pcap_probe_impl()` waited a fixed two seconds,
+then treated any new EVE event as evidence that a negative probe had been
+processed. Flow events could be delayed until shutdown, and stats or unrelated
+events are not traffic proof. In addition, `all()` stopped active verification
+at the first failed case and did the same for rollback. The failed N1 check
+therefore says nothing about candidate detection on A1, A2 or A3; those active
+Attack probes were not run and must not be described as missed detections.
+
+The repaired observer uses a bounded monotonic polling window and newline-
+terminated JSONL records. Every probe requires a valid pre-replay stats
+baseline and a later stats event whose timestamp follows replay and whose
+`capture.kernel_packets` and `decoder.pkts` counters both increase. Counter
+resets, missing fields, malformed complete records and absent proof fail
+closed. Candidate SID alerts are counted only from records appended after the
+probe boundary and timestamped within its observation window. Flow events are
+informational and are never required for proof. This contract uses only the
+Suricata 8.0.3 counter paths present in the supplied G5R4 stats report; the
+original raw EVE JSON was not present in the tracked checkout for independent
+schema revalidation.
+
+Each attempted probe records its case, label, scenario, frozen PCAP hash,
+replay and observation UTC boundaries, EVE byte offsets, counter baseline and
+delta, candidate alert count, PASS/FAIL, failure reason and monotonic elapsed
+milliseconds. Active verification stops after a failed probe and marks the
+remaining cases `NOT_RUN`; rollback attempts each case while its shared
+300-second lifecycle deadline permits, then always performs child cleanup.
+Latency stages report false-return callbacks as errors. Failure evidence keeps
+the per-probe records without payload, IP, key or passphrase fields.
+The signed successful runtime record uses schema
+`g5_frozen_runtime_acceptance_v2`; the verifier requires complete traffic-proof
+and per-probe boundary fields before accepting that record. Historical v1
+runtime records remain historical evidence and do not satisfy this stricter
+observer contract.
+
+This is a code repair with offline tests only. No Suricata process was started,
+no PCAP was replayed, and no G5R4 retry or runtime acceptance was performed.
+The existing failure remains a failure; code-level PASS is not runtime PASS.
+Runtime activation, probe, rollback and post-rollback measurements remain
+`NOT_MEASURED` until a separately authorized owner run produces new evidence.
+
 ## T0–T11 coverage matrix
 
 | Stage | Definition | Host | Existing source | Clock type | Available evidence | Missing instrumentation / status |

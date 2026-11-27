@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -705,6 +706,11 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
             self.rollback_attempted = True
             self.rollback_verified = False
             self.post_rollback_verified = False
+            self.probe_results = [{
+                "case": "A1", "phase": "active", "result": False,
+                "outcome": "FAIL", "failure_reason": "traffic proof was not observed",
+                "traffic_proof": False,
+            }]
             self.diagnostic_path = runtime_diag
             self.attempt_root = attempt_root
             self.pidfile = attempt_root / "runtime.pid"
@@ -759,11 +765,13 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
     assert report["production_state"] == "unchanged"
     assert report["lifecycle_audit_records"] == 11
     assert report["diagnostic_log_sha256"]
+    assert report["probe_results"][0]["outcome"] == "FAIL"
     assert report["attempt_id"] == "attempt-02"
     assert report["attempt_evidence_root"] == str((tmp_path / "isolated" / "attempts" / "attempt-02").resolve())
 
 
-def test_isolated_runtime_records_probe_boundary_in_supplied_trace(monkeypatch, tmp_path):
+def test_isolated_runtime_rejects_flow_only_as_probe_proof(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_module, "PROBE_OBSERVATION_SECONDS", 0.0)
     monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
     monkeypatch.setattr(IsolatedSuricataRuntime, "_preflight", lambda self: None)
     def fake_run(*args, **kwargs):
@@ -786,9 +794,248 @@ def test_isolated_runtime_records_probe_boundary_in_supplied_trace(monkeypatch, 
         latency_trace=trace,
     )
     runtime._check_deadline = lambda: None
-    assert runtime._pcap_probe(pcap, expect_alert=False, case="N1", label="NORMAL", scenario="normal") is True
+    assert runtime._pcap_probe(pcap, expect_alert=False, case="N1", label="NORMAL", scenario="normal") is False
+    assert runtime.probe_results[-1]["outcome"] == "FAIL"
+    assert runtime.probe_results[-1]["failure_reason"]
     stages = trace.as_dict()["stages"]
-    assert any(stage["name"] == "probe_active_N1" and stage["elapsed_ms"] >= 0 for stage in stages)
+    probe_stage = next(stage for stage in stages if stage["name"] == "probe_active_N1")
+    assert probe_stage["status"] == "error"
+
+
+def _stats_event(timestamp, packets, decoded):
+    return {
+        "timestamp": timestamp,
+        "event_type": "stats",
+        "stats": {
+            "capture": {"kernel_packets": packets},
+            "decoder": {"pkts": decoded},
+        },
+    }
+
+
+def _probe_runtime(tmp_path, monkeypatch, *, replay_records=(), post_stats=(11, 11), timeout=0.2):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.logdir = tmp_path
+    runtime.tcpreplay = "tcpreplay"
+    runtime.sid = 9103005
+    runtime.deadline_monotonic = None
+    runtime.probe_results = []
+    runtime._last_attack_eve = ""
+    runtime._check_deadline = lambda: None
+    pcap = tmp_path / "probe.pcap"
+    pcap.write_bytes(b"synthetic-pcap")
+    eve = tmp_path / "eve.json"
+    now = datetime.now(timezone.utc)
+    baseline = _stats_event((now - timedelta(seconds=1)).isoformat(), 10, 10)
+    eve.write_text(json.dumps(baseline) + "\n", encoding="utf-8")
+    monkeypatch.setattr(runtime_module, "PROBE_OBSERVATION_SECONDS", timeout)
+
+    def fake_run(*args, **kwargs):
+        with eve.open("a", encoding="utf-8") as stream:
+            for record in replay_records:
+                if callable(record):
+                    record = record()
+                stream.write(json.dumps(record) + "\n")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(runtime_module, "_run", fake_run)
+    appended = False
+
+    def fake_sleep(_seconds):
+        nonlocal appended
+        if not appended and post_stats is not None:
+            appended = True
+            timestamp = datetime.now(timezone.utc) + timedelta(milliseconds=10)
+            with eve.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(_stats_event(timestamp.isoformat(), *post_stats)) + "\n")
+
+    monkeypatch.setattr(runtime_module.time, "sleep", fake_sleep)
+    return runtime, pcap, eve
+
+
+def test_probe_requires_counter_delta_even_when_stats_record_exists(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, post_stats=(10, 10), timeout=0.0)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["traffic_proof"] is False
+
+
+def test_probe_fails_closed_on_unrelated_event_without_counter_delta(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(
+        tmp_path, monkeypatch,
+        replay_records=({"event_type": "flow", "timestamp": datetime.now(timezone.utc).isoformat()},),
+        post_stats=(10, 10), timeout=0.0,
+    )
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["failure_reason"]
+
+
+def test_delayed_flow_is_not_required_when_post_replay_counters_prove_traffic(monkeypatch, tmp_path):
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+    original_sleep = runtime_module.time.sleep
+
+    def append_delayed_flow(seconds):
+        original_sleep(0.001)
+        if not any('"event_type": "flow"' in line for line in eve.read_text(encoding="utf-8").splitlines()):
+            with eve.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"event_type": "flow", "timestamp": datetime.now(timezone.utc).isoformat()}) + "\n")
+        # The helper's first poll also appends the post-replay stats record.
+        stats = _stats_event((datetime.now(timezone.utc) + timedelta(milliseconds=10)).isoformat(), 11, 11)
+        with eve.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(stats) + "\n")
+
+    monkeypatch.setattr(runtime_module.time, "sleep", append_delayed_flow)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is True
+    assert runtime.probe_results[-1]["traffic_proof"] is True
+    assert runtime.probe_results[-1]["counter_delta"] == {"capture.kernel_packets": 1, "decoder.pkts": 1}
+
+
+def test_normal_probe_passes_with_traffic_proof_and_no_candidate_alert(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is True
+    assert runtime.probe_results[-1]["outcome"] == "PASS"
+
+
+def test_normal_probe_with_candidate_alert_fails(monkeypatch, tmp_path):
+    alert = lambda: {
+        "event_type": "alert", "timestamp": datetime.now(timezone.utc).isoformat(),
+        "alert": {"signature_id": 9103005},
+    }
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, replay_records=(alert,))
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["failure_reason"] == "candidate_alert_expectation_mismatch"
+
+
+def test_negative_control_with_traffic_proof_and_no_candidate_alert_passes(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch)
+    assert runtime._pcap_probe_impl(
+        pcap, expect_alert=False, case="N2", label="NORMAL", scenario="negative_control",
+    ) is True
+    assert runtime.probe_results[-1]["scenario"] == "negative_control"
+
+
+def test_attack_probe_requires_candidate_sid_alert_in_probe_window(monkeypatch, tmp_path):
+    alert = lambda: {
+        "event_type": "alert", "timestamp": datetime.now(timezone.utc).isoformat(),
+        "alert": {"signature_id": 9103005},
+    }
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, replay_records=(alert,))
+    assert runtime._pcap_probe_impl(pcap, expect_alert=True, case="A1") is True
+
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=True, case="A1") is False
+    assert runtime.probe_results[-1]["failure_reason"] == "candidate_alert_expectation_mismatch"
+
+
+def test_old_candidate_alert_before_probe_is_not_counted(monkeypatch, tmp_path):
+    stale = {
+        "event_type": "alert",
+        "timestamp": (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat(),
+        "alert": {"signature_id": 9103005},
+    }
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+    with eve.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(stale) + "\n")
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is True
+    assert runtime.probe_results[-1]["candidate_alerts"] == 0
+
+
+def test_eve_reader_defers_partial_jsonl_until_newline(tmp_path):
+    eve = tmp_path / "eve.json"
+    eve.write_bytes(b'{"event_type":"flow"}')
+    records, cursor, size = IsolatedSuricataRuntime._eve_records(eve, 0)
+    assert records == []
+    assert cursor == 0 and size > cursor
+    eve.write_bytes(eve.read_bytes() + b"\n")
+    records, cursor, size = IsolatedSuricataRuntime._eve_records(eve, 0)
+    assert len(records) == 1
+    assert cursor == size
+
+
+def test_malformed_complete_eve_record_fails_closed(monkeypatch, tmp_path):
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+    eve.write_text("{bad json}\n", encoding="utf-8")
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert "malformed" in runtime.probe_results[-1]["failure_reason"]
+
+
+def test_missing_or_reset_stats_counters_fail_closed(monkeypatch, tmp_path):
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+    eve.write_text(json.dumps({"event_type": "stats", "timestamp": datetime.now(timezone.utc).isoformat(), "stats": {}}) + "\n", encoding="utf-8")
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, post_stats=(9, 9))
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert "reset" in runtime.probe_results[-1]["failure_reason"]
+
+
+def test_active_plan_marks_unrun_probes_and_rollback_attempts_all(monkeypatch, tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.probe_results = []
+    runtime.deadline_monotonic = None
+    runtime.probe_plan = [
+        {"case": f"P{index}", "label": "ATTACK", "scenario": "attack", "path": str(tmp_path / f"{index}.pcap"), "pcap_sha256": "a" * 64, "expected_alert": True}
+        for index in range(6)
+    ]
+    calls = []
+
+    def fail_probe(path, *, expect_alert, case, label, scenario, phase):
+        calls.append((phase, case))
+        runtime.probe_results.append({"phase": phase, "case": case, "outcome": "FAIL"})
+        return False
+
+    runtime._pcap_probe = fail_probe
+    assert runtime._run_probe_plan("active", stop_on_failure=True) is False
+    active = [item for item in runtime.probe_results if item["phase"] == "active"]
+    assert [item["outcome"] for item in active] == ["FAIL"] + ["NOT_RUN"] * 5
+    assert len([call for call in calls if call[0] == "active"]) == 1
+
+    runtime.probe_results = []
+    calls.clear()
+    assert runtime._run_probe_plan("rollback", stop_on_failure=False) is False
+    assert len([call for call in calls if call[0] == "rollback"]) == 6
+
+
+def test_rollback_requires_traffic_proof_even_without_candidate_alert(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.sid = 9103005
+    runtime.rule_sha256 = "a" * 64
+    runtime.deadline_monotonic = None
+    runtime.process = SimpleNamespace(poll=lambda: None)
+    runtime.probe_plan = [
+        {"case": "N1", "label": "NORMAL", "scenario": "normal", "path": str(tmp_path / "n1.pcap"), "pcap_sha256": "b" * 64, "expected_alert": False}
+    ]
+    runtime._rules_loaded = lambda exact: exact == 0
+    runtime.probe_results = []
+    runtime.shutdown = lambda: True
+    calls = []
+    runtime._pcap_probe = lambda *args, **kwargs: calls.append(kwargs["case"]) or False
+    assert runtime._verify_rollback_impl(runtime.sid, runtime.rule_sha256) is False
+    assert calls == ["N1"]
+    assert runtime.post_rollback_verified is False
+
+
+def test_rollback_verification_requires_cleanup_success(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.sid = 9103005
+    runtime.rule_sha256 = "a" * 64
+    runtime.deadline_monotonic = None
+    state = {"running": True}
+    runtime.process = SimpleNamespace(poll=lambda: None if state["running"] else 0)
+    runtime.probe_plan = [{
+        "case": "N1", "label": "NORMAL", "scenario": "normal",
+        "path": str(tmp_path / "n1.pcap"), "pcap_sha256": "b" * 64,
+        "expected_alert": False,
+    }]
+    runtime.probe_results = []
+    runtime._rules_loaded = lambda exact: exact == 0
+    runtime._pcap_probe = lambda *args, **kwargs: True
+
+    def failed_cleanup():
+        return False
+
+    runtime.shutdown = failed_cleanup
+    assert runtime._verify_rollback_impl(runtime.sid, runtime.rule_sha256) is False
+    assert runtime.post_rollback_verified is False
 
 
 def test_isolated_runtime_trace_marks_false_operation_as_failed():
