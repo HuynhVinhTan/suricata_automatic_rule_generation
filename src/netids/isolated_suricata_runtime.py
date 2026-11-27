@@ -27,7 +27,7 @@ from netids.privilege_separation import (
     SERVICE_UID, SERVICE_USER, apply_attempt_acls,
     atomic_replace_with_acl, confine_configuration_references,
     lookup_service_account, read_process_identity, referenced_configuration_files,
-    remove_attempt_acls, require_root_operator_if_supported,
+    prepare_runtime_output_files, remove_attempt_acls, require_root_operator_if_supported,
     verify_attempt_socket_path,
 )
 from netids.trusted_replay import SID, RULE_SHA, _config_safe
@@ -318,6 +318,7 @@ class IsolatedSuricataRuntime:
         self.pidfile = self.attempt_root / "runtime" / "lab-suricata.pid"
         self.active_rules = self.attempt_root / "rules" / "active.rules"
         self.logdir = self.attempt_root / "logs"
+        self.validation_logdir = self.attempt_root / "validation-logs"
         self.diagnostic_path = self.attempt_root / "logs" / "runtime-diagnostics.jsonl"
         try:
             validate_unix_socket_path(self.socket_path)
@@ -332,6 +333,8 @@ class IsolatedSuricataRuntime:
         self.rollback_verified = False
         self.post_rollback_verified = False
         self.failure_phase = None
+        self.primary_failure_phase = None
+        self.primary_failure_reason = None
         self._last_attack_eve = ""
         self.probe_results = []
         self._preflight()
@@ -393,7 +396,10 @@ class IsolatedSuricataRuntime:
             raise IsolatedRuntimeError("Suricata 8.0.3 is required")
         if self.socket_path.exists() or self.pidfile.exists():
             raise IsolatedRuntimeError("Isolated socket or PID exists; refuse shared runtime")
-        for directory in (self.socket_path.parent, self.active_rules.parent, self.logdir):
+        for directory in (
+            self.socket_path.parent, self.active_rules.parent, self.logdir,
+            self.validation_logdir,
+        ):
             if directory.is_symlink():
                 raise IsolatedRuntimeError("Symlink directory in isolated runtime")
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -404,11 +410,13 @@ class IsolatedSuricataRuntime:
             self._referenced_files = referenced_configuration_files(
                 configuration, self.config, allowed_root=self.attempt_root,
             )
+            runtime_output_files = prepare_runtime_output_files(configuration, self.logdir)
             self._acl_paths = AttemptAccessPaths(
                 attempt_root=self.attempt_root, runtime_dir=self.socket_path.parent,
                 rules_dir=self.active_rules.parent, active_rules=self.active_rules,
                 logs_dir=self.logdir, effective_config=self.config,
                 referenced_files=self._referenced_files,
+                runtime_output_files=runtime_output_files,
             )
             self._acl_transaction = apply_attempt_acls(
                 self._acl_paths, username=self.service_user,
@@ -433,7 +441,10 @@ class IsolatedSuricataRuntime:
         if self.attempt_root.exists() or self.attempt_root.is_symlink():
             raise IsolatedRuntimeError("Attempt evidence namespace already exists; refuse reuse")
         self.attempt_root.mkdir(mode=0o700)
-        for directory in (self.socket_path.parent, self.active_rules.parent, self.logdir):
+        for directory in (
+            self.socket_path.parent, self.active_rules.parent, self.logdir,
+            self.validation_logdir,
+        ):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         try:
@@ -465,7 +476,11 @@ class IsolatedSuricataRuntime:
     def _record_diagnostic(self, phase: str, **details) -> None:
         """Append bounded, redacted structured diagnostics; never mask the failure."""
         if details.get("status") == "failed":
-            self.failure_phase = phase
+            if getattr(self, "failure_phase", None) is None:
+                self.failure_phase = phase
+            if getattr(self, "primary_failure_phase", None) is None:
+                self.primary_failure_phase = phase
+                self.primary_failure_reason = str(details.get("error", "unknown failure"))
         try:
             self.diagnostic_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             if self.diagnostic_path.exists() and self.diagnostic_path.stat().st_size >= DIAGNOSTIC_MAX_BYTES:
@@ -581,7 +596,7 @@ class IsolatedSuricataRuntime:
     def _validation_rule_arguments(self, temporary: Path) -> list[str]:
         return [
             self.suricata, "-T", "--init-errors-fatal", "-c", str(self.config),
-            "-S", str(temporary), "-l", str(self.logdir),
+            "-S", str(temporary), "-l", str(self.validation_logdir),
         ]
 
     def _command(self, command: str) -> object:
@@ -653,7 +668,15 @@ class IsolatedSuricataRuntime:
                 identity_timeout,
                 max(0.0, self.deadline_monotonic - time.monotonic()),
             )
-        self._wait_for_privilege_drop(timeout=identity_timeout)
+        try:
+            self._wait_for_privilege_drop(timeout=identity_timeout)
+        except IsolatedRuntimeError as exc:
+            output = self._close_process_output()
+            self._record_diagnostic(
+                "startup", status="failed", error=str(exc),
+                exit_status=self.process.poll(), **output,
+            )
+            raise
         last_error = None
         for _ in range(40):
             self._check_deadline()
@@ -680,7 +703,7 @@ class IsolatedSuricataRuntime:
             time.sleep(0.25)
         output = self._process_output()
         self._record_diagnostic(
-            "socket", status="failed", error=str(last_error or "socket was not ready"), **output,
+            "startup", status="failed", error=str(last_error or "socket was not ready"), **output,
         )
         raise IsolatedRuntimeError(
             f"Isolated UNIX socket was not ready: {last_error or 'startup timeout'}"

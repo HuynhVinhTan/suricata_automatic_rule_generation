@@ -99,6 +99,7 @@ class AttemptAccessPaths:
     logs_dir: Path
     effective_config: Path
     referenced_files: tuple[Path, ...] = ()
+    runtime_output_files: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -212,9 +213,18 @@ def _access_specs(paths: AttemptAccessPaths, username: str) -> tuple[tuple[str, 
         ("-wx", Path(paths.runtime_dir)),
         ("--x", Path(paths.rules_dir)),
         ("r--", Path(paths.active_rules)),
-        ("-wx", Path(paths.logs_dir)),
+        ("--x", Path(paths.logs_dir)),
         ("r--", Path(paths.effective_config)),
     ]
+    for output in paths.runtime_output_files:
+        output = Path(output)
+        parent = output.parent
+        while parent != root:
+            if not parent.is_relative_to(root):
+                raise PrivilegeSeparationError("runtime output directory is outside the current attempt")
+            specs.append(("--x", parent))
+            parent = parent.parent
+        specs.append(("rw-", output))
     for reference in paths.referenced_files:
         reference = Path(reference)
         parent = reference.parent
@@ -297,6 +307,7 @@ def apply_attempt_acls(
                 ["setfacl", "-m", f"{selector}:{permission}", str(path)], runner=runner,
             )
             transaction.add(path, selector, previous)
+        verify_runtime_output_access(paths, username=username, runner=runner)
     except PrivilegeSeparationError as exc:
         try:
             transaction.rollback()
@@ -306,6 +317,118 @@ def apply_attempt_acls(
             ) from exc
         raise PrivilegeSeparationError(f"ACL application failed: {exc}") from exc
     return transaction
+
+
+def _acl_permissions(entry: str | None) -> str:
+    if not entry:
+        return ""
+    value = entry.split()[0].rsplit(":", 1)[-1]
+    if "#effective:" in entry:
+        value = entry.split("#effective:", 1)[1].split()[0]
+    return value
+
+
+def verify_runtime_output_access(
+    paths: AttemptAccessPaths, *, username: str = SERVICE_USER, runner=subprocess.run,
+) -> bool:
+    """Prove each pre-created runtime output has effective service-account rw access."""
+    selector = f"user:{username}"
+    for output in paths.runtime_output_files:
+        entry = _existing_acl_entry(Path(output), selector, runner=runner)
+        mask = _existing_acl_entry(Path(output), "mask", runner=runner)
+        if not _acl_permissions(entry).startswith("rw") or (
+            mask is not None and not _acl_permissions(mask).startswith("rw")
+        ):
+            raise PrivilegeSeparationError(
+                f"service account cannot open runtime output: {output}"
+            )
+    return True
+
+
+def runtime_output_paths(configuration: dict, logs_dir: Path) -> tuple[Path, ...]:
+    """Resolve every configured file output into the attempt-local log namespace."""
+    root_path = Path(logs_dir)
+    if root_path.is_symlink():
+        raise PrivilegeSeparationError("runtime log directory is symlinked")
+    root = root_path.resolve()
+    outputs = configuration.get("outputs") if isinstance(configuration, dict) else None
+    logging = configuration.get("logging", {}) if isinstance(configuration, dict) else {}
+    logging_outputs = logging.get("outputs") if isinstance(logging, dict) else None
+    if not isinstance(outputs, list) or (
+        logging_outputs is not None and not isinstance(logging_outputs, list)
+    ):
+        raise PrivilegeSeparationError("effective YAML must configure runtime outputs")
+    result: list[Path] = []
+    for item in (*outputs, *(logging_outputs or ())):
+        if not isinstance(item, dict):
+            raise PrivilegeSeparationError("effective YAML contains an invalid output")
+        for _name, options in item.items():
+            if not isinstance(options, dict) or options.get("enabled", True) is False:
+                continue
+            for field in ("filename", "file"):
+                raw = options.get(field)
+                if raw is None:
+                    continue
+                if not isinstance(raw, str) or not raw.strip():
+                    raise PrivilegeSeparationError("runtime output filename is invalid")
+                relative = Path(raw)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise PrivilegeSeparationError("runtime output path escapes the attempt")
+                path = root / relative
+                _reject_symlink_components(path)
+                resolved = path.resolve()
+                if not resolved.is_relative_to(root) or _protected(resolved):
+                    raise PrivilegeSeparationError("runtime output path escapes the attempt")
+                if resolved not in result:
+                    result.append(resolved)
+    if not result:
+        raise PrivilegeSeparationError("effective YAML has no enabled file outputs")
+    return tuple(result)
+
+
+def _validate_runtime_output_artifacts(
+    logs_dir: Path, outputs: tuple[Path, ...],
+) -> None:
+    root = Path(logs_dir).resolve()
+    allowed = set(outputs)
+    for output in outputs:
+        parent = output.parent
+        while parent != root:
+            if not parent.is_relative_to(root):
+                raise PrivilegeSeparationError("runtime output directory is outside the attempt")
+            allowed.add(parent)
+            parent = parent.parent
+    for candidate in root.rglob("*"):
+        if candidate.is_symlink():
+            raise PrivilegeSeparationError("runtime output namespace contains a symlink")
+        if candidate.resolve() not in allowed:
+            raise PrivilegeSeparationError("unexpected existing runtime output artifact")
+    for output in outputs:
+        if output.is_symlink() or (output.exists() and not output.is_file()):
+            raise PrivilegeSeparationError("runtime output artifact is not a regular file")
+        if output.exists() and output.stat().st_nlink != 1:
+            raise PrivilegeSeparationError("runtime output hardlink is unsafe")
+
+
+def prepare_runtime_output_files(configuration: dict, logs_dir: Path) -> tuple[Path, ...]:
+    """Claim expected output files before startup, rejecting unsafe artifacts."""
+    root = Path(logs_dir)
+    if root.is_symlink() or not root.is_dir():
+        raise PrivilegeSeparationError("runtime log directory is missing or symlinked")
+    outputs = runtime_output_paths(configuration, root)
+    _validate_runtime_output_artifacts(root, outputs)
+    for output in outputs:
+        output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if output.exists():
+            continue
+        try:
+            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except OSError as exc:
+            raise PrivilegeSeparationError("runtime output file could not be claimed") from exc
+        else:
+            os.close(fd)
+    _validate_runtime_output_artifacts(root, outputs)
+    return outputs
 
 
 def remove_attempt_acls(

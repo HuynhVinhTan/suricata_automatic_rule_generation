@@ -147,6 +147,7 @@ def test_candidate_syntax_validation_uses_exact_attempt_root(monkeypatch, tmp_pa
     runtime.attack_sha256 = hashlib.sha256(pcap.read_bytes()).hexdigest()
     runtime.suricata = "/usr/bin/suricata"
     runtime.logdir = attempt / "logs"
+    runtime.validation_logdir = attempt / "validation-logs"
     runtime.deadline_monotonic = None
     runtime._check_deadline = lambda: None
     runtime._record_diagnostic = lambda *args, **kwargs: None
@@ -163,6 +164,47 @@ def test_candidate_syntax_validation_uses_exact_attempt_root(monkeypatch, tmp_pa
     monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
     assert runtime._validate_impl('alert tcp any any -> any any (msg:"candidate";)') is True
     assert calls[0][1]["cwd"] == attempt
+
+
+def test_native_validation_uses_exclusive_log_directory_and_preserves_root_owned_eve(
+    monkeypatch, tmp_path,
+):
+    attempt = tmp_path / "attempt"
+    validation_logs = attempt / "validation-logs"
+    live_logs = attempt / "logs"
+    runtime_dir = attempt / "runtime"
+    for directory in (validation_logs, live_logs, runtime_dir):
+        directory.mkdir(parents=True)
+    pcap = tmp_path / "attack.pcap"
+    pcap.write_bytes(b"verified-pcap")
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.attempt_root = attempt
+    runtime.root = tmp_path
+    runtime.config = attempt / "suricata.yaml"
+    runtime.attack_pcap = pcap
+    runtime.attack_sha256 = hashlib.sha256(pcap.read_bytes()).hexdigest()
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.logdir = live_logs
+    runtime.validation_logdir = validation_logs
+    runtime.deadline_monotonic = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = lambda *args, **kwargs: None
+
+    def fake_run(argv, **kwargs):
+        logdir = Path(argv[argv.index("-l") + 1])
+        eve = logdir / "eve.json"
+        eve.write_text("", encoding="utf-8")
+        eve.chmod(0o600)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    assert runtime._validate_impl('alert tcp any any -> any any (msg:"candidate";)') is True
+    assert (validation_logs / "eve.json").exists()
+    if os.name != "nt":
+        assert (validation_logs / "eve.json").stat().st_mode & 0o777 == 0o600
+    assert not (live_logs / "eve.json").exists()
+    arguments = runtime._validation_rule_arguments(runtime_dir / "candidate.rules")
+    assert arguments[arguments.index("-l") + 1] == str(validation_logs)
 
 
 def test_suricatasc_commands_use_exact_attempt_root(monkeypatch, tmp_path):
@@ -205,6 +247,7 @@ def test_daemon_uses_af_packet_only_and_keeps_exclusive_syntax_rule_path_offline
     runtime.config = tmp_path / "isolated.yaml"
     runtime.active_rules = tmp_path / "rules" / "active.rules"
     runtime.logdir = tmp_path / "logs"
+    runtime.validation_logdir = tmp_path / "validation-logs"
     runtime.pidfile = tmp_path / "runtime" / "suricata.pid"
 
     arguments = runtime._daemon_arguments()
@@ -274,6 +317,7 @@ def test_attempt_namespace_rewrites_effective_config_without_touching_template(t
     runtime.socket_path = runtime.attempt_root / "runtime" / "lab-suricata.socket"
     runtime.pidfile = runtime.attempt_root / "runtime" / "lab-suricata.pid"
     runtime.logdir = runtime.attempt_root / "logs"
+    runtime.validation_logdir = runtime.attempt_root / "validation-logs"
     runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
 
     runtime._prepare_attempt_namespace()
@@ -313,6 +357,7 @@ def test_attempt_namespace_refuses_reuse_and_preserves_prior_attempt(tmp_path, m
         runtime.socket_path = runtime.attempt_root / "runtime" / "socket"
         runtime.pidfile = runtime.attempt_root / "runtime" / "pid"
         runtime.logdir = runtime.attempt_root / "logs"
+        runtime.validation_logdir = runtime.attempt_root / "validation-logs"
         runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
         return runtime
 
@@ -352,6 +397,7 @@ def test_attempt_namespace_rejects_missing_or_unsafe_references(tmp_path, monkey
     runtime.socket_path = runtime.attempt_root / "runtime" / "socket"
     runtime.pidfile = runtime.attempt_root / "runtime" / "pid"
     runtime.logdir = runtime.attempt_root / "logs"
+    runtime.validation_logdir = runtime.attempt_root / "validation-logs"
     runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
     with pytest.raises(IsolatedRuntimeError, match="effective attempt configuration"):
         runtime._prepare_attempt_namespace()
@@ -475,6 +521,7 @@ def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_p
     runtime.logdir = runtime.attempt_root / "logs"
     runtime.pidfile = runtime.attempt_root / "runtime" / "suricata.pid"
     runtime.socket_path = runtime.attempt_root / "runtime" / "suricata.sock"
+    runtime.suricata = "/usr/bin/suricata"
     runtime.process = None
     runtime._old_rules = None
     runtime.active_rules.parent.mkdir(parents=True)
@@ -511,6 +558,52 @@ def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_p
     record = json.loads(diagnostics.splitlines()[-1])
     assert record["phase"] == "startup"
     assert record["exit_status"] == 23
+
+
+def test_child_exit_during_privilege_drop_preserves_exit_status_and_output(monkeypatch, tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = tmp_path
+    runtime.attempt_root = tmp_path / "attempt"
+    runtime.config = runtime.attempt_root / "isolated.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "suricata.pid"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "suricata.sock"
+    runtime.process = None
+    runtime._old_rules = None
+    runtime._acl_paths = None
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.service_user = "suricata-g5"
+    runtime.service_group = "suricata-g5"
+    runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+    runtime.failure_phase = None
+    runtime.primary_failure_phase = None
+    runtime.primary_failure_reason = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = IsolatedSuricataRuntime._record_diagnostic.__get__(runtime)
+    runtime.active_rules.parent.mkdir(parents=True)
+
+    class ExitedProcess:
+        stdout = io.BytesIO(b"startup output\n")
+        stderr = io.BytesIO(b"privilege drop failed\n")
+        pid = 4242
+
+        @staticmethod
+        def poll():
+            return 17
+
+    monkeypatch.setattr(
+        "netids.isolated_suricata_runtime.subprocess.Popen",
+        lambda *args, **kwargs: ExitedProcess(),
+    )
+
+    with pytest.raises(IsolatedRuntimeError, match="privilege drop|startup"):
+        runtime._start()
+
+    record = json.loads(runtime.diagnostic_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["phase"] == "startup"
+    assert record["exit_status"] == 17
+    assert "privilege drop failed" in record["stderr"]
 
 
 def test_reload_failure_is_recorded_with_phase_and_socket_error(tmp_path):
@@ -607,6 +700,8 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
                 encoding="utf-8",
             )
             self.failure_phase = "reload"
+            self.primary_failure_phase = "reload"
+            self.primary_failure_reason = "socket rejected"
             self.rollback_attempted = True
             self.rollback_verified = False
             self.post_rollback_verified = False
@@ -657,6 +752,8 @@ def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_s
     assert report["outcome"] == "FAILED"
     assert report["accepted"] is False
     assert report["failure_phase"] == "reload"
+    assert report["primary_failure_phase"] == "reload"
+    assert report["primary_failure_reason"] == "socket rejected"
     assert report["rollback_status"] == "unverified"
     assert report["cleanup_status"] == "verified"
     assert report["production_state"] == "unchanged"

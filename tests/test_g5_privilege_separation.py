@@ -258,6 +258,132 @@ def test_nested_referenced_files_get_execute_only_parent_acls(tmp_path):
     assert specs[nested] != "r--"
 
 
+def test_runtime_output_acl_is_file_scoped_and_log_directory_is_not_writable(tmp_path):
+    root = tmp_path / "attempt"
+    runtime_dir = root / "runtime"
+    rules_dir = root / "rules"
+    logs_dir = root / "logs"
+    for directory in (runtime_dir, rules_dir, logs_dir):
+        directory.mkdir(parents=True)
+    active = rules_dir / "active.rules"
+    config = root / "suricata.yaml"
+    output = logs_dir / "eve.json"
+    active.write_text("baseline", encoding="utf-8")
+    config.write_text("{}", encoding="utf-8")
+    output.write_text("", encoding="utf-8")
+    paths = ps.AttemptAccessPaths(
+        attempt_root=root, runtime_dir=runtime_dir, rules_dir=rules_dir,
+        active_rules=active, logs_dir=logs_dir, effective_config=config,
+        runtime_output_files=(output,),
+    )
+
+    specs = {path: permission for permission, path in ps._access_specs(paths, "suricata-g5")}
+
+    assert specs[logs_dir] == "--x"
+    assert specs[output] == "rw-"
+
+
+def test_runtime_output_paths_include_nested_logging_files(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    outputs = ps.runtime_output_paths(
+        {
+            "outputs": [{"eve-log": {"enabled": True, "filename": "eve.json"}}],
+            "logging": {"outputs": [{"file": {"enabled": True, "filename": "suricata.log"}}]},
+        },
+        logs,
+    )
+    assert outputs == (logs / "eve.json", logs / "suricata.log")
+
+
+def test_runtime_output_access_verification_requires_read_write_acl(tmp_path):
+    output = tmp_path / "eve.json"
+    output.write_text("", encoding="utf-8")
+    paths = ps.AttemptAccessPaths(
+        attempt_root=tmp_path, runtime_dir=tmp_path, rules_dir=tmp_path,
+        active_rules=output, logs_dir=tmp_path, effective_config=output,
+        runtime_output_files=(output,),
+    )
+
+    def runner(argv, **kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="user:suricata-g5:rw-\nmask::rw-\n",
+            stderr="",
+        )
+
+    assert ps.verify_runtime_output_access(paths, runner=runner) is True
+
+
+def test_runtime_output_access_rejects_read_only_effective_acl(tmp_path):
+    output = tmp_path / "eve.json"
+    output.write_text("", encoding="utf-8")
+    paths = ps.AttemptAccessPaths(
+        attempt_root=tmp_path, runtime_dir=tmp_path, rules_dir=tmp_path,
+        active_rules=output, logs_dir=tmp_path, effective_config=output,
+        runtime_output_files=(output,),
+    )
+
+    def runner(argv, **kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="user:suricata-g5:rw- #effective:r--\nmask::rw-\n",
+            stderr="",
+        )
+
+    with pytest.raises(ps.PrivilegeSeparationError, match="cannot open"):
+        ps.verify_runtime_output_access(paths, runner=runner)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "path_escape", "unexpected"])
+def test_runtime_output_artifacts_fail_closed_before_startup(tmp_path, kind):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    expected = logs / "eve.json"
+    if kind == "symlink":
+        outside = tmp_path / "outside.json"
+        outside.write_text("outside", encoding="utf-8")
+        try:
+            expected.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation is unavailable")
+    elif kind == "hardlink":
+        outside = tmp_path / "outside.json"
+        outside.write_text("outside", encoding="utf-8")
+        expected.hardlink_to(outside)
+    elif kind == "path_escape":
+        with pytest.raises(ps.PrivilegeSeparationError, match="unsafe|outside|escape"):
+            ps.prepare_runtime_output_files(
+                {"outputs": [{"eve-log": {"enabled": True, "filename": "../eve.json"}}]},
+                logs,
+            )
+        return
+    else:
+        (logs / "unexpected.txt").write_text("unexpected", encoding="utf-8")
+
+    with pytest.raises(ps.PrivilegeSeparationError, match="unsafe|hardlink|unexpected"):
+        ps.prepare_runtime_output_files(
+            {"outputs": [{"eve-log": {"enabled": True, "filename": "eve.json"}}]},
+            logs,
+        )
+
+
+def test_primary_runtime_failure_is_not_replaced_by_cleanup_failure(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.diagnostic_path = tmp_path / "diagnostics.jsonl"
+    runtime.failure_phase = None
+    runtime.primary_failure_phase = None
+    runtime.primary_failure_reason = None
+    runtime._record_diagnostic = IsolatedSuricataRuntime._record_diagnostic.__get__(runtime)
+
+    runtime._record_diagnostic("startup", status="failed", error="daemon exited")
+    runtime._record_diagnostic("cleanup", status="failed", error="ACL cleanup failed")
+
+    assert runtime.failure_phase == "startup"
+    assert runtime.primary_failure_phase == "startup"
+    assert runtime.primary_failure_reason == "daemon exited"
+
+
 def test_nested_yaml_dependencies_are_confined_and_rewritten_recursively(tmp_path):
     root = tmp_path / "isolated"
     source = root / "suricata.yaml"
@@ -356,7 +482,7 @@ def test_acl_application_uses_argument_arrays_and_no_audit_path(tmp_path):
     assert all(call[1]["shell"] is False for call in calls)
     assert all("audit" not in str(call[0]) for call in calls)
     assert any("--x" in token for call in calls for token in call[0])
-    assert any("-wx" in token for call in calls for token in call[0])
+    assert any("--x" in token for call in calls for token in call[0])
     assert any("r--" in token for call in calls for token in call[0])
 
 

@@ -16,6 +16,7 @@ from netids.isolated_suricata_runtime import (
     validate_attempt_namespace,
     validate_unix_socket_path,
 )
+from netids.privilege_separation import PrivilegeSeparationError, runtime_output_paths
 
 
 _ATTEMPT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -102,7 +103,8 @@ def validate_native_readiness(
     rules_root = readiness_root / "rules"
     runtime_root = readiness_root / "runtime"
     logs_root = readiness_root / "logs"
-    for directory in (rules_root, runtime_root, logs_root):
+    validation_logs_root = readiness_root / "validation-logs"
+    for directory in (rules_root, runtime_root, logs_root, validation_logs_root):
         directory.mkdir(mode=0o700)
     (rules_root / "active.rules").write_bytes(b"# readiness baseline: no candidate rules loaded\n")
     socket_path = runtime_root / "lab-suricata.socket"
@@ -111,8 +113,12 @@ def validate_native_readiness(
         effective_text = generate_effective_suricata_configuration(
             configuration, active_rules=rules_root / "active.rules", socket_path=socket_path,
         )
+        effective = yaml.safe_load(effective_text)
+        runtime_output_paths(effective, logs_root)
     except ValueError as exc:
         raise NativeReadinessError(str(exc)) from exc
+    except (OSError, UnicodeError, yaml.YAMLError, PrivilegeSeparationError) as exc:
+        raise NativeReadinessError("native readiness output path is unsafe") from exc
     effective_config = readiness_root / "suricata.yaml"
     # Preserve the native YAML header bytes exactly on Windows and Linux.
     effective_config.write_bytes(effective_text.encode("utf-8"))
@@ -126,10 +132,11 @@ def validate_native_readiness(
 
     syntax_command = [
         suricata, "-T", "--init-errors-fatal", "-c", str(effective_config),
-        "-S", str(candidate), "-l", str(logs_root),
+        "-S", str(candidate), "-l", str(validation_logs_root),
     ]
     syntax = subprocess.run(
         syntax_command, capture_output=True, text=True, timeout=120, check=False,
+        cwd=readiness_root,
     )
     if syntax.returncode != 0:
         raise NativeReadinessError(
@@ -150,6 +157,7 @@ def validate_native_readiness(
         "readiness_root": str(readiness_root),
         "effective_config": str(effective_config),
         "active_rules": str(rules_root / "active.rules"),
+        "validation_log_directory": str(validation_logs_root),
         "candidate_rules": str(candidate),
         "control_socket": str(socket_path),
         "syntax_command": syntax_command,

@@ -284,6 +284,9 @@ def execute_frozen_once(
                 getattr(runtime, "attempt_root", attempt_evidence_root)
             ),
             "failure_phase": getattr(runtime, "failure_phase", None) or "operator",
+            "primary_failure_phase": getattr(runtime, "primary_failure_phase", None)
+            or getattr(runtime, "failure_phase", None) or "operator",
+            "primary_failure_reason": getattr(runtime, "primary_failure_reason", None),
             "failure_reason": str(operation_error),
             "outcome": "FAILED",
             "accepted": False,

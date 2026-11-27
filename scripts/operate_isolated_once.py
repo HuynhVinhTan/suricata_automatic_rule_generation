@@ -449,6 +449,15 @@ def execute_candidate_one_time(
             "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
             "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
             "failure_reason": str(operation_error), "rollback_verified": False,
+            "failure_phase": getattr(runtime, "failure_phase", None) if runtime is not None else "operator",
+            "primary_failure_phase": (
+                getattr(runtime, "primary_failure_phase", None)
+                if runtime is not None else "operator"
+            ),
+            "primary_failure_reason": (
+                getattr(runtime, "primary_failure_reason", None)
+                if runtime is not None else None
+            ),
             "production_before": before, "production_after": after,
             "lifecycle_audit_records": audit_records,
             "lifecycle_audit_sha256": audit_sha,
