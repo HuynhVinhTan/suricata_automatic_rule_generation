@@ -6,7 +6,8 @@ Captured before source edits in the isolated repair worktree.
 |---|---|
 | Repository | `HuynhVinhTan/suricata_automatic_rule_generation` |
 | PR branch | `feat/complete-suricata-ai-e2e` |
-| Remote PR HEAD | `bc99275c4282381b83ddabfdd2c29c0d0f4927f8` |
+| Baseline HEAD | `9c888bee00ec7d70368d2f0ec61d4ae17f609a6d` |
+| Remote PR HEAD at task start | `9c888bee00ec7d70368d2f0ec61d4ae17f609a6d` |
 | Working branch | `codex/g5r4-observer-repair` |
 | Worktree | `D:\suricata-ai-project-worktrees\g5r4-observer-repair` |
 | Git status before edits | clean; tracking `origin/feat/complete-suricata-ai-e2e` |
@@ -37,14 +38,26 @@ SHA256 values below are for the exact file contents at baseline commit
 
 ## Frozen runtime inputs
 
-The clean PR checkout does not contain the G5 candidate/rule file, calibration
-threshold metadata, model artifact, six signed PCAP files, signed replay
-attestation, owner/replay/runtime public key files, G5R4 failure report, or the
-41-record owner audit. Their baseline SHA256 values therefore cannot be
-independently recorded from this worktree. The supplied incident summary is
-retained as context; it is not treated as a substitute for those original
-artifacts. No runtime evidence file was edited or deleted. This missing input
-inventory is an acceptance limitation for the full immutable-input audit.
+An offline bounded search recovered `candidate.json` and
+`replay-attestation.json` in `g5r2-owner-signing`. Their SHA256 values are
+`5a2c3e2b6c65eb056b08d047a897690eaef252c4715f5f94952c630a7eac8161` and
+`73a81eb8ef2c99a324ce1f720125d8b1f12eef50c0cd6b390efc5defc78f4989`.
+Candidate shape, replay signature, and pinned public-key verification passed.
+The frozen identity matches SID 9103005, candidate ID
+`bfd6891a14dd3e648737e0a43d20f602d160085cefc92aa5f7fcfa8d32e0f1f6`, rule
+file hash `171c1405ad7019feebf588039a1479ceb70a3596b607e1ff122bb87667babb49`,
+freeze hash `74ce643d782d525e83910138b32218bc69e8d97a6908e725f71dbbeab0fd9bd4`,
+and cohort hash `443b42478b3bfbc0d66433fc5e582433426962fe54427278b584a5e5e859efaa`.
+The referenced model exists at `data/private/lab-models/lab_syn_anomaly_v0_1/models.joblib`
+and matches its frozen model hash. The runtime public key pin also matches.
+
+The six original PCAPs, exact G5R4 owner authorization archive, threshold and
+calibration source, runtime failure report, diagnostics, EVE, Suricata logs,
+owner-once log, and 41-record audit were not found in the bounded known roots.
+The previously supplied hashes for failure report, diagnostics, EVE, and audit
+did not match any available files there. These missing authoritative inputs
+keep artifact-dependent acceptance tasks blocked. No private key bytes were
+read or hashed, and no runtime evidence file was edited or deleted.
 
 The code pin source `src/netids/key_pins.py` and production configuration
 `infrastructure/suricata/suricata.yaml` are tracked and were present at

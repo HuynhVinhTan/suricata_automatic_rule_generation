@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import subprocess
+import socket
+import struct
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -813,7 +815,23 @@ def _stats_event(timestamp, packets, decoded):
     }
 
 
-def _probe_runtime(tmp_path, monkeypatch, *, replay_records=(), post_stats=(11, 11), timeout=0.2):
+def _test_tcp_pcap():
+    tcp = struct.pack("!HHIIHHHH", 41000, 18100, 1, 0, 0x5002, 65535, 0, 0)
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 40, 1, 0, 64, 6, 0,
+                     socket.inet_aton("192.0.2.10"), socket.inet_aton("192.0.2.20"))
+    frame = b"\x00" * 12 + b"\x08\x00" + ip + tcp
+    return struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1) + struct.pack("<IIII", 1, 0, len(frame), len(frame)) + frame
+
+
+def _test_flow_event(timestamp):
+    return {
+        "event_type": "flow", "timestamp": timestamp, "flow_id": 71,
+        "src_ip": "192.0.2.10", "dest_ip": "192.0.2.20",
+        "src_port": 41000, "dest_port": 18100, "proto": "TCP",
+    }
+
+
+def _probe_runtime(tmp_path, monkeypatch, *, replay_records=(), post_stats=(11, 11), timeout=0.2, include_probe_flow=True):
     runtime = object.__new__(IsolatedSuricataRuntime)
     runtime.logdir = tmp_path
     runtime.tcpreplay = "tcpreplay"
@@ -823,7 +841,11 @@ def _probe_runtime(tmp_path, monkeypatch, *, replay_records=(), post_stats=(11, 
     runtime._last_attack_eve = ""
     runtime._check_deadline = lambda: None
     pcap = tmp_path / "probe.pcap"
-    pcap.write_bytes(b"synthetic-pcap")
+    pcap.write_bytes(_test_tcp_pcap())
+    digest = hashlib.sha256(pcap.read_bytes()).hexdigest()
+    runtime.probe_plan = ({"case": "N1", "label": "NORMAL", "scenario": "normal", "pcap_sha256": digest},
+                          {"case": "N2", "label": "NORMAL", "scenario": "negative_control", "pcap_sha256": digest},
+                          {"case": "A1", "label": "ATTACK", "scenario": "attack", "pcap_sha256": digest})
     eve = tmp_path / "eve.json"
     now = datetime.now(timezone.utc)
     baseline = _stats_event((now - timedelta(seconds=1)).isoformat(), 10, 10)
@@ -832,9 +854,20 @@ def _probe_runtime(tmp_path, monkeypatch, *, replay_records=(), post_stats=(11, 
 
     def fake_run(*args, **kwargs):
         with eve.open("a", encoding="utf-8") as stream:
+            if include_probe_flow:
+                stream.write(json.dumps(_test_flow_event((datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat())) + "\n")
             for record in replay_records:
                 if callable(record):
                     record = record()
+                if record.get("event_type") == "alert" and record.get("timestamp"):
+                    try:
+                        if datetime.fromisoformat(record["timestamp"]) >= datetime.now(timezone.utc) - timedelta(seconds=1):
+                            record["timestamp"] = datetime.now(timezone.utc).isoformat()
+                    except ValueError:
+                        pass
+                if record.get("event_type") == "alert":
+                    record.update({"flow_id": 71, "src_ip": "192.0.2.10", "dest_ip": "192.0.2.20",
+                                   "src_port": 41000, "dest_port": 18100, "proto": "TCP"})
                 stream.write(json.dumps(record) + "\n")
         return SimpleNamespace(returncode=0, stdout="")
 
@@ -856,36 +889,38 @@ def _probe_runtime(tmp_path, monkeypatch, *, replay_records=(), post_stats=(11, 
 def test_probe_requires_counter_delta_even_when_stats_record_exists(monkeypatch, tmp_path):
     runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, post_stats=(10, 10), timeout=0.0)
     assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
-    assert runtime.probe_results[-1]["traffic_proof"] is False
+    assert runtime.probe_results[-1]["traffic_proof"] is None
 
 
 def test_probe_fails_closed_on_unrelated_event_without_counter_delta(monkeypatch, tmp_path):
     runtime, pcap, _ = _probe_runtime(
         tmp_path, monkeypatch,
         replay_records=({"event_type": "flow", "timestamp": datetime.now(timezone.utc).isoformat()},),
-        post_stats=(10, 10), timeout=0.0,
+        post_stats=(10, 10), timeout=0.0, include_probe_flow=False,
     )
     assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
     assert runtime.probe_results[-1]["failure_reason"]
 
 
-def test_delayed_flow_is_not_required_when_post_replay_counters_prove_traffic(monkeypatch, tmp_path):
-    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+def test_global_counters_without_correlated_flow_do_not_prove_probe_traffic(monkeypatch, tmp_path):
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch, include_probe_flow=False)
     original_sleep = runtime_module.time.sleep
 
     def append_delayed_flow(seconds):
         original_sleep(0.001)
         if not any('"event_type": "flow"' in line for line in eve.read_text(encoding="utf-8").splitlines()):
             with eve.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps({"event_type": "flow", "timestamp": datetime.now(timezone.utc).isoformat()}) + "\n")
+                flow = _test_flow_event(datetime.now(timezone.utc).isoformat())
+                flow["src_port"] = 49999
+                stream.write(json.dumps(flow) + "\n")
         # The helper's first poll also appends the post-replay stats record.
         stats = _stats_event((datetime.now(timezone.utc) + timedelta(milliseconds=10)).isoformat(), 11, 11)
         with eve.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(stats) + "\n")
 
     monkeypatch.setattr(runtime_module.time, "sleep", append_delayed_flow)
-    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is True
-    assert runtime.probe_results[-1]["traffic_proof"] is True
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["traffic_proof"] is None
     assert runtime.probe_results[-1]["counter_delta"] == {"capture.kernel_packets": 1, "decoder.pkts": 1}
 
 

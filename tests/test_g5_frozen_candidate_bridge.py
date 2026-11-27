@@ -317,8 +317,18 @@ def test_runtime_result_requires_rollback_cleanup_and_unchanged_production():
                 "expected_alert": probe["expected_alert"] if phase == "active" else False,
                 "candidate_alerts": 1 if phase == "active" and probe["expected_alert"] else 0,
                 "result": True, "outcome": "PASS", "failure_reason": None,
-                "traffic_proof": True,
+                "traffic_proof": {
+                    "type": "pcap_eve_flow_tuple_correlation_v1",
+                    "pcap_flow_set_sha256": "a" * 64,
+                    "expected_flow_count": 1,
+                    "matched_flow_count": 1,
+                    "flow_id_set_sha256": "b" * 64,
+                },
+                "evidence_correlation_id": hashlib.sha256(
+                    (f"{probe['case']}:{probe['pcap_sha256']}:" + "a" * 64 + ":" + "b" * 64).encode()
+                ).hexdigest(),
                 "counter_baseline": {"capture.kernel_packets": 10, "decoder.pkts": 10},
+                "counter_baseline_eve_offset": 120,
                 "counter_delta": {"capture.kernel_packets": 1, "decoder.pkts": 1},
                 "replay_started_at": "2026-11-27T00:00:00+00:00",
                 "replay_ended_at": "2026-11-27T00:00:01+00:00",
@@ -384,8 +394,18 @@ def test_runtime_result_latency_trace_is_bound_to_candidate_run():
                 "expected_alert": probe["expected_alert"] if phase == "active" else False,
                 "candidate_alerts": 1 if phase == "active" and probe["expected_alert"] else 0,
                 "result": True, "outcome": "PASS", "failure_reason": None,
-                "traffic_proof": True,
+                "traffic_proof": {
+                    "type": "pcap_eve_flow_tuple_correlation_v1",
+                    "pcap_flow_set_sha256": "a" * 64,
+                    "expected_flow_count": 1,
+                    "matched_flow_count": 1,
+                    "flow_id_set_sha256": "b" * 64,
+                },
+                "evidence_correlation_id": hashlib.sha256(
+                    (f"{probe['case']}:{probe['pcap_sha256']}:" + "a" * 64 + ":" + "b" * 64).encode()
+                ).hexdigest(),
                 "counter_baseline": {"capture.kernel_packets": 10, "decoder.pkts": 10},
+                "counter_baseline_eve_offset": 120,
                 "counter_delta": {"capture.kernel_packets": 1, "decoder.pkts": 1},
                 "replay_started_at": "2026-11-27T00:00:00+00:00",
                 "replay_ended_at": "2026-11-27T00:00:01+00:00",

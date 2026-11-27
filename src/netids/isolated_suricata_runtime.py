@@ -10,9 +10,11 @@ the same PCAP with zero candidate SID alerts.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -34,6 +36,7 @@ from netids.privilege_separation import (
 from netids.trusted_replay import SID, RULE_SHA, _config_safe
 
 PROBE_OBSERVATION_SECONDS = 15.0
+PROBE_BASELINE_SECONDS = 15.0
 
 # Logical approval identity remains "suricata-vm1"; the lab VM's
 # observed actual OS hostname is "tanhv", with ens33 = 192.168.10.10/24.
@@ -814,38 +817,103 @@ class IsolatedSuricataRuntime:
             counters[name] = value
         return counters
 
+    @staticmethod
+    def _pcap_flow_set(path: Path):
+        """Return canonical bidirectional IPv4 TCP/UDP flows from a classic PCAP."""
+        digest = sha256_file(path)
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != digest or len(raw) < 24:
+            raise ValueError("probe PCAP changed or is truncated")
+        magic = raw[:4]
+        endian = "<" if magic in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1") else ">" if magic in (b"\xa1\xb2\xc3\xd4", b"\xa1\xb2\x3c\x4d") else None
+        if endian is None:
+            raise ValueError("unsupported probe PCAP format")
+        linktype = struct.unpack_from(endian + "I", raw, 20)[0]
+        if linktype != 1:
+            raise ValueError("probe PCAP link type is not Ethernet")
+        flows, pos = set(), 24
+        while pos < len(raw):
+            if len(raw) - pos < 16:
+                raise ValueError("truncated probe PCAP packet header")
+            _, _, caplen, wirelen = struct.unpack_from(endian + "IIII", raw, pos)
+            pos += 16
+            if caplen > wirelen or pos + caplen > len(raw):
+                raise ValueError("truncated probe PCAP packet")
+            frame = raw[pos:pos + caplen]
+            pos += caplen
+            if len(frame) < 14 or struct.unpack_from("!H", frame, 12)[0] != 0x0800:
+                continue
+            ip = frame[14:]
+            if len(ip) < 20 or ip[0] >> 4 != 4:
+                continue
+            ihl = (ip[0] & 15) * 4
+            if ihl < 20 or len(ip) < ihl:
+                raise ValueError("malformed IPv4 packet in probe PCAP")
+            proto = ip[9]
+            if proto not in (6, 17):
+                continue
+            if struct.unpack_from("!H", ip, 6)[0] & 0x1fff:
+                raise ValueError("fragmented probe packet cannot be correlated")
+            if len(ip) < ihl + 4:
+                raise ValueError("truncated transport header in probe PCAP")
+            src, dst = socket.inet_ntoa(ip[12:16]), socket.inet_ntoa(ip[16:20])
+            sport, dport = struct.unpack_from("!HH", ip, ihl)
+            ends = sorted(((src, sport), (dst, dport)))
+            flows.add((proto, ends[0][0], ends[0][1], ends[1][0], ends[1][1]))
+        if not flows:
+            raise ValueError("probe PCAP has no correlatable TCP/UDP flows")
+        return digest, flows
+
+    @staticmethod
+    def _eve_flow_tuple(record):
+        try:
+            proto = {"TCP": 6, "UDP": 17}.get(record.get("proto", "").upper())
+            if proto is None:
+                return None
+            ends = sorted(((str(record["src_ip"]), int(record["src_port"])), (str(record["dest_ip"]), int(record["dest_port"]))))
+            if any(not 0 <= p <= 65535 for _, p in ends):
+                return None
+            return (proto, ends[0][0], ends[0][1], ends[1][0], ends[1][1])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+
     def _pcap_probe_impl(self, file: Path, *, expect_alert: bool, case=None, label=None, scenario=None, phase="active") -> bool:
         started = time.monotonic()
-        observation_deadline = started + PROBE_OBSERVATION_SECONDS
-        if self.deadline_monotonic is not None:
-            observation_deadline = min(observation_deadline, self.deadline_monotonic)
         result = {
             "case": case, "label": label, "scenario": scenario, "phase": phase,
             "pcap_sha256": None, "expected_alert": expect_alert,
             "candidate_alerts": 0, "result": False, "outcome": "FAIL",
-            "failure_reason": "probe_observation_incomplete", "traffic_proof": False,
+            "failure_reason": "probe_observation_incomplete", "traffic_proof": None,
+            "evidence_correlation_id": None,
             "counter_baseline": None, "counter_delta": None,
+            "counter_baseline_eve_offset": None,
             "eve_offset_start": None, "eve_offset_end": None,
             "replay_started_at": None, "replay_ended_at": None,
-            "observation_started_at": datetime.now(timezone.utc).isoformat(),
+            "observation_started_at": None,
             "observation_ended_at": None, "clock_type": "monotonic",
         }
         candidate_alerts = 0
+        candidate_alert_flow_ids = set()
+        candidate_alert_events = []
         eve = self.logdir / "eve.json"
         try:
             self._check_deadline()
-            result["pcap_sha256"] = sha256_file(file)
-            # A valid, pre-replay stats sample is mandatory; arbitrary EVE events
-            # and shutdown-only flow records cannot establish packet processing.
+            result["pcap_sha256"], expected_flows = self._pcap_flow_set(file)
+            planned = next((item for item in self.probe_plan if item.get("case") == case), None)
+            if planned is None or planned.get("pcap_sha256") != result["pcap_sha256"]:
+                raise ValueError("probe PCAP does not match frozen probe plan")
+            baseline_deadline = time.monotonic() + PROBE_BASELINE_SECONDS
+            if self.deadline_monotonic is not None:
+                baseline_deadline = min(baseline_deadline, self.deadline_monotonic)
             cursor = 0
             baseline_record = None
             last_baseline_time = None
             last_baseline_counters = None
-            while time.monotonic() < observation_deadline and baseline_record is None:
+            while time.monotonic() < baseline_deadline:
                 if not eve.is_file():
                     raise ValueError("EVE file is missing")
                 records, cursor, _ = self._eve_records(eve, cursor)
-                for record, _ in records:
+                for record, record_end in records:
                     counters = self._stats_counters(record)
                     if counters is not None:
                         stats_time = self._eve_timestamp(record)
@@ -855,16 +923,30 @@ class IsolatedSuricataRuntime:
                         ):
                             raise ValueError("pre-replay Suricata counters reset or timestamp regressed")
                         last_baseline_time, last_baseline_counters = stats_time, counters
-                        baseline_record = (stats_time, counters)
+                        baseline_record = (stats_time, counters, record_end)
                 if baseline_record is None:
-                    time.sleep(min(0.1, max(0.0, observation_deadline - time.monotonic())))
+                    time.sleep(min(0.1, max(0.0, baseline_deadline - time.monotonic())))
+                else:
+                    # Re-drain immediately before replay so the selected baseline
+                    # is the latest complete valid pre-replay stats sample.
+                    latest, cursor, _ = self._eve_records(eve, cursor)
+                    for record, record_end in latest:
+                        counters = self._stats_counters(record)
+                        if counters is not None:
+                            stats_time = self._eve_timestamp(record)
+                            if stats_time < last_baseline_time or any(counters[k] < last_baseline_counters[k] for k in counters):
+                                raise ValueError("pre-replay Suricata counters reset or timestamp regressed")
+                            last_baseline_time, last_baseline_counters = stats_time, counters
+                            baseline_record = (stats_time, counters, record_end)
+                    break
             if baseline_record is None:
                 raise ValueError("valid pre-replay stats baseline was not observed")
-            baseline_time, baseline = baseline_record
+            baseline_time, baseline, baseline_eve_offset = baseline_record
             replay_start = datetime.now(timezone.utc)
             if baseline_time > replay_start:
                 raise ValueError("pre-replay stats timestamp is in the future")
             result["counter_baseline"] = dict(baseline)
+            result["counter_baseline_eve_offset"] = baseline_eve_offset
             result["replay_started_at"] = replay_start.isoformat()
             result["eve_offset_start"] = cursor
             _run([
@@ -872,47 +954,79 @@ class IsolatedSuricataRuntime:
             ], timeout=180, deadline_monotonic=self.deadline_monotonic)
             replay_end = datetime.now(timezone.utc)
             result["replay_ended_at"] = replay_end.isoformat()
+            observation_deadline = time.monotonic() + PROBE_OBSERVATION_SECONDS
+            if self.deadline_monotonic is not None:
+                observation_deadline = min(observation_deadline, self.deadline_monotonic)
+            result["observation_started_at"] = replay_end.isoformat()
             cursor = result["eve_offset_start"]
             traffic_stats = None
             previous_counters = baseline
+            matched_flows = set()
+            flow_ids = {}
             while time.monotonic() < observation_deadline:
                 self._check_deadline()
                 records, cursor, current_end = self._eve_records(eve, cursor)
                 result["eve_offset_end"] = current_end
-                for record, _ in records:
+                for record, record_end in records:
                     stats_counters = self._stats_counters(record)
-                    timestamp = self._eve_timestamp(record) if record.get("event_type") in ("stats", "alert") else None
+                    timestamp = self._eve_timestamp(record) if isinstance(record.get("timestamp"), str) else None
                     if stats_counters is not None and timestamp >= replay_start:
                         if any(stats_counters[key] < previous_counters[key] for key in previous_counters):
                             raise ValueError("Suricata counters reset during probe observation")
                         previous_counters = stats_counters
                         if timestamp > replay_end:
                             traffic_stats = stats_counters
+                    flow_tuple = self._eve_flow_tuple(record)
+                    flow_id = record.get("flow_id")
+                    if record.get("event_type") == "flow" and timestamp is not None and timestamp > replay_start and flow_tuple in expected_flows and type(flow_id) is int:
+                        matched_flows.add(flow_tuple)
+                        flow_ids.setdefault(flow_tuple, set()).add(flow_id)
                     if record.get("event_type") == "alert":
                         alert = record.get("alert")
                         if not isinstance(alert, dict) or type(alert.get("signature_id")) is not int:
                             raise ValueError("alert event has invalid signature identity")
-                        if (
-                            replay_start <= timestamp <= datetime.now(timezone.utc)
-                            and alert["signature_id"] == self.sid
-                        ):
+                        if timestamp is not None and replay_start <= timestamp <= datetime.now(timezone.utc) and alert["signature_id"] == self.sid:
                             candidate_alerts += 1
-                if traffic_stats is not None:
-                    delta = {key: traffic_stats[key] - baseline[key] for key in baseline}
-                    if all(value > 0 for value in delta.values()):
-                        result["traffic_proof"] = True
-                        result["counter_delta"] = delta
-                        result["candidate_alerts"] = candidate_alerts
-                        result["failure_reason"] = None
-                        result["result"] = (candidate_alerts > 0) if expect_alert else (candidate_alerts == 0)
-                        result["outcome"] = "PASS" if result["result"] else "FAIL"
-                        if not result["result"]:
-                            result["failure_reason"] = "candidate_alert_expectation_mismatch"
-                        if expect_alert and result["result"]:
-                            self._last_attack_eve = sha256_file(eve)
-                        return result["result"]
+                            candidate_alert_events.append((flow_tuple, flow_id))
                 time.sleep(min(0.1, max(0.0, observation_deadline - time.monotonic())))
-            raise ValueError("traffic proof was not observed before probe deadline")
+            if traffic_stats is None:
+                raise ValueError("post-replay auxiliary stats sample was not observed")
+            delta = {key: traffic_stats[key] - baseline[key] for key in baseline}
+            if any(value < 0 for value in delta.values()):
+                raise ValueError("Suricata counters reset during probe observation")
+            if any(value == 0 for value in delta.values()):
+                raise ValueError("post-replay auxiliary stats show no counter liveness")
+            result["counter_delta"] = delta
+            if matched_flows != expected_flows:
+                raise ValueError("probe-specific PCAP/EVE flow correlation is incomplete")
+            for flow_tuple, flow_id in candidate_alert_events:
+                if flow_tuple not in expected_flows:
+                    raise ValueError("candidate alert belongs to unrelated probe flow")
+                if type(flow_id) is int and flow_id in flow_ids.get(flow_tuple, set()):
+                    candidate_alert_flow_ids.add(flow_id)
+            flow_hash = hashlib.sha256(json.dumps(sorted(expected_flows), separators=(",", ":")).encode()).hexdigest()
+            flow_id_hash = hashlib.sha256(json.dumps(sorted({fid for ids in flow_ids.values() for fid in ids})).encode()).hexdigest()
+            result["traffic_proof"] = {
+                "type": "pcap_eve_flow_tuple_correlation_v1",
+                "pcap_flow_set_sha256": flow_hash,
+                "expected_flow_count": len(expected_flows),
+                "matched_flow_count": len(matched_flows),
+                "flow_id_set_sha256": flow_id_hash,
+            }
+            result["evidence_correlation_id"] = hashlib.sha256(
+                f"{case}:{result['pcap_sha256']}:{flow_hash}:{flow_id_hash}".encode()
+            ).hexdigest()
+            if expect_alert and not candidate_alert_flow_ids:
+                raise ValueError("candidate_alert_expectation_mismatch")
+            if not expect_alert and candidate_alerts:
+                raise ValueError("candidate_alert_expectation_mismatch")
+            result["candidate_alerts"] = candidate_alerts
+            result["failure_reason"] = None
+            result["result"] = True
+            result["outcome"] = "PASS"
+            if expect_alert:
+                self._last_attack_eve = sha256_file(eve)
+            return True
         except (IsolatedRuntimeError, OSError, UnicodeError, ValueError, TypeError) as exc:
             result["failure_reason"] = str(exc) if isinstance(exc, ValueError) else "probe_observation_error"
             return False
