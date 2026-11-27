@@ -216,3 +216,26 @@ sha256sum "$ARCHIVE"
 
 The owner must verify the archive hash and extract into a fresh versioned VM1
 release directory. No existing `.runtime-staging/` directory is replaced.
+
+## G5R4 probe observer contract (code-level; live acceptance pending)
+
+Each frozen probe now verifies its PCAP hash against the signed probe plan,
+derives canonical bidirectional IPv4 TCP/UDP tuples from the classic PCAP, and
+requires matching EVE `flow` tuples with flow IDs. A global Suricata counter
+delta is auxiliary liveness evidence only; it cannot establish probe delivery.
+The observer records the latest complete pre-replay stats baseline and its EVE
+byte offset, checks timestamp/counter regressions, runs replay under the global
+lifecycle deadline, then starts a separate bounded post-replay observation
+window. Attack alerts must use the candidate SID, fall within the current
+probe's replay-to-observation interval, and match a correlated tuple and flow
+ID. Normal and negative-control probes remain open for the full observation
+window so delayed candidate alerts fail the probe.
+
+Runtime acceptance validation requires correlated proof hashes and identity,
+baseline offsets, counters, replay and observation boundaries, and complete
+six-case active and rollback cohorts. Missing or incomplete telemetry is
+FAIL/NOT_RUN; offline tests do not establish live Suricata acceptance. G5R4
+runtime latency and the VM observation stages remain `NOT_MEASURED` in this
+work session. The implementation and synthetic regressions were verified
+offline; authoritative G5R4 assets/evidence remain incomplete as recorded in
+`reports/g5r4-observer-baseline.md`.
