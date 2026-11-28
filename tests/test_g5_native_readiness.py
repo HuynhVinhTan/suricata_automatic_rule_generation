@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from netids.isolated_suricata_runtime import generate_effective_suricata_configuration
 from scripts.validate_g5_native_readiness import NativeReadinessError, validate_native_readiness
 from scripts.validate_g5_startup_readiness import (
     StartupReadinessError, build_startup_command, require_startup_smoke_guard,
@@ -22,6 +23,43 @@ def _template(root: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def test_effective_observer_config_emits_flow_evidence_with_bounded_isolated_timeouts(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(
+        "netids.isolated_suricata_runtime.validate_unix_socket_path",
+        lambda path: path,
+    )
+    template = {
+        "default-rule-path": str(tmp_path / "rules"),
+        "rule-files": ["active.rules"],
+        "unix-command": {
+            "enabled": True,
+            "filename": str(tmp_path / "runtime/lab-suricata.socket"),
+        },
+        "af-packet": [{"interface": "lo"}],
+        "outputs": [{"eve-log": {"enabled": True, "filename": "eve.json", "types": ["alert"]}}],
+        "flow-timeouts": {
+            "tcp": {"new": 60, "established": 3600, "closed": 120},
+        },
+    }
+    original = json.loads(json.dumps(template))
+
+    effective = generate_effective_suricata_configuration(
+        template,
+        active_rules=tmp_path / "attempt/rules/active.rules",
+        socket_path=tmp_path / "attempt/runtime/lab-suricata.socket",
+    )
+    configuration = yaml.safe_load(effective)
+
+    eve = configuration["outputs"][0]["eve-log"]
+    assert {"alert", "flow", "stats"}.issubset(set(eve["types"]))
+    tcp_timeouts = configuration["flow-timeouts"]["tcp"]
+    assert all(tcp_timeouts[state] == 5 for state in ("new", "established", "closed"))
+    assert all(tcp_timeouts[f"emergency-{state}"] == 5 for state in ("new", "established", "closed"))
+    assert template == original
 
 
 def test_native_readiness_uses_non_live_syntax_command_and_exact_paths(monkeypatch, tmp_path):

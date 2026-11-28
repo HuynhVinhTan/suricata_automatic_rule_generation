@@ -9,8 +9,9 @@ the same PCAP with zero candidate SID alerts.
 
 from __future__ import annotations
 
-import json
+import copy
 import hashlib
+import json
 import os
 import re
 import socket
@@ -37,6 +38,7 @@ from netids.trusted_replay import SID, RULE_SHA, _config_safe
 
 PROBE_OBSERVATION_SECONDS = 15.0
 PROBE_BASELINE_SECONDS = 15.0
+PROBE_FLOW_TIMEOUT_SECONDS = 5
 
 # Logical approval identity remains "suricata-vm1"; the lab VM's
 # observed actual OS hostname is "tanhv", with ens33 = 192.168.10.10/24.
@@ -111,7 +113,7 @@ def generate_effective_suricata_configuration(
     template: Path | dict, *, active_rules: Path, socket_path: Path,
 ) -> str:
     if isinstance(template, dict):
-        configuration = dict(template)
+        configuration = copy.deepcopy(template)
     else:
         try:
             configuration = yaml.safe_load(Path(template).read_text(encoding="utf-8"))
@@ -129,6 +131,40 @@ def generate_effective_suricata_configuration(
     unix_command["enabled"] = True
     unix_command["filename"] = str(validate_unix_socket_path(socket_path))
     configuration["unix-command"] = unix_command
+    outputs = configuration.get("outputs")
+    if not isinstance(outputs, list):
+        raise ValueError("Isolated configuration must enable EVE flow and stats output")
+    eve_logs = [
+        output.get("eve-log") for output in outputs
+        if isinstance(output, dict) and isinstance(output.get("eve-log"), dict)
+    ]
+    if len(eve_logs) != 1 or eve_logs[0].get("enabled") is not True:
+        raise ValueError("Isolated configuration must enable exactly one EVE logger")
+    event_types = eve_logs[0].setdefault("types", [])
+    if not isinstance(event_types, list):
+        raise ValueError("Isolated EVE event types are invalid")
+    configured_types = {
+        event_type
+        for item in event_types
+        for event_type in (
+            [item] if isinstance(item, str)
+            else list(item) if isinstance(item, dict)
+            else []
+        )
+    }
+    for event_type in ("alert", "flow", "stats"):
+        if event_type not in configured_types:
+            event_types.append(event_type)
+
+    flow_timeouts = configuration.setdefault("flow-timeouts", {})
+    if not isinstance(flow_timeouts, dict):
+        raise ValueError("Isolated flow timeout configuration is invalid")
+    tcp_timeouts = flow_timeouts.setdefault("tcp", {})
+    if not isinstance(tcp_timeouts, dict):
+        raise ValueError("Isolated TCP flow timeout configuration is invalid")
+    for state in ("new", "established", "closed"):
+        tcp_timeouts[state] = PROBE_FLOW_TIMEOUT_SECONDS
+        tcp_timeouts[f"emergency-{state}"] = PROBE_FLOW_TIMEOUT_SECONDS
     validate_isolated_configuration(
         configuration, active_rules=Path(active_rules), socket_path=Path(socket_path),
     )
