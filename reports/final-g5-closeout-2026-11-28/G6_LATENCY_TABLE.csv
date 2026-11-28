@@ -1,0 +1,22 @@
+stage,definition,source_artifact,session_id,timing_boundary,unit,status,sample_size,duration_or_summary
+capture_start,Start of packet collection,backend/pcap_capture.py metadata,NOT_AVAILABLE,NOT_AVAILABLE,monotonic_or_utc,NOT_MEASURED,0,NOT_MEASURED
+capture_sealing,PCAP close and immutable manifest seal,backend/pcap_capture.py and handoff artifacts,NOT_AVAILABLE,NOT_AVAILABLE,monotonic_or_utc,NOT_MEASURED,0,NOT_MEASURED
+handoff_transport,VM1 sealed bundle send to VM3 receipt,backend/pcap_handoff.py sent receipt,NOT_AVAILABLE,No verified cross-host clock correlation,seconds,NOT_MEASURED,0,NOT_MEASURED
+handoff_receipt,VM3 receipt completion,backend/pcap_handoff.py done receipt,NOT_AVAILABLE,No paired monotonic trace,seconds,NOT_MEASURED,0,NOT_MEASURED
+worker_queue,Receipt ready to worker start,VM3 worker ledger,NOT_AVAILABLE,No normalized queue boundaries,seconds,NOT_MEASURED,0,NOT_MEASURED
+worker_processing,Worker start through completion,Historical pipeline report,NOT_AVAILABLE,Current full run trace absent,milliseconds,NOT_MEASURED,0,NOT_MEASURED
+feature_extraction,PCAP feature extraction stage,lineage-new-generated-20261112-04 latency trace,lineage-new-generated-20261112-04,Within-process monotonic stage,ms,MEASURED_HISTORICAL,1,113.483
+model_inference,Frozen IF/AE inference stage,lineage-new-generated-20261112-04 latency trace,lineage-new-generated-20261112-04,Within-process monotonic stage,ms,MEASURED_HISTORICAL,1,1602.986
+hybrid_evidence,Port diversity handshake and full Hybrid evidence extraction,lineage-new-generated-20261112-04 report,lineage-new-generated-20261112-04,Individual source trace has values but sanitized report omits them,ms,NOT_MEASURED,0,NOT_MEASURED
+hybrid_decision_only,Narrow legacy RST/Hybrid decision call,lineage-new-generated-20261112-04 report,lineage-new-generated-20261112-04,Within-process monotonic decision call,ms,MEASURED_HISTORICAL,1,0.023
+candidate_generation,Rule generation and artifact write,lineage-new-generated-20261112-04 report,lineage-new-generated-20261112-04,Within-process monotonic stage,ms,MEASURED_HISTORICAL,1,7.559
+candidate_validation,Local artifact and hash validation,lineage-new-generated-20261112-04 report,lineage-new-generated-20261112-04,Within-process monotonic stage,ms,MEASURED_HISTORICAL,1,0.187
+suricata_syntax,Native Suricata syntax verification,Historical syntax report,NOT_AVAILABLE,Duration not retained in accessible report,ms,NOT_MEASURED,0,NOT_MEASURED
+owner_approval_wait,Human review interval,No fresh authorization,NOT_AVAILABLE,Human time separate from automated latency,seconds,NOT_MEASURED,0,NOT_MEASURED
+runtime_startup,Suricata isolated child startup and privilege drop,G5R4 diagnostics referenced in frozen manifest,G5R4 terminal failed,Raw diagnostics unavailable locally,ms,NOT_MEASURED,0,NOT_MEASURED
+active_probes,Per-case loopback replay and probe observation,G5R4 runtime evidence referenced in frozen manifest,G5R4 terminal failed,Raw per-probe trace unavailable locally,ms,NOT_MEASURED,0,NOT_MEASURED
+rollback,Isolated rollback and reload,G5R4 diagnostics referenced in frozen manifest,G5R4 terminal failed,Raw diagnostics unavailable locally,ms,NOT_MEASURED,0,NOT_MEASURED
+post_rollback_probes,Per-case post-rollback observation,G5R4 runtime evidence referenced in frozen manifest,G5R4 terminal failed,Raw per-probe trace unavailable locally,ms,NOT_MEASURED,0,NOT_MEASURED
+cleanup,Child termination and ACL cleanup,G5R4 diagnostics referenced in frozen manifest,G5R4 terminal failed,Raw diagnostics unavailable locally,ms,NOT_MEASURED,0,NOT_MEASURED
+production_state_check,Production before/after equality snapshot,G5R4 evidence referenced in frozen manifest,G5R4 terminal failed,No current VM snapshot,ms,NOT_MEASURED,0,NOT_MEASURED
+eve_to_ledger,EVE event timestamp to ledger commit timestamp,docs/final-showcase-packet-evidence-2026-11-13.md,Historical VM3 aggregate,Same-host timestamp difference,s,MEASURED_HISTORICAL,607,"min=31.033256; median=235.973714; p95=303.697609; max=358.519941"

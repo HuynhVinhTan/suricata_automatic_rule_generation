@@ -219,23 +219,31 @@ release directory. No existing `.runtime-staging/` directory is replaced.
 
 ## G5R4 probe observer contract (code-level; live acceptance pending)
 
-Each frozen probe now verifies its PCAP hash against the signed probe plan,
-derives canonical bidirectional IPv4 TCP/UDP tuples from the classic PCAP, and
-requires matching EVE `flow` tuples with flow IDs. A global Suricata counter
-delta is auxiliary liveness evidence only; it cannot establish probe delivery.
-The observer records the latest complete pre-replay stats baseline and its EVE
-byte offset, checks timestamp/counter regressions, runs replay under the global
-lifecycle deadline, then starts a separate bounded post-replay observation
-window. Attack alerts must use the candidate SID, fall within the current
-probe's replay-to-observation interval, and match a correlated tuple and flow
-ID. Normal and negative-control probes remain open for the full observation
+The prior observer description in this document is superseded by the current
+implementation. The current observer verifies each PCAP hash against the
+signed probe plan, derives canonical bidirectional IPv4 TCP/UDP tuples, and
+requires matching EVE `flow` tuples with flow IDs inside that probe's bounded
+observation window. A global Suricata counter delta is auxiliary liveness
+evidence; it cannot establish probe delivery. Candidate alerts must use the
+candidate SID, fall within the current replay window, and match a correlated
+tuple and flow ID. Normal and negative-control probes remain open for the full
 window so delayed candidate alerts fail the probe.
 
-Runtime acceptance validation requires correlated proof hashes and identity,
-baseline offsets, counters, replay and observation boundaries, and complete
-six-case active and rollback cohorts. Missing or incomplete telemetry is
-FAIL/NOT_RUN; offline tests do not establish live Suricata acceptance. G5R4
-runtime latency and the VM observation stages remain `NOT_MEASURED` in this
-work session. The implementation and synthetic regressions were verified
-offline; authoritative G5R4 assets/evidence remain incomplete as recorded in
-`reports/g5r4-observer-baseline.md`.
+The historical G5R4 records described in the recovery assignment were emitted
+with `reason=shutdown`; they therefore do not prove that the current
+per-probe flow-event contract was satisfied while Suricata was active. The
+scoped correction now enables EVE `alert`, `flow`, and `stats` output and caps
+TCP `new`, `established`, and `closed` flow timeouts at five seconds in the
+generated isolated configuration only. Production configuration and rules
+are not changed. Suricata documents flow end reasons and state-specific
+timeouts in its [EVE format](https://docs.suricata.io/en/suricata-8.0.6/output/eve/eve-json-format.html)
+and [configuration reference](https://docs.suricata.io/en/suricata-8.0.3/configuration/suricata-yaml.html).
+
+Deterministic offline tests cover the generated config and observer's
+correlation/deadline rules. They do not prove native Suricata 8.0.3 accepted
+the effective configuration or emitted these events for the six original
+PCAPs. Those PCAP bytes and VM1 runtime are not available to this local
+session; native `-T` readiness and fresh in-window telemetry remain blocked.
+Runtime acceptance validation still requires evidence hashes, probe
+boundaries, and complete six-case active and rollback cohorts. G5R4 runtime
+latency and new VM observation stages remain `NOT_MEASURED`.
