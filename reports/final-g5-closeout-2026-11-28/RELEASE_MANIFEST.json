@@ -1,0 +1,414 @@
+{
+  "schema_version": "suricata_ai_g5_release_manifest_v1",
+  "status": "PREPARED_LOCAL_ONLY_NOT_DEPLOYED",
+  "repository": "HuynhVinhTan/suricata_automatic_rule_generation",
+  "source_commit": "67a4edd9e70bd2de68ca2236e14174a43053f3aa",
+  "source_commit_ci": {
+    "run_id": 46087222282,
+    "conclusion": "success",
+    "jobs": {
+      "unit-handoff": "success",
+      "capture-boundary": "success",
+      "dataset-and-lifecycle": "success"
+    }
+  },
+  "package": {
+    "path": "reports/releases/suricata-ai-g5-runtime-67a4edd.tar",
+    "sha256": "95b8d00e842a47c08ca28be368850afa9f8b42f6510dedf5e298fe3b32978c9f",
+    "size_bytes": 768000,
+    "format": "tar",
+    "scope": "source-only VM1 runtime/readiness closure"
+  },
+  "package_file_count": 72,
+  "source_manifest": [
+    {
+      "path": "pyproject.toml",
+      "sha256": "768f377d77888716303336bd21b7345c980100d208a5cc6f9ebaa1a36b10a998",
+      "size_bytes": 708
+    },
+    {
+      "path": "scripts/operate_frozen_rst_once.py",
+      "sha256": "c0bdbbc9eee31b8b69f2a9660d17040599136fb53609868ce98064ecc54a5da2",
+      "size_bytes": 18026
+    },
+    {
+      "path": "scripts/operate_isolated_once.py",
+      "sha256": "fe6cef3bbbe7fbe63c8e129658cacdee65bf9a460305dbe84b1c987a84491aa4",
+      "size_bytes": 26357
+    },
+    {
+      "path": "scripts/validate_g5_native_readiness.py",
+      "sha256": "bbae461767c0c8e4c745b739908c4ac1755845f72d4951b4060652d4bf9be6b5",
+      "size_bytes": 8648
+    },
+    {
+      "path": "scripts/validate_g5_startup_readiness.py",
+      "sha256": "f499b36d6671b6b83f856eb2dc56fef2c618605033d17d03cf5a9218fb70a793",
+      "size_bytes": 19315
+    },
+    {
+      "path": "src/netids/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/adapters/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/adapters/cic.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/adapters/ctu.py",
+      "sha256": "f9b23d82898b6f6243d569d811cda6ad487b16c350becd950055d32b7ad567fa",
+      "size_bytes": 3412
+    },
+    {
+      "path": "src/netids/adapters/suricata.py",
+      "sha256": "6f15ea12dd3c346b2ad5dec6f89643c05dafdae2a4bbb681ce3a4a1209298d7e",
+      "size_bytes": 5402
+    },
+    {
+      "path": "src/netids/adapters/unsw.py",
+      "sha256": "c2aff30939f1e4981ada1f68e532f80bc80589746d410794eaa300388e1488eb",
+      "size_bytes": 3764
+    },
+    {
+      "path": "src/netids/app.py",
+      "sha256": "7f2998211e182457accd3ef12efa5c8384f640b27fc5b7dcef468753e5c8d3ec",
+      "size_bytes": 5896
+    },
+    {
+      "path": "src/netids/candidate_record.py",
+      "sha256": "ce71a7e01603d1d21b2ffbe153d7ecfc75320dd0fc33728dc6ae283a71381f8b",
+      "size_bytes": 14617
+    },
+    {
+      "path": "src/netids/candidate_replay.py",
+      "sha256": "2eb2c15053bf63965667cd1ceb64929c183e8e45bf8db0e645feffa38be2c988",
+      "size_bytes": 18546
+    },
+    {
+      "path": "src/netids/correlation.py",
+      "sha256": "9612f5f92aa05e82e368cab187d53b3fd25a8047a1c2390e42e0e273bc6e51e5",
+      "size_bytes": 4114
+    },
+    {
+      "path": "src/netids/data/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/data/cleaning.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/data/loaders.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/data/validators.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/dataset_audit.py",
+      "sha256": "9ad20622d1c39a640c2cc110544c1363029b794a6463e8a849eed51d6e6221aa",
+      "size_bytes": 6288
+    },
+    {
+      "path": "src/netids/documented_rule_recovery.py",
+      "sha256": "8a16685e485af08ca800295c8728067be5829719184686ab7e6034bf254fc4ce",
+      "size_bytes": 4535
+    },
+    {
+      "path": "src/netids/evaluation/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/evaluation/dl_plots.py",
+      "sha256": "bd2055027a507b599f3f4e75625a5434d7c3770e7b5e7287517229b1f2814b91",
+      "size_bytes": 3081
+    },
+    {
+      "path": "src/netids/evaluation/metrics.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/evaluation/research_plots.py",
+      "sha256": "1600ce57e44888d59d528837436136eec333a587fa98ecd908c6e87fb2469f9a",
+      "size_bytes": 2549
+    },
+    {
+      "path": "src/netids/evaluation/unsw_final_plots.py",
+      "sha256": "98ee40a8fb25747e3dfe683a43870ba5cabed0c89ef9ca9a35d9a0a51b5f5da0",
+      "size_bytes": 2895
+    },
+    {
+      "path": "src/netids/evaluation/unsw_v02_overfit.py",
+      "sha256": "5e9eb869828269874ffd6c487ec21417f1985a26809ca61f771b63e77f5a6442",
+      "size_bytes": 7976
+    },
+    {
+      "path": "src/netids/eve_worker.py",
+      "sha256": "9b83002405912b5fd3947c206076b4e597416b7bfcd02b0bac63b3a31475966a",
+      "size_bytes": 37382
+    },
+    {
+      "path": "src/netids/experiments/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/experiments/run.py",
+      "sha256": "21b3a56b2774ff16d99a5659a26c6dca1b115e34219668f14b3c11fa43f21bbf",
+      "size_bytes": 9838
+    },
+    {
+      "path": "src/netids/experiments/unsw_dl_development.py",
+      "sha256": "8cf6d09d140e81cda99ed0a307a7160dda014e4e3b169711d76a9470644791ea",
+      "size_bytes": 12039
+    },
+    {
+      "path": "src/netids/experiments/unsw_group_split.py",
+      "sha256": "2eb87368569940921afc11d3576e7d01c76f7fe8e5b063f7751e90692dbb0a26",
+      "size_bytes": 5993
+    },
+    {
+      "path": "src/netids/experiments/unsw_ml_development.py",
+      "sha256": "27c2ea538663dceb3e82764643a0355b2695242a663f2eb8def1d92a41e7046e",
+      "size_bytes": 8822
+    },
+    {
+      "path": "src/netids/experiments/unsw_v02_calibration.py",
+      "sha256": "90bf1b231cc73cb9a748ea711fb9c6282e2ebe306fd8655b30f784a0a30ec101",
+      "size_bytes": 13063
+    },
+    {
+      "path": "src/netids/experiments/unsw_v02_development.py",
+      "sha256": "1f9d1f50a036702dd6b1490c9df5ee4a3524f0091011af64b9c33e55fdcc36b7",
+      "size_bytes": 18658
+    },
+    {
+      "path": "src/netids/experiments/unsw_v02_official_test.py",
+      "sha256": "9ef986a5f5ff2c95af774043074d4e78a1a04cd5a3a571a47937ba01d82f69c0",
+      "size_bytes": 13868
+    },
+    {
+      "path": "src/netids/experiments/unsw_v03_research_completeness.py",
+      "sha256": "034f4defabcf3ecf9988355c0783b0d7e3238f88124be2455da33af2655d38c2",
+      "size_bytes": 38159
+    },
+    {
+      "path": "src/netids/features/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/features/extraction.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/features/preprocessing.py",
+      "sha256": "a53a5675c52f53cd0904a91703126637bac6055717f59b2942710c6c1df94687",
+      "size_bytes": 1364
+    },
+    {
+      "path": "src/netids/features/schema.py",
+      "sha256": "03d8644105bb86825d345e9d8ccc45083d3e17a1f085ea66eaebd4fd91c30712",
+      "size_bytes": 2736
+    },
+    {
+      "path": "src/netids/features/splitting.py",
+      "sha256": "5acc84cfcecb9cf4fbceedde582c179bb209f8eac20341eefefbe212a31bcc86",
+      "size_bytes": 2625
+    },
+    {
+      "path": "src/netids/g3_lab_cli.py",
+      "sha256": "2176881294dfeb39d4a17f82b598d6c987d72cf5c4717debeb042fff994d106f",
+      "size_bytes": 4508
+    },
+    {
+      "path": "src/netids/g3_lab_demo.py",
+      "sha256": "d5ac5abee068e03e645cb92dc70c9b5d4fed5e775bce0d1821d19bee3e8b5fea",
+      "size_bytes": 16901
+    },
+    {
+      "path": "src/netids/g5_frozen_candidate.py",
+      "sha256": "ee43052cfa58446cf0656b5ab485473fc076031eb0ba062315543cd1f1a0470c",
+      "size_bytes": 32011
+    },
+    {
+      "path": "src/netids/hybrid_provenance.py",
+      "sha256": "e3122389d73f04e5e28c67f47192ad8e1099510ce1f3578d3d4f7f677affc77f",
+      "size_bytes": 10215
+    },
+    {
+      "path": "src/netids/hybrid_review.py",
+      "sha256": "4e98a034b381e90bfa6cdd5016b72e5355e9f5f389b3fcf6674b140c3053ffaf",
+      "size_bytes": 4065
+    },
+    {
+      "path": "src/netids/isolated_suricata_runtime.py",
+      "sha256": "ff239331e396ee6b3ab691d78eff1d31a751a53ee7488d8821f75e3516b5b2f7",
+      "size_bytes": 64963
+    },
+    {
+      "path": "src/netids/key_pins.py",
+      "sha256": "42dd07386794867f6b98a525ce9012c8545c5bce9d0f814a6c66013b7af78c1d",
+      "size_bytes": 5249
+    },
+    {
+      "path": "src/netids/lab_runtime.py",
+      "sha256": "d0c493a5d6705daff0d312480af9e4a19483a7e1d5fdec94ae3adfb0876b896c",
+      "size_bytes": 8546
+    },
+    {
+      "path": "src/netids/lab_workflow.py",
+      "sha256": "d476e6b9ff8889a94174d571104e92a3ce6c42b4ee76b7b390a4e8aae699b8f9",
+      "size_bytes": 3823
+    },
+    {
+      "path": "src/netids/latency.py",
+      "sha256": "5275e7c6c843f8d0e05d71a1b07cdab4cdc6fd07ff0a610dbc52b76696063fe6",
+      "size_bytes": 8937
+    },
+    {
+      "path": "src/netids/latency_aggregation.py",
+      "sha256": "4e0b162e8b277eb905a0882b615dee7a30a68230e3da27f4fc5f31aad6f82897",
+      "size_bytes": 11839
+    },
+    {
+      "path": "src/netids/latency_figures.py",
+      "sha256": "bad948ea4693cf4555acfbc8c6d7b08fa34672a54e13921113b0d979a4e0823d",
+      "size_bytes": 5530
+    },
+    {
+      "path": "src/netids/lifecycle_attestation.py",
+      "sha256": "df855abab89f7486bce5661ae04741cd089a101967e590d8a785706c51ad4761",
+      "size_bytes": 1763
+    },
+    {
+      "path": "src/netids/lifecycle_ed25519.py",
+      "sha256": "e527a2e3d5360ae44688bf8fe015bd4c9851b022e9c9d7eacb65de329bb9294e",
+      "size_bytes": 5908
+    },
+    {
+      "path": "src/netids/lifecycle_integration.py",
+      "sha256": "f8688269139b6a27c4267226fe7eba59d501187932d00c9cbdf2064834752c0e",
+      "size_bytes": 12760
+    },
+    {
+      "path": "src/netids/models/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "src/netids/models/artifacts.py",
+      "sha256": "dbe05bdf269f37123d4f2a4994b70d376f80b4bcbf32465a95b1af539c485fe5",
+      "size_bytes": 5332
+    },
+    {
+      "path": "src/netids/models/autoencoder.py",
+      "sha256": "0cc59bd46a43d28ca09e80ded2bbeba09c6f61fdd6d5e09b06dbf93f91a1ac54",
+      "size_bytes": 8328
+    },
+    {
+      "path": "src/netids/models/dl.py",
+      "sha256": "50266cdcc02a549e5c4511bcd2744704c5ec03d40f90d0e77761a49efe287fc5",
+      "size_bytes": 8142
+    },
+    {
+      "path": "src/netids/models/ml.py",
+      "sha256": "e7faa60a573c7ac1bdc4056edb1434fe80af679ac672f148481aa6f154561a51",
+      "size_bytes": 1370
+    },
+    {
+      "path": "src/netids/pipeline.py",
+      "sha256": "d358daae4571d17709b50789ec42c38e7d13e5d1d0a70461ae70660dc5b93644",
+      "size_bytes": 28388
+    },
+    {
+      "path": "src/netids/port_diversity.py",
+      "sha256": "873cdc3b5ba7f7411111912c472d1bf490923c800f7790715b72f775f8d56017",
+      "size_bytes": 5601
+    },
+    {
+      "path": "src/netids/privilege_separation.py",
+      "sha256": "d46d89a0b541ebd2baf9f0ac293606b7b8c084ab4d2b589cfd3ff9212c605c42",
+      "size_bytes": 33351
+    },
+    {
+      "path": "src/netids/rst_candidate_verification.py",
+      "sha256": "87880e0e125f182d3491618b44883a9a57366794850687cf9cc6387a9cf2bafa",
+      "size_bytes": 15929
+    },
+    {
+      "path": "src/netids/rst_evidence.py",
+      "sha256": "5960b37efc108126b21b7b55f34f65dfff4ba24ae3075b3bffdfb21869de42ef",
+      "size_bytes": 8278
+    },
+    {
+      "path": "src/netids/rule_lifecycle.py",
+      "sha256": "7a214135a0030c1f07cafdf0f527fbe37f8f639ec899dee4bdf6a63c8b21d31d",
+      "size_bytes": 24370
+    },
+    {
+      "path": "src/netids/rulegen.py",
+      "sha256": "6681541aca674ca680b195946381369be6d8515f877715ca2c93419d946243e8",
+      "size_bytes": 20999
+    },
+    {
+      "path": "src/netids/showcase_demo.py",
+      "sha256": "4fbaef914bfb662913f96abd318a15c5c8a2b5f2cb10a7279323c7403b0ed683",
+      "size_bytes": 5167
+    },
+    {
+      "path": "src/netids/tcp_handshake.py",
+      "sha256": "5e0578760144864e28837804fffa74c41b1435238e0ff025d64281a12ede4057",
+      "size_bytes": 7281
+    },
+    {
+      "path": "src/netids/trusted_replay.py",
+      "sha256": "53760d98d5239e041d4038a3e768f6ed7d07a3332060eaf98e26d272b4c9f6e0",
+      "size_bytes": 17879
+    }
+  ],
+  "declared_project_dependencies": {
+    "python": ">=3.10",
+    "numpy": "unversioned in pyproject.toml",
+    "pandas": "unversioned in pyproject.toml",
+    "scikit-learn": "unversioned in pyproject.toml",
+    "joblib": "unversioned in pyproject.toml",
+    "cryptography": ">=42",
+    "PyYAML": ">=6.0"
+  },
+  "runtime_compatibility": {
+    "target_suricata": "8.0.3; must be checked on VM1",
+    "python_installed_version": "NOT_VERIFIED",
+    "dependency_installed_versions": "NOT_VERIFIED",
+    "external_tools": [
+      "tcpreplay",
+      "setfacl",
+      "ip"
+    ]
+  },
+  "validation": {
+    "offline_tests": "723 passed, 51 skipped",
+    "compileall": "PASS",
+    "git_diff_check": "PASS",
+    "native_suricata_syntax": "NOT_RUN",
+    "runtime_activation": "NOT_RUN"
+  },
+  "reproduction_command": "git archive --format=tar --prefix=suricata-ai-g5-runtime-67a4edd/ --output=reports/releases/suricata-ai-g5-runtime-67a4edd.tar 67a4edd9e70bd2de68ca2236e14174a43053f3aa pyproject.toml src/netids scripts/operate_frozen_rst_once.py scripts/operate_isolated_once.py scripts/validate_g5_native_readiness.py scripts/validate_g5_startup_readiness.py",
+  "readiness_instructions": "docs/g5-native-readiness-procedure-2026-11-25.md; generated effective config includes the corrected isolated observer settings; run only with Owner-operated VM1 procedure",
+  "deployment": "NOT_PERFORMED"
+}

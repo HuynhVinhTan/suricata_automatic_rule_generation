@@ -51,8 +51,13 @@ engine-analysis:
   rules-fast-pattern: yes
   rule-reload: false
 
+default-rule-path: /home/tanhv/suricata-rule-review/isolated-candidate-9103012/rules
 rule-files:
-  - suricata.rules
+  - active.rules
+
+unix-command:
+  enabled: yes
+  filename: /home/tanhv/suricata-rule-review/isolated-candidate-9103012/runtime/lab-suricata.socket
 
 classification-file: classification.config
 reference-config-file: reference.config

@@ -13,12 +13,13 @@ from netids.candidate_record import (
 )
 from netids.lifecycle_ed25519 import generate_encrypted_keypair, sign_record
 from netids.rule_lifecycle import RuleLifecycle
+from netids import rulegen
 
 
 def _fixture(tmp_path):
     artifact = tmp_path / "lineage"
     artifact.mkdir()
-    rule = 'alert tcp any any -> 192.168.10.10 any (detection_filter:track by_src,count 3,seconds 10; sid:9103012; rev:1;)\n'
+    rule = 'alert tcp any any -> 192.168.10.10 any (detection_filter:track by_src,count 3,seconds 10; sid:9103013; rev:1;)\n'
     (artifact / "ml-generated.rules").write_text(rule, encoding="utf-8", newline="\n")
     model = "b" * 64
     pcap = "a" * 64
@@ -35,7 +36,7 @@ def _fixture(tmp_path):
         "schema_version": "lab_rule_review_v0_2",
         "source_pcap_sha256": pcap,
         "model_sha256": model,
-        "generated_rule_sid": 9103012,
+        "generated_rule_sid": 9103013,
         "status": "needs_review",
         "rule_generated_in_this_run": True,
         "approved": False, "deployable": False, "deployed": False,
@@ -49,10 +50,80 @@ def _fixture(tmp_path):
     return artifact, calibration, baseline
 
 
+def test_candidate_record_supports_provenance_bound_rst_family(tmp_path):
+    artifact = tmp_path / "rst-lineage"
+    artifact.mkdir()
+    result = rulegen.generate_rst_rule(
+        run_id="rst-record-01",
+        pcap_sha256="a" * 64,
+        model_sha256="b" * 64,
+        source_ip="192.168.10.10",
+        destination_ip="192.168.10.20",
+        normal_cal_rst_counts=[0, 1],
+        normal_validation_rst_counts=[0],
+        attack_rst_counts=[3],
+        ml_consensus=True,
+        port_diversity_triggered=True,
+        rst_evidence={
+            "rst_count": 3,
+            "capture_integrity": {"capture_complete": True},
+        },
+        normal_calibration_provenance={
+            "status": "accepted",
+            "final_holdout_used": False,
+            "frozen_before_holdouts": True,
+        },
+        normal_validation_evidence={
+            "pcap_sha256": "c" * 64,
+            "capture_integrity": {"capture_complete": True},
+        },
+        development_evidence={
+            "scope": "G4_DEVELOPMENT_ONLY",
+            "native_replay_tested": False,
+            "independent_final_acceptance": False,
+            "generator_sha256": "d" * 64,
+            "calibration_sha256": "e" * 64,
+            "calibration_references": [{
+                "ground_truth_label": "NORMAL",
+                "capture_metadata": {
+                    "packet_records_complete": True,
+                    "snaplen_truncated": False,
+                    "capture_drops": False,
+                },
+            }],
+        },
+        hybrid_evidence={
+            "classification": "reconnaissance_consistent",
+            "python_only": True,
+            "suricata_signature_equivalent": False,
+        },
+    )
+    rulegen.write_rst_rule_artifacts(artifact, result)
+    (artifact / "review.json").write_text(json.dumps({
+        "schema_version": "lab_rule_review_v0_2",
+        "source_pcap_sha256": "a" * 64,
+        "model_sha256": "b" * 64,
+        "generated_rule_sid": result["sid"],
+        "status": "needs_review",
+    }), encoding="utf-8")
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps({
+        "threshold_provenance": {"calibration_decision_sha256": "d" * 64}
+    }), encoding="utf-8")
+    baseline = tmp_path / "baseline.rules"
+    baseline.write_text("alert tcp any any -> any any (sid:1; rev:1;)\n", encoding="utf-8")
+
+    record = build_candidate_record(artifact, calibration, baseline)
+
+    assert record["candidate_family"] == "rst_response_v1"
+    assert record["sid"] == result["sid"]
+    assert verify_candidate_record(record)
+
+
 def test_candidate_record_binds_new_lineage_and_is_review_only(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
     record = build_candidate_record(artifact, calibration, baseline)
-    assert record["sid"] == 9103012
+    assert record["sid"] == 9103013
     assert record["decision_manifest_sha256"] == "d" * 64
     identity = {key: record[key] for key in (
         "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256",
@@ -77,7 +148,7 @@ def test_candidate_record_rejects_tampered_identity(tmp_path, field):
 
 def test_candidate_record_rejects_sid_collision(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
-    baseline.write_text("alert tcp any any -> any any (sid:9103012; rev:1;)\n", encoding="utf-8")
+    baseline.write_text("alert tcp any any -> any any (sid:9103013; rev:1;)\n", encoding="utf-8")
     with pytest.raises(CandidateRecordError, match="collision"):
         build_candidate_record(artifact, calibration, baseline)
 
@@ -104,7 +175,7 @@ def test_candidate_record_rejects_malformed_source_hashes(tmp_path, value):
 def test_candidate_record_rejects_tampered_rule_with_recomputed_identity(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
     record = build_candidate_record(artifact, calibration, baseline)
-    record["rule"] = record["rule"].replace("sid:9103012", "sid:9103013")
+    record["rule"] = record["rule"].replace("sid:9103013", "sid:9103014")
     record["rule_sha256"] = hashlib.sha256(record["rule"].encode()).hexdigest()
     identity = {key: record[key] for key in (
         "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256",
@@ -119,7 +190,7 @@ def test_candidate_record_rejects_tampered_rule_with_recomputed_identity(tmp_pat
 def test_candidate_record_rejects_sid_not_matching_embedded_rule(tmp_path):
     artifact, calibration, baseline = _fixture(tmp_path)
     record = build_candidate_record(artifact, calibration, baseline)
-    record["sid"] = 9103013
+    record["sid"] = 9103014
     identity = {key: record[key] for key in (
         "run_id", "sid", "rule_sha256", "pcap_sha256", "model_sha256",
         "calibration_sha256", "decision_manifest_sha256",

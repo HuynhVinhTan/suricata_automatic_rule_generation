@@ -14,6 +14,13 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from netids.rulegen import (
+    REJECTED_SIDS,
+    RST_RESPONSE_FAMILY,
+    SYN_PACKET_COUNT_FAMILY,
+    is_verified_development_evidence,
+)
+
 
 class HandoffError(ValueError):
     """A rule handoff invariant was not met."""
@@ -35,10 +42,28 @@ def _read_artifacts(artifact_dir: Path, run_id: str) -> tuple[Path, Path, str, d
     if not RUN_ID.fullmatch(run_id):
         raise HandoffError("Unsafe run ID")
     root = artifact_dir.resolve(strict=True)
-    rule_path = root / "ml-generated.rules"
-    metadata_path = root / "ml-generated.metadata.json"
-    if not rule_path.is_file() or rule_path.is_symlink() or not metadata_path.is_file() or metadata_path.is_symlink():
+    families = {
+        SYN_PACKET_COUNT_FAMILY: (
+            root / "ml-generated.rules",
+            root / "ml-generated.metadata.json",
+            "ml_rule_metadata_v1",
+        ),
+        RST_RESPONSE_FAMILY: (
+            root / "ml-generated-rst.rules",
+            root / "ml-generated-rst.metadata.json",
+            "ml_rst_rule_metadata_v1",
+        ),
+    }
+    if any(path.exists() for path in families[SYN_PACKET_COUNT_FAMILY][:2]):
+        raise HandoffError("SYN packet-count candidate family is permanently quarantined")
+    present = {
+        family: pair
+        for family, pair in families.items()
+        if pair[0].exists() or pair[1].exists()
+    }
+    if set(present) != {RST_RESPONSE_FAMILY}:
         raise HandoffError("Generated rule artifacts are missing or unsafe")
+    rule_path, metadata_path, metadata_schema = families[RST_RESPONSE_FAMILY]
     rule = rule_path.read_text(encoding="utf-8")
     if not rule.endswith("\n"):
         raise HandoffError("Rule artifact must end with one newline")
@@ -46,8 +71,32 @@ def _read_artifacts(artifact_dir: Path, run_id: str) -> tuple[Path, Path, str, d
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if not isinstance(metadata, dict):
         raise HandoffError("Rule metadata must be an object")
+    calibration = metadata.get("normal_calibration_provenance")
+    validation = metadata.get("normal_validation_evidence")
+    development = metadata.get("development_evidence")
+    hybrid = metadata.get("hybrid_evidence")
     if (
-        metadata.get("schema_version") != "ml_rule_metadata_v1"
+        not is_verified_development_evidence(development)
+        or
+        not isinstance(hybrid, dict)
+        or hybrid.get("classification") != "reconnaissance_consistent"
+        or hybrid.get("python_only") is not True
+        or hybrid.get("suricata_signature_equivalent") is not False
+        or
+        not isinstance(calibration, dict)
+        or calibration.get("status") != "accepted"
+        or calibration.get("final_holdout_used") is not False
+        or calibration.get("frozen_before_holdouts") is not True
+        or not isinstance(validation, dict)
+        or not SHA256.fullmatch(str(validation.get("pcap_sha256", "")))
+        or validation.get("capture_integrity", {}).get("capture_complete") is not True
+    ):
+        raise HandoffError(
+            "RST candidate lacks verified development, Hybrid, calibration, or Normal validation evidence"
+        )
+    if (
+        metadata.get("schema_version") != metadata_schema
+        or metadata.get("candidate_family") != RST_RESPONSE_FAMILY
         or metadata.get("run_id") != run_id
         or metadata.get("status") != "needs_review"
         or metadata.get("approved") is not False
@@ -59,7 +108,7 @@ def _read_artifacts(artifact_dir: Path, run_id: str) -> tuple[Path, Path, str, d
     ):
         raise HandoffError("Rule metadata provenance or review gate mismatch")
     sids = [int(value) for value in SID.findall(rule_text)]
-    if len(sids) != 1 or sids[0] in {9102001, 9102002}:
+    if len(sids) != 1 or sids[0] in REJECTED_SIDS:
         raise HandoffError("Rule must contain one fresh, non-rejected SID")
     return rule_path, metadata_path, rule_text, metadata
 
@@ -92,10 +141,10 @@ def send(*, artifact_dir: Path, run_id: str, execute: bool, approve: bool) -> di
     target = f"tanhv@{TARGET}"
     remote_dir = f"{REMOTE_ROOT}/{run_id}"
     partial_dir = remote_dir + ".partial"
-    remote_rule = f"{remote_dir}/ml-generated.rules"
-    remote_metadata = f"{remote_dir}/ml-generated.metadata.json"
-    partial_rule = f"{partial_dir}/ml-generated.rules"
-    partial_metadata = f"{partial_dir}/ml-generated.metadata.json"
+    remote_rule = f"{remote_dir}/{rule_path.name}"
+    remote_metadata = f"{remote_dir}/{metadata_path.name}"
+    partial_rule = f"{partial_dir}/{rule_path.name}"
+    partial_metadata = f"{partial_dir}/{metadata_path.name}"
     preflight = "; ".join([
         "set -eu",
         f"test -d {shlex.quote(REMOTE_ROOT)}",

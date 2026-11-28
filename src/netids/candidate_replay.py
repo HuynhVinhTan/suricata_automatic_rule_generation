@@ -1,7 +1,7 @@
 """Trusted, candidate-aware Suricata replay attestation.
 
-This path is deliberately separate from the documented SID 9103003 recovery
-signer. It signs only after revalidating the immutable candidate artifacts,
+This path is deliberately separate from historical recovery evidence. It signs
+only after revalidating the immutable candidate artifacts,
 running Suricata syntax validation and replaying every independently pinned
 Attack/Normal PCAP into a fresh exclusive output directory.
 """
@@ -25,6 +25,7 @@ from netids.candidate_record import (
     verify_candidate_record,
     verify_signed_replay_evidence,
 )
+from netids.rulegen import RST_RESPONSE_FAMILY
 from netids.key_pins import require_pinned_replay_key
 from netids.lifecycle_ed25519 import sha256_file, sign_record
 from netids.trusted_replay import _config_safe
@@ -291,7 +292,13 @@ def attest_candidate_replay(
     labels = {case.get("scenario") for case in cases}
     if labels != {"attack", "normal"} or len(seen) != len(cases):
         raise CandidateReplayError("Both independent Attack and Normal cases are required")
-    rule_path = Path(artifact_dir) / "ml-generated.rules"
+    candidate_family = candidate.get("candidate_family")
+    rule_filename = (
+        "ml-generated-rst.rules"
+        if candidate_family == RST_RESPONSE_FAMILY
+        else "ml-generated.rules"
+    )
+    rule_path = Path(artifact_dir) / rule_filename
     raw_rule = rule_path.read_bytes()
     if raw_rule != candidate["rule"].encode("utf-8") + b"\n":
         raise CandidateReplayError("Candidate rule bytes changed")

@@ -1,0 +1,4 @@
+scripts/demo/*.sh text eol=lf
+scripts/demo/*.py text eol=lf
+scripts/verify_attack_evidence.py text eol=lf
+docs/THREE_VM_SHOWCASE_RUNBOOK_VI.md text eol=lf

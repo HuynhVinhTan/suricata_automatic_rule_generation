@@ -1,5 +1,7 @@
 """Input and plan safety tests for private-lab traffic generators."""
 
+import itertools
+
 import pytest
 
 from scripts import lab_normal_service_access as normal
@@ -24,3 +26,35 @@ def test_normal_plan_rejects_more_than_two_negative_controls():
             closed_ports=[18100, 18101, 18102],
             interval_seconds=0.001,
         )
+
+
+def test_attack_manifest_records_actual_source_ports(monkeypatch):
+    class FakeSocket:
+        def __init__(self, *_args):
+            self.bound = 45123
+
+        def settimeout(self, _timeout):
+            pass
+
+        def bind(self, address):
+            self.bound = 45123
+
+        def connect_ex(self, _address):
+            return 111
+
+        def getsockname(self):
+            return ("192.168.10.20", self.bound)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(scan.socket, "socket", FakeSocket)
+    monkeypatch.setattr(scan.time, "monotonic", itertools.repeat(0.0).__next__)
+    result = scan.run(
+        run_id="attack-test",
+        target="192.168.10.10",
+        ports=list(range(18100, 18124)),
+        interval_seconds=0.001,
+        source_ip="192.168.10.20",
+    )
+    assert all(attempt["source_port"] == 45123 for attempt in result["attempts"])

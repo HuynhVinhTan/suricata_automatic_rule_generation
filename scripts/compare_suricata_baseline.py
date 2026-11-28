@@ -15,6 +15,7 @@ import time
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$")
 SID_RE = re.compile(r"\bsid\s*:\s*(\d+)\s*;", re.IGNORECASE)
+REJECTED_SIDS = frozenset({9103012})
 
 
 class ExperimentError(RuntimeError):
@@ -173,6 +174,16 @@ def load_recon_sids(path: Path) -> set[int]:
     return values
 
 
+def parse_case_args(raw_cases: list[tuple[str, str, str]]) -> list[Case]:
+    """Parse one argv triplet without treating a literal ``|`` as a shell pipe."""
+    cases = []
+    for case_id, label, packed in raw_cases:
+        delimiter = "|" if "|" in packed else "#"
+        pcap_text, expected_hash = packed.rsplit(delimiter, 1)
+        cases.append(Case(case_id, label, Path(pcap_text), expected_hash))
+    return cases
+
+
 def _exclusive_write(path: Path, data: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     try:
@@ -203,6 +214,8 @@ def run_experiment(*, suricata: str, config: Path, expected_config_sha256: str, 
         raise ExperimentError("candidate canonical rule SHA-256 mismatch")
     candidate_sids = active_rule_sids(candidate_rule)
     baseline_sids = active_rule_sids(baseline_rules)
+    if candidate_sids & REJECTED_SIDS:
+        raise ExperimentError("candidate uses a historically rejected SID")
     if len(candidate_sids) != 1 or baseline_sids & candidate_sids:
         raise ExperimentError("candidate must have one SID not present in baseline")
     for case in cases:
@@ -249,11 +262,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
     try:
-        cases = []
-        for case_id, label, packed in args.case:
-            delimiter = "|" if "|" in packed else "#"
-            pcap_text, expected_hash = packed.rsplit(delimiter, 1)
-            cases.append(Case(case_id, label, Path(pcap_text), expected_hash))
+        cases = parse_case_args(args.case)
         recon_sids = set(args.recon_sid)
         if args.recon_sids_file:
             recon_sids.update(load_recon_sids(args.recon_sids_file))

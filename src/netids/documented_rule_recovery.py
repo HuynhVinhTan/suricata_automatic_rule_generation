@@ -24,8 +24,9 @@ def _git_blob(repo_root: Path, path: Path, expected: str) -> bytes:
     if not re.fullmatch(r"[0-9a-f]{40}", expected):
         raise RecoveryError("Invalid pinned evidence Git blob SHA")
     try:
+        relative_path = path.resolve().relative_to(repo_root.resolve()).as_posix()
         actual = subprocess.check_output(
-            ["git", "hash-object", "--no-filters", "--", str(path)],
+            ["git", "hash-object", f"--path={relative_path}", "--", str(path)],
             cwd=repo_root,
             stderr=subprocess.DEVNULL,
         ).decode("ascii").strip()
@@ -36,7 +37,10 @@ def _git_blob(repo_root: Path, path: Path, expected: str) -> bytes:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RecoveryError("Pinned Git source document cannot be verified") from exc
-    if actual != expected or path.read_bytes() != committed:
+    # ``--path`` applies Git's configured text normalization.  This keeps the
+    # pinned blob check stable on Windows checkouts with core.autocrlf=true
+    # while still rejecting any semantic source-document change.
+    if actual != expected:
         raise RecoveryError("Pinned source document differs from committed source document")
     return committed
 

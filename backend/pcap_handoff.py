@@ -16,6 +16,7 @@ import shutil
 import socket
 import struct
 import subprocess
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from ipaddress import IPv4Address
 from pathlib import Path
@@ -27,6 +28,15 @@ RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 SSH_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 REMOTE_PATH = re.compile(r"^/[A-Za-z0-9_./-]+$")
+VM3_TARGET = "tanhv@192.168.10.30"
+CURRENT_REMOTE_INBOX = "/home/tanhv/suricata-ai-private/incoming-pcaps"
+HISTORICAL_REMOTE_INBOX = "/home/tanhv/suricata-ai-showcase/private/incoming-pcaps"
+APPROVED_REMOTE_INBOXES = frozenset((CURRENT_REMOTE_INBOX, HISTORICAL_REMOTE_INBOX))
+CAPTURE_INTEGRITY_FIELDS = (
+    "packet_records_complete",
+    "snaplen_truncated",
+    "capture_drops",
+)
 
 
 class HandoffError(ValueError):
@@ -94,7 +104,7 @@ def _json_exclusive(path: Path, value: dict) -> None:
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, UnicodeError) as exc:
         raise HandoffError("Invalid JSON handoff document") from exc
     if not isinstance(data, dict):
         raise HandoffError("Handoff document must be an object")
@@ -182,11 +192,66 @@ def _bundle_paths(root: Path, run_id: str) -> tuple[Path, Path, Path]:
     ))
 
 
+def _validated_capture_metadata(
+    audit: dict, capture_metadata: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Validate optional native capture-integrity evidence without fabricating it."""
+    if capture_metadata is None:
+        return {}
+    if not isinstance(capture_metadata, Mapping):
+        raise HandoffError("Capture metadata must be an object")
+    extra = dict(capture_metadata)
+    for key in CAPTURE_INTEGRITY_FIELDS:
+        if key in extra and extra[key] is not None and type(extra[key]) is not bool:
+            raise HandoffError(f"Invalid capture integrity field: {key}")
+    if extra.get("packet_records_complete") is False:
+        raise HandoffError("capture integrity is incomplete")
+    if extra.get("snaplen_truncated") is True:
+        raise HandoffError("capture integrity reports snaplen truncation")
+    if extra.get("capture_drops") is True:
+        raise HandoffError("capture integrity reports kernel drops")
+    for key, value in extra.items():
+        if key in audit and value != audit[key]:
+            raise HandoffError(f"Capture metadata conflicts with PCAP audit: {key}")
+    statistics = extra.get("tcpdump_statistics")
+    if statistics is not None:
+        if not isinstance(statistics, Mapping):
+            raise HandoffError("Invalid tcpdump capture statistics")
+        statistics = dict(statistics)
+        count_fields = (
+            "packets_captured",
+            "packets_received_by_filter",
+            "packets_dropped_by_kernel",
+        )
+        for key in count_fields:
+            value = statistics.get(key)
+            if value is not None and (type(value) is not int or value < 0):
+                raise HandoffError(f"Invalid tcpdump statistic: {key}")
+        status = statistics.get("status")
+        complete_stats = all(statistics.get(key) is not None for key in count_fields)
+        if status not in {"verified", "unverified"} or (status == "verified") != complete_stats:
+            raise HandoffError("Invalid tcpdump statistics status")
+        if (
+            statistics.get("packets_captured") is not None
+            and statistics["packets_captured"] != audit["packets"]
+        ):
+            raise HandoffError("Tcpdump packet count conflicts with PCAP audit")
+        if (
+            statistics.get("packets_dropped_by_kernel") is not None
+            and extra.get("capture_drops") is not None
+            and extra["capture_drops"] != (statistics["packets_dropped_by_kernel"] > 0)
+        ):
+            raise HandoffError("Tcpdump drop count conflicts with capture integrity")
+        extra["tcpdump_statistics"] = statistics
+    return extra
+
+
 def bundle(
     *, pcap: Path, input_root: Path, outbox: Path, run_id: str,
     src: str, dst: str, expected_sha256: str,
     expected_syn: int, expected_get: int | None = None,
     capture_kind: str = "raw",
+    capture_metadata: Mapping[str, object] | None = None,
 ) -> dict:
     run_id = _run_id(run_id)
     inroot, outroot = _root(input_root), _root(outbox)
@@ -207,6 +272,7 @@ def bundle(
     digest = _hash(source)
     if digest != expected_sha256.lower():
         raise HandoffError("Original PCAP SHA256 mismatch")
+    extra_metadata = _validated_capture_metadata(audit, capture_metadata)
     target_dir = outroot / run_id
     target_dir.mkdir(mode=0o700, exist_ok=False)
     pcap_out, manifest_out, ready_out = _bundle_paths(target_dir, run_id)
@@ -226,6 +292,7 @@ def bundle(
         "run_id": run_id,
         "capture_metadata": {
             **audit,
+            **extra_metadata,
             "capture_kind": capture_kind,
             "sealed_at": _utc(),
         },
@@ -263,6 +330,7 @@ def verified_bundle(root: Path, run_id: str) -> tuple[Path, Path, Path, dict]:
     meta = doc.get("capture_metadata")
     if not isinstance(meta, dict) or any(meta.get(k) != audit[k] for k in audit):
         raise HandoffError("Manifest PCAP audit metadata mismatch")
+    _validated_capture_metadata(audit, meta)
     return pcap, manifest, ready, doc
 
 
@@ -276,6 +344,24 @@ def _ssh_options() -> list[str]:
     ]
 
 
+def _validate_remote_target(remote_user: str, remote_host: str) -> str:
+    if not SSH_USER.fullmatch(remote_user):
+        raise HandoffError("Invalid SSH user")
+    try:
+        host = str(IPv4Address(remote_host))
+    except ValueError as exc:
+        raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed") from exc
+    target = f"{remote_user}@{host}"
+    if target != VM3_TARGET:
+        raise HandoffError("Only designated lab VM3 tanhv@192.168.10.30 is allowed")
+    return target
+
+
+def _validate_current_remote_inbox(remote_inbox: str) -> None:
+    if remote_inbox != CURRENT_REMOTE_INBOX:
+        raise HandoffError("New transfers require the approved current VM3 inbox")
+
+
 def send(
     *, outbox: Path, run_id: str, remote_user: str, remote_host: str,
     remote_inbox: str, execute: bool,
@@ -283,15 +369,8 @@ def send(
     run_id = _run_id(run_id)
     root = _root(outbox)
     pcap, manifest, ready, doc = verified_bundle(root / run_id, run_id)
-    if not SSH_USER.fullmatch(remote_user):
-        raise HandoffError("Invalid SSH user")
-    # Hosts are pinned lab IPv4 addresses, never arbitrary SSH aliases.
-    host = str(IPv4Address(remote_host))
-    if host != "192.168.10.30":
-        raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed")
-    if not REMOTE_PATH.fullmatch(remote_inbox) or ".." in remote_inbox.split("/"):
-        raise HandoffError("Remote inbox must be a safe absolute path")
-    target = f"{remote_user}@{host}"
+    target = _validate_remote_target(remote_user, remote_host)
+    _validate_current_remote_inbox(remote_inbox)
     receipt = root / run_id / f"{run_id}.sent.json"
     if _validate_sent_receipt(
         root / run_id, run_id, ready, target, remote_inbox
@@ -340,6 +419,7 @@ def send(
 def _validate_sent_receipt(
     run_root: Path, run_id: str, ready: Path, target: str, remote_inbox: str
 ) -> bool:
+    _validate_current_remote_inbox(remote_inbox)
     receipt = run_root / f"{run_id}.sent.json"
     if not receipt.exists() and not receipt.is_symlink():
         return False
@@ -349,11 +429,19 @@ def _validate_sent_receipt(
             "status", "run_id", "ready_sha256", "remote", "remote_inbox",
             "sent_at",
         }
+        or target != VM3_TARGET
+        or type(old.get("status")) is not str
         or old.get("status") != "sent"
+        or type(old.get("run_id")) is not str
         or old.get("run_id") != run_id
+        or type(old.get("ready_sha256")) is not str
+        or not SHA256.fullmatch(old.get("ready_sha256", ""))
         or old.get("ready_sha256") != _hash(ready)
-        or old.get("remote") != target
-        or old.get("remote_inbox") != remote_inbox
+        or type(old.get("remote")) is not str
+        or old.get("remote") != VM3_TARGET
+        or type(old.get("remote_inbox")) is not str
+        or old.get("remote_inbox") not in APPROVED_REMOTE_INBOXES
+        or type(old.get("sent_at")) is not str
         or not _valid_timestamp(old.get("sent_at"))
     ):
         raise HandoffError("Existing transfer receipt is inconsistent with the bundle or destination")
@@ -568,13 +656,10 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 if not SSH_USER.fullmatch(args.remote_user):
                     raise HandoffError("Invalid SSH user")
-                host = str(IPv4Address(args.remote_host))
-                if host != "192.168.10.30":
-                    raise HandoffError("Only designated lab VM3 192.168.10.30 is allowed")
-                if not REMOTE_PATH.fullmatch(args.remote_inbox) or ".." in args.remote_inbox.split("/"):
-                    raise HandoffError("Remote inbox must be a safe absolute path")
+                _validate_remote_target(args.remote_user, args.remote_host)
+                _validate_current_remote_inbox(args.remote_inbox)
                 run_ids = _pending_send_ids(
-                    outbox, f"{args.remote_user}@{host}", args.remote_inbox
+                    outbox, VM3_TARGET, args.remote_inbox
                 )
             result = [
                 send(

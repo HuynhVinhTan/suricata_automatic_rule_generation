@@ -1,16 +1,31 @@
 """Isolated runtime fail-closed preflight tests: never start Suricata in CI."""
 
+import io
+import hashlib
+import json
+import os
+import subprocess
+import socket
+import struct
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
+from netids import isolated_suricata_runtime as runtime_module
 from netids.isolated_suricata_runtime import (
     IsolatedSuricataRuntime, IsolatedRuntimeError, is_verified_vm1_host,
+    validate_unix_socket_path,
 )
+from netids.privilege_separation import PrivilegeSeparationError
+from netids.latency import LatencyTrace
 from scripts.operate_isolated_once import (
     OperationError, _require_candidate_baseline, production_snapshot,
 )
+from scripts import operate_frozen_rst_once
+from netids.lifecycle_ed25519 import generate_encrypted_keypair
 
 
 def test_runtime_refuses_non_vm1_even_with_synthetic_pcap(monkeypatch, tmp_path):
@@ -98,6 +113,124 @@ def test_vm1_identity_fails_closed_when_ip_command_is_unavailable(monkeypatch):
     assert is_verified_vm1_host() is False
 
 
+def test_run_forwards_supplied_working_directory(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime.subprocess.run", fake_run)
+    assert runtime_module._run(["suricata", "-V"], cwd=tmp_path).stdout == "ok"
+    assert calls[0][1]["cwd"] == tmp_path
+
+
+def test_candidate_syntax_validation_uses_exact_attempt_root(monkeypatch, tmp_path):
+    attempt = tmp_path / "attempts" / "g5r3"
+    references = attempt / "references"
+    (attempt / "runtime").mkdir(parents=True)
+    (attempt / "logs").mkdir()
+    (tmp_path / "runtime").mkdir()
+    references.mkdir()
+    (references / "classification.config").write_text("classification", encoding="utf-8")
+    (references / "reference.config").write_text("reference", encoding="utf-8")
+    config = attempt / "suricata.yaml"
+    config.write_text(
+        "classification-file: references/classification.config\n"
+        "reference-config-file: references/reference.config\n",
+        encoding="utf-8",
+    )
+    pcap = tmp_path / "attack.pcap"
+    pcap.write_bytes(b"verified-pcap")
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.attempt_root = attempt
+    runtime.root = tmp_path
+    runtime.config = config
+    runtime.attack_pcap = pcap
+    runtime.attack_sha256 = hashlib.sha256(pcap.read_bytes()).hexdigest()
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.logdir = attempt / "logs"
+    runtime.validation_logdir = attempt / "validation-logs"
+    runtime.deadline_monotonic = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = lambda *args, **kwargs: None
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        cwd = kwargs["cwd"]
+        document = yaml.safe_load((cwd / "suricata.yaml").read_text(encoding="utf-8"))
+        assert (cwd / document["classification-file"]).is_file()
+        assert (cwd / document["reference-config-file"]).is_file()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    assert runtime._validate_impl('alert tcp any any -> any any (msg:"candidate";)') is True
+    assert calls[0][1]["cwd"] == attempt
+
+
+def test_native_validation_uses_exclusive_log_directory_and_preserves_root_owned_eve(
+    monkeypatch, tmp_path,
+):
+    attempt = tmp_path / "attempt"
+    validation_logs = attempt / "validation-logs"
+    live_logs = attempt / "logs"
+    runtime_dir = attempt / "runtime"
+    for directory in (validation_logs, live_logs, runtime_dir):
+        directory.mkdir(parents=True)
+    pcap = tmp_path / "attack.pcap"
+    pcap.write_bytes(b"verified-pcap")
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.attempt_root = attempt
+    runtime.root = tmp_path
+    runtime.config = attempt / "suricata.yaml"
+    runtime.attack_pcap = pcap
+    runtime.attack_sha256 = hashlib.sha256(pcap.read_bytes()).hexdigest()
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.logdir = live_logs
+    runtime.validation_logdir = validation_logs
+    runtime.deadline_monotonic = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = lambda *args, **kwargs: None
+
+    def fake_run(argv, **kwargs):
+        logdir = Path(argv[argv.index("-l") + 1])
+        eve = logdir / "eve.json"
+        eve.write_text("", encoding="utf-8")
+        eve.chmod(0o600)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    assert runtime._validate_impl('alert tcp any any -> any any (msg:"candidate";)') is True
+    assert (validation_logs / "eve.json").exists()
+    if os.name != "nt":
+        assert (validation_logs / "eve.json").stat().st_mode & 0o777 == 0o600
+    assert not (live_logs / "eve.json").exists()
+    arguments = runtime._validation_rule_arguments(runtime_dir / "candidate.rules")
+    assert arguments[arguments.index("-l") + 1] == str(validation_logs)
+
+
+def test_suricatasc_commands_use_exact_attempt_root(monkeypatch, tmp_path):
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.attempt_root = attempt
+    runtime.socket_path = attempt / "runtime" / "socket"
+    runtime.suricatasc = "/usr/bin/suricatasc"
+    runtime.deadline_monotonic = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = lambda *args, **kwargs: None
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"return":"OK","message":"ok"}', stderr="")
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    assert runtime._command("version") == "ok"
+    assert calls[0][1]["cwd"] == attempt
+
+
 def test_candidate_baseline_must_match_actual_production_rules_hash():
     candidate = {"baseline_rules_sha256": "a" * 64}
     snapshot = {"production_rules_sha256": "a" * 64}
@@ -109,3 +242,954 @@ def test_candidate_baseline_must_match_actual_production_rules_hash():
 def test_candidate_baseline_missing_hash_fails_closed():
     with pytest.raises(OperationError, match="baseline rules"):
         _require_candidate_baseline({}, {"production_rules_sha256": "a" * 64})
+
+
+def test_daemon_uses_af_packet_only_and_keeps_exclusive_syntax_rule_path_offline(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.config = tmp_path / "isolated.yaml"
+    runtime.active_rules = tmp_path / "rules" / "active.rules"
+    runtime.logdir = tmp_path / "logs"
+    runtime.validation_logdir = tmp_path / "validation-logs"
+    runtime.pidfile = tmp_path / "runtime" / "suricata.pid"
+
+    arguments = runtime._daemon_arguments()
+
+    assert "--af-packet=lo" in arguments
+    assert "--unix-socket=" not in " ".join(arguments)
+    assert "-S" not in arguments and "-s" not in arguments
+    validation = runtime._validation_rule_arguments(tmp_path / "runtime" / "candidate.rules")
+    assert validation[validation.index("-S") + 1] == str(tmp_path / "runtime" / "candidate.rules")
+
+
+def test_isolated_config_declares_only_active_rules_and_attempt_socket(tmp_path, monkeypatch):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = tmp_path
+    runtime.config = tmp_path / "isolated.yaml"
+    runtime.active_rules = tmp_path / "rules" / "active.rules"
+    runtime.socket_path = tmp_path / "runtime" / "suricata.sock"
+    runtime.config.write_text(
+        """default-rule-path: {rules}
+rule-files:
+  - active.rules
+unix-command:
+  enabled: yes
+  filename: {socket}
+af-packet:
+  - interface: lo
+outputs:
+  - eve-log:
+      enabled: yes
+      filename: eve.json
+""".format(rules=tmp_path / "rules", socket=tmp_path / "runtime" / "suricata.sock"),
+        encoding="utf-8",
+    )
+
+    runtime._validate_isolated_configuration()
+
+
+def test_attempt_namespace_rewrites_effective_config_without_touching_template(tmp_path, monkeypatch):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    root = tmp_path / "isolated"
+    root.mkdir()
+    template = root / "isolated.yaml"
+    template.write_text(
+        "default-rule-path: {root}/rules\n"
+        "rule-files:\n"
+        "  - active.rules\n"
+        "unix-command:\n"
+        "  enabled: yes\n"
+        "  filename: {root}/runtime/lab-suricata.socket\n"
+        "af-packet:\n"
+        "  - interface: lo\n"
+        "outputs:\n"
+        "  - eve-log:\n"
+        "      enabled: yes\n"
+        "      filename: eve.json\n".format(root=root),
+        encoding="utf-8",
+    )
+    original = template.read_bytes()
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = root
+    runtime.config_source = template
+    runtime.attempt_id = "attempt-20261125-01"
+    runtime.attempt_root = root / "attempts" / runtime.attempt_id
+    runtime.config = runtime.attempt_root / "suricata.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "lab-suricata.socket"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "lab-suricata.pid"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.validation_logdir = runtime.attempt_root / "validation-logs"
+    runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+
+    runtime._prepare_attempt_namespace()
+
+    assert template.read_bytes() == original
+    assert runtime.config.read_bytes().startswith(b"%YAML 1.1\n---\n")
+    effective = yaml.safe_load(runtime.config.read_text(encoding="utf-8"))
+    assert effective["default-rule-path"] == str(runtime.active_rules.parent)
+    assert effective["rule-files"] == ["active.rules"]
+    assert effective["unix-command"]["filename"] == str(runtime.socket_path)
+    assert runtime.config.is_relative_to(runtime.attempt_root)
+    assert runtime.diagnostic_path.is_relative_to(runtime.attempt_root)
+
+
+def test_attempt_namespace_refuses_reuse_and_preserves_prior_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    root = tmp_path / "isolated"
+    root.mkdir()
+    template = root / "isolated.yaml"
+    template.write_text(
+        "default-rule-path: rules\n"
+        "rule-files: [active.rules]\n"
+        "unix-command: {enabled: true, filename: runtime/socket}\n"
+        "af-packet: [{interface: lo}]\n"
+        "outputs: [{eve-log: {enabled: true, filename: eve.json}}]\n",
+        encoding="utf-8",
+    )
+
+    def make_runtime():
+        runtime = object.__new__(IsolatedSuricataRuntime)
+        runtime.root = root
+        runtime.config_source = template
+        runtime.attempt_id = "attempt-01"
+        runtime.attempt_root = root / "attempts" / runtime.attempt_id
+        runtime.config = runtime.attempt_root / "suricata.yaml"
+        runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+        runtime.socket_path = runtime.attempt_root / "runtime" / "socket"
+        runtime.pidfile = runtime.attempt_root / "runtime" / "pid"
+        runtime.logdir = runtime.attempt_root / "logs"
+        runtime.validation_logdir = runtime.attempt_root / "validation-logs"
+        runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+        return runtime
+
+    runtime = make_runtime()
+    runtime._prepare_attempt_namespace()
+    marker = runtime.attempt_root / "failure.json"
+    marker.write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(IsolatedRuntimeError, match="already exists"):
+        make_runtime()._prepare_attempt_namespace()
+    assert marker.read_text(encoding="utf-8") == "preserve"
+
+
+@pytest.mark.parametrize("reference", ["missing/classification.config", "../outside.config"])
+def test_attempt_namespace_rejects_missing_or_unsafe_references(tmp_path, monkeypatch, reference):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    root = tmp_path / "isolated"
+    root.mkdir()
+    if reference.startswith("../"):
+        (tmp_path / "outside.config").write_text("outside", encoding="utf-8")
+    template = root / "isolated.yaml"
+    template.write_text(
+        "classification-file: " + reference + "\n"
+        "rule-files: [active.rules]\n"
+        "unix-command: {enabled: true, filename: runtime/socket}\n"
+        "af-packet: [{interface: lo}]\n"
+        "outputs: [{eve-log: {enabled: true, filename: eve.json}}]\n",
+        encoding="utf-8",
+    )
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = root
+    runtime.config_source = template
+    runtime.attempt_id = "attempt-unsafe-reference"
+    runtime.attempt_root = root / "attempts" / runtime.attempt_id
+    runtime.config = runtime.attempt_root / "suricata.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "socket"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "pid"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.validation_logdir = runtime.attempt_root / "validation-logs"
+    runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+    with pytest.raises(IsolatedRuntimeError, match="effective attempt configuration"):
+        runtime._prepare_attempt_namespace()
+
+
+def test_historical_sid9103003_config_declares_loopback_af_packet():
+    config = yaml.safe_load(Path("configs/suricata/isolated-lifecycle-9103003.yaml").read_text(encoding="utf-8"))
+    assert config["af-packet"] == [{"interface": "lo"}]
+
+
+def test_vm1_socket_path_limit_is_checked_in_encoded_bytes():
+    long_path = Path(
+        "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103005/"
+        "attempts/g5-readiness-20261125-01/runtime/lab-suricata.socket"
+    )
+    short_path = Path(
+        "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103005/"
+        "attempts/g5r1/runtime/lab-suricata.socket"
+    )
+    assert len(os.fsencode(str(long_path))) == 121
+    assert len(os.fsencode(str(short_path))) == 101
+    with pytest.raises(ValueError, match="UNIX socket pathname"):
+        validate_unix_socket_path(long_path)
+    validate_unix_socket_path(short_path)
+
+
+def test_frozen_operator_rejects_long_vm1_socket_before_lifecycle_or_nonce(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(operate_frozen_rst_once, "require_root_operator_if_supported", lambda: None)
+    monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "_read_json",
+        lambda _path: (_ for _ in ()).throw(AssertionError("readiness must precede lifecycle inputs")),
+    )
+    lifecycle_created = []
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "RuleLifecycle",
+        lambda *args, **kwargs: lifecycle_created.append(True),
+    )
+    root = Path(
+        "/home/tanhv/suricata-rule-review/isolated-lifecycle-9103005"
+    )
+    attempt_id = "g5-readiness-20261125-01"
+    with pytest.raises(OperationError, match="UNIX socket pathname"):
+        operate_frozen_rst_once.execute_frozen_once(
+            candidate_file=tmp_path / "candidate.json",
+            replay_file=tmp_path / "replay.json",
+            owner_file=tmp_path / "owner.json",
+            replay_public_file=tmp_path / "replay.pub.pem",
+            owner_public_file=tmp_path / "owner.pub.pem",
+            runtime_public_file=tmp_path / "runtime.pub.pem",
+            production_yaml=tmp_path / "suricata.yaml",
+            production_rules=tmp_path / "rules.rules",
+            isolated_yaml=tmp_path / "isolated.yaml",
+            isolated_root=root,
+            attempt_id=attempt_id,
+            probe_specs=[],
+            audit_path=root / "audit" / "owner-once.jsonl",
+            failure_path=root / "attempts" / attempt_id / "failure.json",
+            runtime_private_pem=b"private",
+            runtime_private_password=b"password",
+        )
+    assert lifecycle_created == []
+
+
+def test_frozen_operator_rejects_non_root_before_any_side_effect(monkeypatch, tmp_path):
+    monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "require_root_operator_if_supported",
+        lambda: (_ for _ in ()).throw(PrivilegeSeparationError("root operator with EUID 0 is required")),
+    )
+    input_reads = []
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "_read_json",
+        lambda path: input_reads.append(path) or (_ for _ in ()).throw(
+            AssertionError("non-root guard must precede input reads")
+        ),
+    )
+    lifecycle_created = []
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "RuleLifecycle",
+        lambda *args, **kwargs: lifecycle_created.append(True),
+    )
+    isolated = tmp_path / "isolated"
+    audit = isolated / "audit" / "owner-once.jsonl"
+    attempt = isolated / "attempts" / "attempt-non-root"
+    with pytest.raises(OperationError, match="EUID 0"):
+        operate_frozen_rst_once.execute_frozen_once(
+            candidate_file=tmp_path / "candidate.json",
+            replay_file=tmp_path / "replay.json",
+            owner_file=tmp_path / "owner.json",
+            replay_public_file=tmp_path / "replay.pub.pem",
+            owner_public_file=tmp_path / "owner.pub.pem",
+            runtime_public_file=tmp_path / "runtime.pub.pem",
+            production_yaml=tmp_path / "suricata.yaml",
+            production_rules=tmp_path / "rules.rules",
+            isolated_yaml=tmp_path / "isolated.yaml",
+            isolated_root=isolated,
+            attempt_id="attempt-non-root",
+            probe_specs=[], audit_path=audit, failure_path=attempt / "failure.json",
+            runtime_private_pem=b"private", runtime_private_password=b"password",
+        )
+    assert input_reads == []
+    assert lifecycle_created == []
+    assert not audit.exists()
+    assert not attempt.exists()
+
+
+def test_startup_failure_preserves_bounded_daemon_diagnostics(monkeypatch, tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = tmp_path
+    runtime.attempt_root = tmp_path / "attempt"
+    runtime.config = runtime.attempt_root / "isolated.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "suricata.pid"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "suricata.sock"
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.process = None
+    runtime._old_rules = None
+    runtime.active_rules.parent.mkdir(parents=True)
+    runtime.diagnostic_path = tmp_path / "logs" / "runtime-diagnostics.jsonl"
+    runtime.failure_phase = None
+    runtime._output_collectors = []
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = IsolatedSuricataRuntime._record_diagnostic.__get__(runtime)
+    runtime._daemon_arguments = IsolatedSuricataRuntime._daemon_arguments.__get__(runtime)
+    runtime.suricata = "/usr/bin/suricata"
+
+    class FailedProcess:
+        stdout = io.BytesIO(b"initialization failed: missing AF_PACKET capability\n")
+        stderr = io.BytesIO(b"secret=do-not-log\n")
+
+        @staticmethod
+        def poll():
+            return 23
+
+    def fake_popen(arguments, **kwargs):
+        assert kwargs["stdout"] == subprocess.PIPE
+        assert kwargs["stderr"] == subprocess.PIPE
+        assert kwargs["cwd"] == runtime.attempt_root
+        return FailedProcess()
+
+    monkeypatch.setattr("netids.isolated_suricata_runtime.subprocess.Popen", fake_popen)
+
+    with pytest.raises(IsolatedRuntimeError, match="startup"):
+        runtime._start()
+
+    diagnostics = runtime.diagnostic_path.read_text(encoding="utf-8")
+    assert "initialization failed" in diagnostics
+    assert "do-not-log" not in diagnostics
+    record = json.loads(diagnostics.splitlines()[-1])
+    assert record["phase"] == "startup"
+    assert record["exit_status"] == 23
+
+
+def test_child_exit_during_privilege_drop_preserves_exit_status_and_output(monkeypatch, tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = tmp_path
+    runtime.attempt_root = tmp_path / "attempt"
+    runtime.config = runtime.attempt_root / "isolated.yaml"
+    runtime.active_rules = runtime.attempt_root / "rules" / "active.rules"
+    runtime.logdir = runtime.attempt_root / "logs"
+    runtime.pidfile = runtime.attempt_root / "runtime" / "suricata.pid"
+    runtime.socket_path = runtime.attempt_root / "runtime" / "suricata.sock"
+    runtime.process = None
+    runtime._old_rules = None
+    runtime._acl_paths = None
+    runtime.suricata = "/usr/bin/suricata"
+    runtime.service_user = "suricata-g5"
+    runtime.service_group = "suricata-g5"
+    runtime.diagnostic_path = runtime.logdir / "runtime-diagnostics.jsonl"
+    runtime.failure_phase = None
+    runtime.primary_failure_phase = None
+    runtime.primary_failure_reason = None
+    runtime._check_deadline = lambda: None
+    runtime._record_diagnostic = IsolatedSuricataRuntime._record_diagnostic.__get__(runtime)
+    runtime.active_rules.parent.mkdir(parents=True)
+
+    class ExitedProcess:
+        stdout = io.BytesIO(b"startup output\n")
+        stderr = io.BytesIO(b"privilege drop failed\n")
+        pid = 4242
+
+        @staticmethod
+        def poll():
+            return 17
+
+    monkeypatch.setattr(
+        "netids.isolated_suricata_runtime.subprocess.Popen",
+        lambda *args, **kwargs: ExitedProcess(),
+    )
+
+    with pytest.raises(IsolatedRuntimeError, match="privilege drop|startup"):
+        runtime._start()
+
+    record = json.loads(runtime.diagnostic_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["phase"] == "startup"
+    assert record["exit_status"] == 17
+    assert "privilege drop failed" in record["stderr"]
+
+
+def test_reload_failure_is_recorded_with_phase_and_socket_error(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.root = tmp_path
+    runtime.active_rules = tmp_path / "rules" / "active.rules"
+    runtime.active_rules.parent.mkdir()
+    runtime._old_rules = b"# empty\n"
+    runtime.sid = 9103005
+    runtime.rule_sha256 = "a" * 64
+    runtime.process = SimpleNamespace(poll=lambda: None)
+    runtime.failure_phase = None
+    runtime.diagnostic_path = tmp_path / "logs" / "runtime-diagnostics.jsonl"
+    runtime._record_diagnostic = IsolatedSuricataRuntime._record_diagnostic.__get__(runtime)
+    runtime._measure_bool = lambda _name, _component, operation: operation()
+    runtime._command = lambda _command: (_ for _ in ()).throw(
+        IsolatedRuntimeError("socket command failed: reload rejected")
+    )
+
+    assert runtime._rollback_impl(tmp_path / "candidate.rules", 9103005, "a" * 64) is False
+
+    records = [json.loads(line) for line in runtime.diagnostic_path.read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["phase"] == "rollback"
+    assert "reload rejected" in records[-1]["error"]
+
+
+def test_shutdown_cleans_owned_files_even_if_startup_never_created_process(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.process = None
+    runtime.pidfile = tmp_path / "runtime" / "suricata.pid"
+    runtime.socket_path = tmp_path / "runtime" / "suricata.sock"
+    runtime.active_rules = tmp_path / "rules" / "active.rules"
+    runtime.diagnostic_path = tmp_path / "logs" / "runtime-diagnostics.jsonl"
+    for path in (runtime.pidfile, runtime.socket_path, runtime.active_rules):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("owned", encoding="utf-8")
+
+    assert runtime.shutdown() is True
+    assert not any(path.exists() for path in (runtime.pidfile, runtime.socket_path, runtime.active_rules))
+
+
+def test_failed_frozen_attempt_records_failure_cleanup_rollback_and_production_state(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(operate_frozen_rst_once, "require_root_operator_if_supported", lambda: None)
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    candidate = {"candidate_id": "c" * 64, "run_id": "g5-failure", "rule_sha256": "d" * 64}
+    replay = {"probe_plan": [
+        {"case": "A1", "label": "ATTACK", "scenario": "attack", "pcap_sha256": "a" * 64},
+        {"case": "N1", "label": "NORMAL", "scenario": "normal", "pcap_sha256": "b" * 64},
+    ]}
+    owner = {
+        "runtime_id": operate_frozen_rst_once.RUNTIME_ID,
+        "target_vm": operate_frozen_rst_once.VM1_HOST,
+        "interface": "lo",
+        "isolated_root": str((tmp_path / "isolated").resolve()),
+    }
+    values = iter((candidate, replay, owner))
+    audit_path = tmp_path / "isolated" / "audit" / "owner-once.jsonl"
+    attempt_root = tmp_path / "isolated" / "attempts" / "attempt-02"
+    (tmp_path / "isolated").mkdir()
+    failure_path = attempt_root / "failure.json"
+    runtime_diag = attempt_root / "runtime-diagnostics.jsonl"
+    for name in ("replay.pub.pem", "owner.pub.pem", "runtime.pub.pem"):
+        (tmp_path / name).write_bytes(b"test-key")
+
+    class LifecycleProbe:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def create_candidate(self, value):
+            return value
+
+        def transition(self, *_args):
+            return None
+
+        def record_validation(self, *_args):
+            return None
+
+        def approve(self, *_args):
+            return None
+
+        def stage(self, *_args, **_kwargs):
+            raise OperationError("activation failure: reload rejected")
+
+        def verify_audit(self):
+            return 11
+
+    class RuntimeProbe:
+        def __init__(self, *args, **kwargs):
+            attempt_root.mkdir(parents=True)
+            runtime_diag.write_text(
+                json.dumps({"phase": "reload", "status": "failed", "error": "socket rejected"}) + "\n",
+                encoding="utf-8",
+            )
+            self.failure_phase = "reload"
+            self.primary_failure_phase = "reload"
+            self.primary_failure_reason = "socket rejected"
+            self.rollback_attempted = True
+            self.rollback_verified = False
+            self.post_rollback_verified = False
+            self.probe_results = [{
+                "case": "A1", "phase": "active", "result": False,
+                "outcome": "FAIL", "failure_reason": "traffic proof was not observed",
+                "traffic_proof": False,
+            }]
+            self.diagnostic_path = runtime_diag
+            self.attempt_root = attempt_root
+            self.pidfile = attempt_root / "runtime.pid"
+            self.socket_path = attempt_root / "runtime.sock"
+            self.active_rules = attempt_root / "active.rules"
+            self.process = SimpleNamespace(poll=lambda: 0)
+
+        def shutdown(self):
+            return True
+
+    monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "_read_json", lambda _path: next(values))
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_candidate", lambda *args: {})
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_replay_attestation", lambda *args: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_owner_authorization", lambda *args: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "_require_runtime_keypair", lambda *args: None)
+    monkeypatch.setattr(operate_frozen_rst_once, "_require_candidate_baseline", lambda *args: None)
+    probe_paths = [
+        dict(replay["probe_plan"][0], path=tmp_path / "attack.pcap"),
+        dict(replay["probe_plan"][1], path=tmp_path / "normal.pcap"),
+    ]
+    monkeypatch.setattr(operate_frozen_rst_once, "_probe_paths", lambda *args: probe_paths)
+    monkeypatch.setattr(operate_frozen_rst_once, "production_snapshot", lambda *args, **kwargs: {"state": "same"})
+    monkeypatch.setattr(operate_frozen_rst_once, "RuleLifecycle", LifecycleProbe)
+    monkeypatch.setattr(operate_frozen_rst_once, "IsolatedSuricataRuntime", RuntimeProbe)
+
+    with pytest.raises(OperationError, match="activation failure"):
+        operate_frozen_rst_once.execute_frozen_once(
+            candidate_file=tmp_path / "candidate.json",
+            replay_file=tmp_path / "replay.json",
+            owner_file=tmp_path / "owner.json",
+            replay_public_file=tmp_path / "replay.pub.pem",
+            owner_public_file=tmp_path / "owner.pub.pem",
+            runtime_public_file=tmp_path / "runtime.pub.pem",
+            production_yaml=tmp_path / "suricata.yaml",
+            production_rules=tmp_path / "rules.rules",
+            isolated_yaml=tmp_path / "isolated.yaml",
+            isolated_root=tmp_path / "isolated",
+            attempt_id="attempt-02",
+            probe_specs=[], audit_path=audit_path, failure_path=failure_path,
+            runtime_private_pem=b"private", runtime_private_password=b"password",
+        )
+
+    report = json.loads(failure_path.read_text(encoding="utf-8"))
+    assert report["outcome"] == "FAILED"
+    assert report["accepted"] is False
+    assert report["failure_phase"] == "reload"
+    assert report["primary_failure_phase"] == "reload"
+    assert report["primary_failure_reason"] == "socket rejected"
+    assert report["rollback_status"] == "unverified"
+    assert report["cleanup_status"] == "verified"
+    assert report["production_state"] == "unchanged"
+    assert report["lifecycle_audit_records"] == 11
+    assert report["diagnostic_log_sha256"]
+    assert report["probe_results"][0]["outcome"] == "FAIL"
+    assert report["attempt_id"] == "attempt-02"
+    assert report["attempt_evidence_root"] == str((tmp_path / "isolated" / "attempts" / "attempt-02").resolve())
+
+
+def test_isolated_runtime_rejects_flow_only_as_probe_proof(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_module, "PROBE_OBSERVATION_SECONDS", 0.0)
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    monkeypatch.setattr(IsolatedSuricataRuntime, "_preflight", lambda self: None)
+    def fake_run(*args, **kwargs):
+        (tmp_path / "logs" / "eve.json").write_text('{"event_type":"flow"}\n', encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="")
+    monkeypatch.setattr("netids.isolated_suricata_runtime._run", fake_run)
+    monkeypatch.setattr("netids.isolated_suricata_runtime.time.sleep", lambda seconds: None)
+    pcap = tmp_path / "probe.pcap"
+    pcap.write_bytes(b"synthetic-pcap")
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "eve.json").write_text("", encoding="utf-8")
+    trace = LatencyTrace(run_id="g5-run", host="vm1", clock_sync={"status": "same_host_monotonic", "offset_ms": 0.0})
+    runtime = IsolatedSuricataRuntime(
+        config=tmp_path / "isolated.yaml",
+        attack_pcap=pcap,
+        attack_sha256="a" * 64,
+        normal_pcap=pcap,
+        normal_sha256="a" * 64,
+        root=tmp_path,
+        latency_trace=trace,
+    )
+    runtime._check_deadline = lambda: None
+    assert runtime._pcap_probe(pcap, expect_alert=False, case="N1", label="NORMAL", scenario="normal") is False
+    assert runtime.probe_results[-1]["outcome"] == "FAIL"
+    assert runtime.probe_results[-1]["failure_reason"]
+    stages = trace.as_dict()["stages"]
+    probe_stage = next(stage for stage in stages if stage["name"] == "probe_active_N1")
+    assert probe_stage["status"] == "error"
+
+
+def _stats_event(timestamp, packets, decoded):
+    return {
+        "timestamp": timestamp,
+        "event_type": "stats",
+        "stats": {
+            "capture": {"kernel_packets": packets},
+            "decoder": {"pkts": decoded},
+        },
+    }
+
+
+def _test_tcp_pcap():
+    tcp = struct.pack("!HHIIHHHH", 41000, 18100, 1, 0, 0x5002, 65535, 0, 0)
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 40, 1, 0, 64, 6, 0,
+                     socket.inet_aton("192.0.2.10"), socket.inet_aton("192.0.2.20"))
+    frame = b"\x00" * 12 + b"\x08\x00" + ip + tcp
+    return struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1) + struct.pack("<IIII", 1, 0, len(frame), len(frame)) + frame
+
+
+def _test_flow_event(timestamp):
+    return {
+        "event_type": "flow", "timestamp": timestamp, "flow_id": 71,
+        "src_ip": "192.0.2.10", "dest_ip": "192.0.2.20",
+        "src_port": 41000, "dest_port": 18100, "proto": "TCP",
+    }
+
+
+def _probe_runtime(tmp_path, monkeypatch, *, replay_records=(), post_stats=(11, 11), timeout=0.2, include_probe_flow=True):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.logdir = tmp_path
+    runtime.tcpreplay = "tcpreplay"
+    runtime.sid = 9103005
+    runtime.deadline_monotonic = None
+    runtime.probe_results = []
+    runtime._last_attack_eve = ""
+    runtime._check_deadline = lambda: None
+    pcap = tmp_path / "probe.pcap"
+    pcap.write_bytes(_test_tcp_pcap())
+    digest = hashlib.sha256(pcap.read_bytes()).hexdigest()
+    runtime.probe_plan = ({"case": "N1", "label": "NORMAL", "scenario": "normal", "pcap_sha256": digest},
+                          {"case": "N2", "label": "NORMAL", "scenario": "negative_control", "pcap_sha256": digest},
+                          {"case": "A1", "label": "ATTACK", "scenario": "attack", "pcap_sha256": digest})
+    eve = tmp_path / "eve.json"
+    now = datetime.now(timezone.utc)
+    baseline = _stats_event((now - timedelta(seconds=1)).isoformat(), 10, 10)
+    eve.write_text(json.dumps(baseline) + "\n", encoding="utf-8")
+    monkeypatch.setattr(runtime_module, "PROBE_OBSERVATION_SECONDS", timeout)
+
+    def fake_run(*args, **kwargs):
+        with eve.open("a", encoding="utf-8") as stream:
+            if include_probe_flow:
+                stream.write(json.dumps(_test_flow_event((datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat())) + "\n")
+            for record in replay_records:
+                if callable(record):
+                    record = record()
+                if record.get("event_type") == "alert" and record.get("timestamp"):
+                    try:
+                        if datetime.fromisoformat(record["timestamp"]) >= datetime.now(timezone.utc) - timedelta(seconds=1):
+                            record["timestamp"] = datetime.now(timezone.utc).isoformat()
+                    except ValueError:
+                        pass
+                if record.get("event_type") == "alert":
+                    record.update({"flow_id": 71, "src_ip": "192.0.2.10", "dest_ip": "192.0.2.20",
+                                   "src_port": 41000, "dest_port": 18100, "proto": "TCP"})
+                stream.write(json.dumps(record) + "\n")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(runtime_module, "_run", fake_run)
+    appended = False
+
+    def fake_sleep(_seconds):
+        nonlocal appended
+        if not appended and post_stats is not None:
+            appended = True
+            timestamp = datetime.now(timezone.utc) + timedelta(milliseconds=10)
+            with eve.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(_stats_event(timestamp.isoformat(), *post_stats)) + "\n")
+
+    monkeypatch.setattr(runtime_module.time, "sleep", fake_sleep)
+    return runtime, pcap, eve
+
+
+def test_probe_requires_counter_delta_even_when_stats_record_exists(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, post_stats=(10, 10), timeout=0.0)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["traffic_proof"] is None
+
+
+def test_probe_fails_closed_on_unrelated_event_without_counter_delta(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(
+        tmp_path, monkeypatch,
+        replay_records=({"event_type": "flow", "timestamp": datetime.now(timezone.utc).isoformat()},),
+        post_stats=(10, 10), timeout=0.0, include_probe_flow=False,
+    )
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["failure_reason"]
+
+
+def test_global_counters_without_correlated_flow_do_not_prove_probe_traffic(monkeypatch, tmp_path):
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch, include_probe_flow=False)
+    original_sleep = runtime_module.time.sleep
+
+    def append_delayed_flow(seconds):
+        original_sleep(0.001)
+        if not any('"event_type": "flow"' in line for line in eve.read_text(encoding="utf-8").splitlines()):
+            with eve.open("a", encoding="utf-8") as stream:
+                flow = _test_flow_event(datetime.now(timezone.utc).isoformat())
+                flow["src_port"] = 49999
+                stream.write(json.dumps(flow) + "\n")
+        # The helper's first poll also appends the post-replay stats record.
+        stats = _stats_event((datetime.now(timezone.utc) + timedelta(milliseconds=10)).isoformat(), 11, 11)
+        with eve.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(stats) + "\n")
+
+    monkeypatch.setattr(runtime_module.time, "sleep", append_delayed_flow)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["traffic_proof"] is None
+    assert runtime.probe_results[-1]["counter_delta"] == {"capture.kernel_packets": 1, "decoder.pkts": 1}
+
+
+def test_normal_probe_passes_with_traffic_proof_and_no_candidate_alert(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is True
+    assert runtime.probe_results[-1]["outcome"] == "PASS"
+
+
+def test_normal_probe_with_candidate_alert_fails(monkeypatch, tmp_path):
+    alert = lambda: {
+        "event_type": "alert", "timestamp": datetime.now(timezone.utc).isoformat(),
+        "alert": {"signature_id": 9103005},
+    }
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, replay_records=(alert,))
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert runtime.probe_results[-1]["failure_reason"] == "candidate_alert_expectation_mismatch"
+
+
+def test_negative_control_with_traffic_proof_and_no_candidate_alert_passes(monkeypatch, tmp_path):
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch)
+    assert runtime._pcap_probe_impl(
+        pcap, expect_alert=False, case="N2", label="NORMAL", scenario="negative_control",
+    ) is True
+    assert runtime.probe_results[-1]["scenario"] == "negative_control"
+
+
+def test_attack_probe_requires_candidate_sid_alert_in_probe_window(monkeypatch, tmp_path):
+    alert = lambda: {
+        "event_type": "alert", "timestamp": datetime.now(timezone.utc).isoformat(),
+        "alert": {"signature_id": 9103005},
+    }
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, replay_records=(alert,))
+    assert runtime._pcap_probe_impl(pcap, expect_alert=True, case="A1") is True
+
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch)
+    assert runtime._pcap_probe_impl(pcap, expect_alert=True, case="A1") is False
+    assert runtime.probe_results[-1]["failure_reason"] == "candidate_alert_expectation_mismatch"
+
+
+def test_old_candidate_alert_before_probe_is_not_counted(monkeypatch, tmp_path):
+    stale = {
+        "event_type": "alert",
+        "timestamp": (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat(),
+        "alert": {"signature_id": 9103005},
+    }
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+    with eve.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(stale) + "\n")
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is True
+    assert runtime.probe_results[-1]["candidate_alerts"] == 0
+
+
+def test_eve_reader_defers_partial_jsonl_until_newline(tmp_path):
+    eve = tmp_path / "eve.json"
+    eve.write_bytes(b'{"event_type":"flow"}')
+    records, cursor, size = IsolatedSuricataRuntime._eve_records(eve, 0)
+    assert records == []
+    assert cursor == 0 and size > cursor
+    eve.write_bytes(eve.read_bytes() + b"\n")
+    records, cursor, size = IsolatedSuricataRuntime._eve_records(eve, 0)
+    assert len(records) == 1
+    assert cursor == size
+
+
+def test_malformed_complete_eve_record_fails_closed(monkeypatch, tmp_path):
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+    eve.write_text("{bad json}\n", encoding="utf-8")
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert "malformed" in runtime.probe_results[-1]["failure_reason"]
+
+
+def test_missing_or_reset_stats_counters_fail_closed(monkeypatch, tmp_path):
+    runtime, pcap, eve = _probe_runtime(tmp_path, monkeypatch)
+    eve.write_text(json.dumps({"event_type": "stats", "timestamp": datetime.now(timezone.utc).isoformat(), "stats": {}}) + "\n", encoding="utf-8")
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+
+    runtime, pcap, _ = _probe_runtime(tmp_path, monkeypatch, post_stats=(9, 9))
+    assert runtime._pcap_probe_impl(pcap, expect_alert=False, case="N1") is False
+    assert "reset" in runtime.probe_results[-1]["failure_reason"]
+
+
+def test_active_plan_marks_unrun_probes_and_rollback_attempts_all(monkeypatch, tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.probe_results = []
+    runtime.deadline_monotonic = None
+    runtime.probe_plan = [
+        {"case": f"P{index}", "label": "ATTACK", "scenario": "attack", "path": str(tmp_path / f"{index}.pcap"), "pcap_sha256": "a" * 64, "expected_alert": True}
+        for index in range(6)
+    ]
+    calls = []
+
+    def fail_probe(path, *, expect_alert, case, label, scenario, phase):
+        calls.append((phase, case))
+        runtime.probe_results.append({"phase": phase, "case": case, "outcome": "FAIL"})
+        return False
+
+    runtime._pcap_probe = fail_probe
+    assert runtime._run_probe_plan("active", stop_on_failure=True) is False
+    active = [item for item in runtime.probe_results if item["phase"] == "active"]
+    assert [item["outcome"] for item in active] == ["FAIL"] + ["NOT_RUN"] * 5
+    assert len([call for call in calls if call[0] == "active"]) == 1
+
+    runtime.probe_results = []
+    calls.clear()
+    assert runtime._run_probe_plan("rollback", stop_on_failure=False) is False
+    assert len([call for call in calls if call[0] == "rollback"]) == 6
+
+
+def test_rollback_requires_traffic_proof_even_without_candidate_alert(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.sid = 9103005
+    runtime.rule_sha256 = "a" * 64
+    runtime.deadline_monotonic = None
+    runtime.process = SimpleNamespace(poll=lambda: None)
+    runtime.probe_plan = [
+        {"case": "N1", "label": "NORMAL", "scenario": "normal", "path": str(tmp_path / "n1.pcap"), "pcap_sha256": "b" * 64, "expected_alert": False}
+    ]
+    runtime._rules_loaded = lambda exact: exact == 0
+    runtime.probe_results = []
+    runtime.shutdown = lambda: True
+    calls = []
+    runtime._pcap_probe = lambda *args, **kwargs: calls.append(kwargs["case"]) or False
+    assert runtime._verify_rollback_impl(runtime.sid, runtime.rule_sha256) is False
+    assert calls == ["N1"]
+    assert runtime.post_rollback_verified is False
+
+
+def test_rollback_verification_requires_cleanup_success(tmp_path):
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.sid = 9103005
+    runtime.rule_sha256 = "a" * 64
+    runtime.deadline_monotonic = None
+    state = {"running": True}
+    runtime.process = SimpleNamespace(poll=lambda: None if state["running"] else 0)
+    runtime.probe_plan = [{
+        "case": "N1", "label": "NORMAL", "scenario": "normal",
+        "path": str(tmp_path / "n1.pcap"), "pcap_sha256": "b" * 64,
+        "expected_alert": False,
+    }]
+    runtime.probe_results = []
+    runtime._rules_loaded = lambda exact: exact == 0
+    runtime._pcap_probe = lambda *args, **kwargs: True
+
+    def failed_cleanup():
+        return False
+
+    runtime.shutdown = failed_cleanup
+    assert runtime._verify_rollback_impl(runtime.sid, runtime.rule_sha256) is False
+    assert runtime.post_rollback_verified is False
+
+
+def test_isolated_runtime_trace_marks_false_operation_as_failed():
+    runtime = object.__new__(IsolatedSuricataRuntime)
+    runtime.latency_trace = LatencyTrace(run_id="g5-run", host="vm1", clock_sync={"status": "same_host_monotonic", "offset_ms": 0.0})
+    assert runtime._measure_bool("activation", "runtime", lambda: False) is False
+    stage = runtime.latency_trace.as_dict()["stages"][0]
+    assert stage["status"] == "error"
+    assert stage["error_type"] == "operation_returned_false"
+
+
+def test_frozen_runtime_keypair_is_checked_before_lifecycle_side_effects(monkeypatch, tmp_path):
+    monkeypatch.setattr(operate_frozen_rst_once, "require_root_operator_if_supported", lambda: None)
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    _, runtime_public = generate_encrypted_keypair(b"runtime-test-password")
+    (tmp_path / "isolated").mkdir()
+    runtime_public_file = tmp_path / "runtime.pub.pem"
+    runtime_public_file.write_bytes(runtime_public)
+    (tmp_path / "replay.pub.pem").write_bytes(b"replay-public")
+    (tmp_path / "owner.pub.pem").write_bytes(b"owner-public")
+    candidate = {
+        "run_id": "g5-run",
+        "candidate_id": "candidate-id",
+        "rule_sha256": "a" * 64,
+        "rule_file_sha256": "b" * 64,
+    }
+    replay = {"probe_plan": []}
+    owner = {
+        "runtime_id": operate_frozen_rst_once.RUNTIME_ID,
+        "target_vm": operate_frozen_rst_once.VM1_HOST,
+        "interface": "lo",
+        "isolated_root": str((tmp_path / "isolated").resolve()),
+    }
+    values = iter((candidate, replay, owner))
+    lifecycle_created = []
+    runtime_created = []
+    activation_calls = []
+    monkeypatch.setattr(operate_frozen_rst_once, "is_verified_vm1_host", lambda: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "_read_json", lambda _path: next(values))
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_candidate", lambda *args: {})
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_replay_attestation", lambda *args: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "verify_frozen_owner_authorization", lambda *args: True)
+    monkeypatch.setattr(operate_frozen_rst_once, "production_snapshot", lambda *args, **kwargs: {"production_rules_sha256": "b" * 64})
+    monkeypatch.setattr(operate_frozen_rst_once, "_require_candidate_baseline", lambda *args: None)
+    monkeypatch.setattr(operate_frozen_rst_once, "_probe_paths", lambda *args: [])
+    monkeypatch.setattr(
+        operate_frozen_rst_once,
+        "RuleLifecycle",
+        lambda *args, **kwargs: lifecycle_created.append(True),
+    )
+    class RuntimeProbe:
+        def __init__(self, *args, **kwargs):
+            runtime_created.append(True)
+
+        def activate(self, *args, **kwargs):
+            activation_calls.append(True)
+
+    monkeypatch.setattr(operate_frozen_rst_once, "IsolatedSuricataRuntime", RuntimeProbe)
+    with pytest.raises(OperationError, match="runtime private/public key mismatch"):
+        operate_frozen_rst_once.execute_frozen_once(
+            candidate_file=tmp_path / "candidate.json",
+            replay_file=tmp_path / "replay.json",
+            owner_file=tmp_path / "owner.json",
+            replay_public_file=tmp_path / "replay.pub.pem",
+            owner_public_file=tmp_path / "owner.pub.pem",
+            runtime_public_file=runtime_public_file,
+            production_yaml=tmp_path / "suricata.yaml",
+            production_rules=tmp_path / "rules.rules",
+            isolated_yaml=tmp_path / "isolated.yaml",
+            isolated_root=tmp_path / "isolated",
+            attempt_id="attempt-keypair",
+            probe_specs=[],
+            audit_path=tmp_path / "isolated" / "audit" / "owner-once.jsonl",
+            failure_path=tmp_path / "isolated" / "attempts" / "attempt-keypair" / "failure.json",
+            runtime_private_pem=b"wrong-private-key",
+            runtime_private_password=b"wrong-password",
+        )
+    assert lifecycle_created == []
+    assert runtime_created == []
+    assert activation_calls == []
+    assert not (tmp_path / "isolated" / "audit" / "owner-once.jsonl").exists()
+    assert not (tmp_path / "isolated" / "rules").exists()
+
+
+def test_frozen_cli_forwards_exact_runtime_public_key_path(monkeypatch, tmp_path):
+    monkeypatch.setattr("netids.isolated_suricata_runtime.validate_unix_socket_path", lambda path: path)
+    (tmp_path / "isolated").mkdir()
+    runtime_public_file = tmp_path / "keys" / "runtime.pub.pem"
+    runtime_private_file = tmp_path / "keys" / "runtime.pem"
+    runtime_public_file.parent.mkdir()
+    runtime_public_file.write_bytes(b"runtime-public")
+    runtime_private_file.write_bytes(b"test-private-placeholder")
+    evidence_file = tmp_path / "isolated" / "attempts" / "attempt-cli" / "evidence.json"
+    failure_file = tmp_path / "isolated" / "attempts" / "attempt-cli" / "failure.json"
+    captured = {}
+
+    def fake_execute_frozen_once(**kwargs):
+        captured.update(kwargs)
+        return {"outcome": "test"}
+
+    monkeypatch.setattr(operate_frozen_rst_once, "execute_frozen_once", fake_execute_frozen_once)
+    monkeypatch.setattr(operate_frozen_rst_once.getpass, "getpass", lambda _prompt: "test-password")
+
+    assert operate_frozen_rst_once.main([
+        "--candidate", str(tmp_path / "candidate.json"),
+        "--replay", str(tmp_path / "replay.json"),
+        "--owner-authorization", str(tmp_path / "owner.json"),
+        "--replay-public", str(tmp_path / "replay.pub.pem"),
+        "--owner-public", str(tmp_path / "owner.pub.pem"),
+        "--runtime-public", str(runtime_public_file),
+        "--production-yaml", str(tmp_path / "production.yaml"),
+        "--production-rules", str(tmp_path / "production.rules"),
+        "--isolated-yaml", str(tmp_path / "isolated.yaml"),
+        "--isolated-root", str(tmp_path / "isolated"),
+        "--attempt-id", "attempt-cli",
+        "--audit-path", str(tmp_path / "isolated" / "audit" / "owner-once.jsonl"),
+        "--runtime-private", str(runtime_private_file),
+        "--evidence-output", str(evidence_file),
+        "--failure-output", str(failure_file),
+        "--probe", "ATTACK=/unused/attack.pcap",
+    ]) == 0
+    assert captured["runtime_public_file"] == runtime_public_file

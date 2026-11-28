@@ -13,7 +13,15 @@ TEST_NETWORKS = (
     ip_network("203.0.113.0/24"),
 )
 
-REJECTED_SIDS = frozenset({9102001, 9102002, 9103001, 9103002})
+SYN_PACKET_COUNT_FAMILY = "syn_packet_count_v1"
+RST_RESPONSE_FAMILY = "rst_response_v1"
+
+# These SIDs are permanently quarantined.  The 9103000/3/4 family was
+# replayed with native Suricata and proved to be SYN-count-only despite the
+# Python Hybrid gate carrying additional port/RST/handshake evidence.
+REJECTED_SIDS = frozenset({
+    9102001, 9102002, 9103000, 9103001, 9103002, 9103003, 9103004, 9103012,
+})
 ML_SID_START = 9103000
 _SID_PATTERN = re.compile(r"\bsid\s*:\s*(\d+)\s*;")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -57,6 +65,33 @@ def _validate_counts(values, field_name):
     if any(type(value) is not int or value < 0 for value in values):
         raise ValueError(f"{field_name} must contain non-negative integers")
     return list(values)
+
+
+def is_verified_development_evidence(value):
+    """Return whether evidence is frozen development-only provenance."""
+    if not isinstance(value, dict):
+        return False
+    if value.get("scope") != "G4_DEVELOPMENT_ONLY":
+        return False
+    if value.get("native_replay_tested") is not False:
+        return False
+    if value.get("independent_final_acceptance") is not False:
+        return False
+    for field in ("generator_sha256", "calibration_sha256"):
+        if not isinstance(value.get(field), str) or not _SHA256_PATTERN.fullmatch(value[field].lower()):
+            return False
+    references = value.get("calibration_references")
+    if not isinstance(references, list) or not references:
+        return False
+    return all(
+        isinstance(reference, dict)
+        and reference.get("ground_truth_label") == "NORMAL"
+        and isinstance(reference.get("capture_metadata"), dict)
+        and reference["capture_metadata"].get("packet_records_complete") is True
+        and reference["capture_metadata"].get("snaplen_truncated") is False
+        and reference["capture_metadata"].get("capture_drops") is False
+        for reference in references
+    )
 
 
 def collect_sids(rule_texts):
@@ -136,6 +171,8 @@ def generate_rst_rule(
     *, run_id, pcap_sha256, model_sha256, source_ip, destination_ip,
     normal_cal_rst_counts, normal_validation_rst_counts, attack_rst_counts,
     ml_consensus, port_diversity_triggered, rst_evidence, existing_sids=(),
+    normal_calibration_provenance=None, normal_validation_evidence=None,
+    development_evidence=None, hybrid_evidence=None,
     window_seconds=60,
 ):
     """Generate a review-only RST rule from independent evidence gates."""
@@ -153,6 +190,7 @@ def generate_rst_rule(
     threshold = max(normal_cal) + 1
     metadata = {
         "schema_version": "ml_rst_rule_metadata_v1",
+        "candidate_family": RST_RESPONSE_FAMILY,
         "run_id": run_id,
         "pcap_sha256": pcap_sha256,
         "model_sha256": model_sha256,
@@ -166,6 +204,31 @@ def generate_rst_rule(
         "ml_consensus": ml_consensus,
         "port_diversity_triggered": port_diversity_triggered,
         "rst_evidence": dict(rst_evidence),
+        "normal_calibration_provenance": (
+            dict(normal_calibration_provenance)
+            if isinstance(normal_calibration_provenance, dict)
+            else normal_calibration_provenance
+        ),
+        "normal_validation_evidence": (
+            dict(normal_validation_evidence)
+            if isinstance(normal_validation_evidence, dict)
+            else normal_validation_evidence
+        ),
+        "development_evidence": (
+            dict(development_evidence)
+            if isinstance(development_evidence, dict)
+            else development_evidence
+        ),
+        "hybrid_evidence": (
+            dict(hybrid_evidence)
+            if isinstance(hybrid_evidence, dict)
+            else hybrid_evidence
+        ),
+        # This is intentionally a bounded Suricata signature, not a compiled
+        # equivalent of the Python Hybrid conjunction.
+        "bounded_laboratory_signature": True,
+        "hybrid_equivalent": False,
+        "suricata_signature_equivalent": False,
         "approved": False,
         "deployable": False,
         "deployed": False,
@@ -181,6 +244,39 @@ def generate_rst_rule(
     }
     if rst_evidence.get("capture_integrity", {}).get("capture_complete") is not True:
         result["rejection_reason"] = "incomplete_capture_evidence"
+        return result
+    if (
+        not is_verified_development_evidence(development_evidence)
+    ):
+        result["rejection_reason"] = "missing_verified_development_evidence"
+        return result
+    if (
+        not isinstance(hybrid_evidence, dict)
+        or hybrid_evidence.get("classification") != "reconnaissance_consistent"
+        or hybrid_evidence.get("python_only") is not True
+        or hybrid_evidence.get("suricata_signature_equivalent") is not False
+    ):
+        result["rejection_reason"] = "missing_hybrid_evidence"
+        return result
+    if (
+        not isinstance(normal_calibration_provenance, dict)
+        or normal_calibration_provenance.get("status") != "accepted"
+        or normal_calibration_provenance.get("final_holdout_used") is not False
+        or normal_calibration_provenance.get("frozen_before_holdouts") is not True
+    ):
+        result["rejection_reason"] = "missing_independent_rst_calibration"
+        return result
+    if (
+        not isinstance(normal_validation_evidence, dict)
+        or not isinstance(normal_validation_evidence.get("pcap_sha256"), str)
+        or not _SHA256_PATTERN.fullmatch(
+            normal_validation_evidence.get("pcap_sha256", "").lower()
+        )
+        or normal_validation_evidence.get("capture_integrity", {}).get(
+            "capture_complete"
+        ) is not True
+    ):
+        result["rejection_reason"] = "incomplete_normal_validation_evidence"
         return result
     if any(count >= threshold for count in normal_validation):
         result["rejection_reason"] = "normal_validation_false_positive"
@@ -246,6 +342,7 @@ def generate_ml_rule(
     threshold = max(normal_baseline) + 1
     metadata = {
         "schema_version": "ml_rule_metadata_v1",
+        "candidate_family": SYN_PACKET_COUNT_FAMILY,
         "run_id": run_id,
         "pcap_sha256": pcap_sha256,
         "model_sha256": model_sha256,
@@ -280,20 +377,15 @@ def generate_ml_rule(
             "metadata": metadata,
         }
 
-    sid = allocate_sid(existing_sids)
-    rule = _build_ml_syn_rule(
-        destination_ip=destination_ip,
-        threshold=threshold,
-        window_seconds=window_seconds,
-        sid=sid,
-    )
-    metadata["rule_sha256"] = hashlib.sha256(rule.encode("utf-8")).hexdigest()
+    # This family is permanently quarantined.  Hybrid evidence must not be
+    # reduced to a native SYN packet counter: Suricata cannot see the Python
+    # port-diversity and handshake conditions from this rule template.
     return {
-        "status": "needs_review",
-        "rejection_reason": None,
-        "sid": sid,
+        "status": "rejected_validation_failure",
+        "rejection_reason": "quarantined_syn_packet_count_family",
+        "sid": None,
         "threshold": threshold,
-        "rule": rule,
+        "rule": None,
         "metadata": metadata,
     }
 
@@ -347,9 +439,18 @@ def apply_replay_validation(output_dir, *, attack_alerts, normal_alerts):
         raise ValueError("Replay alert counts must be non-negative integers")
 
     output_dir = Path(output_dir)
-    metadata_path = output_dir / "ml-generated.metadata.json"
+    rst_metadata_path = output_dir / "ml-generated-rst.metadata.json"
+    legacy_metadata_path = output_dir / "ml-generated.metadata.json"
+    if rst_metadata_path.is_file() and legacy_metadata_path.is_file():
+        raise ValueError("Multiple generated rule families are present")
+    if rst_metadata_path.is_file():
+        metadata_path = rst_metadata_path
+        expected_schema = "ml_rst_rule_metadata_v1"
+    else:
+        metadata_path = legacy_metadata_path
+        expected_schema = "ml_rule_metadata_v1"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if not isinstance(metadata, dict) or metadata.get("schema_version") != "ml_rule_metadata_v1":
+    if not isinstance(metadata, dict) or metadata.get("schema_version") != expected_schema:
         raise ValueError("Invalid generated rule metadata")
 
     metadata["attack_replay_alerts"] = attack_alerts

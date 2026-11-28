@@ -52,11 +52,13 @@ def run(*, run_id, target, ports, interval_seconds=2.0, timeout_seconds=1.0, see
         started_monotonic = time.monotonic()
         result = "error"
         error = None
+        source_port = None
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.settimeout(timeout_seconds)
             if source_ip:
                 sock.bind((source_ip, 0))
+            source_port = sock.getsockname()[1]
             code = sock.connect_ex((target, port))
             if code == 0:
                 result = "connected_unexpected"
@@ -74,10 +76,17 @@ def run(*, run_id, target, ports, interval_seconds=2.0, timeout_seconds=1.0, see
             error = f"{type(exc).__name__}:{exc.errno}"
         finally:
             sock.close()
+        attempt_ended = _utc()
         attempts.append({
+            "attempt_id": f"{run_id}-{len(attempts) + 1:03d}",
             "timestamp_utc": attempt_started,
+            "attempt_end_utc": attempt_ended,
+            "source_ip": source_ip or "0.0.0.0",
+            "source_port": source_port,
             "target_ip": target,
+            "destination_ip": target,
             "destination_port": port,
+            "protocol": "TCP",
             "result": result,
             "error": error,
             "elapsed_seconds": round(time.monotonic() - started_monotonic, 6),

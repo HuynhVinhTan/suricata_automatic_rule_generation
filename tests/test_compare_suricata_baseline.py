@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from scripts.compare_suricata_baseline import (
     ExperimentError,
     metrics,
     parse_eve,
+    parse_case_args,
     run_experiment,
 )
 
@@ -67,3 +69,40 @@ def test_invalid_hash_is_rejected_before_execution(tmp_path):
     with pytest.raises(ExperimentError, match="SHA-256"):
         from scripts.compare_suricata_baseline import _validate_hash
         _validate_hash("not-a-hash", "input")
+
+
+def test_case_parser_preserves_literal_pipe_in_pcap_argument():
+    cases = parse_case_args([
+        ("attack-01", "Attack", "/private/attack|session.pcap|" + "a" * 64),
+    ])
+    assert cases[0].pcap == Path("/private/attack|session.pcap")
+    assert cases[0].expected_sha256 == "a" * 64
+
+
+def test_rejected_historical_sid_is_refused_before_suricata(tmp_path):
+    rule = tmp_path / "candidate.rules"
+    rule.write_bytes(b"alert tcp any any -> any any (sid:9103012; rev:1;)\n")
+    baseline = tmp_path / "baseline.rules"
+    baseline.write_text(
+        "alert tcp any any -> any any (sid:1; rev:1;)\n", encoding="utf-8"
+    )
+    config = tmp_path / "suricata.yaml"
+    config.write_text("config\n", encoding="utf-8")
+    candidate_hash = hashlib.sha256(rule.read_bytes()[:-1]).hexdigest()
+    config_hash = hashlib.sha256(config.read_bytes()).hexdigest()
+    baseline_hash = hashlib.sha256(baseline.read_bytes()).hexdigest()
+    cases = [
+        Case(f"attack-{index}", "Attack", config, "0" * 64)
+        for index in range(1, 4)
+    ] + [
+        Case(f"normal-{index}", "Normal", config, "0" * 64)
+        for index in range(1, 4)
+    ]
+    with pytest.raises(ExperimentError, match="rejected SID"):
+        run_experiment(
+            suricata="must-not-run", config=config, expected_config_sha256=config_hash,
+            baseline_rules=baseline, expected_baseline_sha256=baseline_hash,
+            candidate_rule=rule, expected_candidate_rule_sha256=candidate_hash,
+            cases=cases, output_root=tmp_path / "run", run_id="test",
+            recon_sids={1}, recon_signatures=set(), timeout=1,
+        )

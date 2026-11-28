@@ -20,6 +20,12 @@ from typing import Any, Dict, Mapping, Optional
 
 from netids.lab_runtime import EXPECTED_MODEL_SHA256, FEATURES, sha256
 from netids.pipeline import run as run_pipeline
+from netids.rulegen import (
+    REJECTED_SIDS,
+    RST_RESPONSE_FAMILY,
+    SYN_PACKET_COUNT_FAMILY,
+    is_verified_development_evidence,
+)
 
 WORKER_SCHEMA_VERSION = "pcap_ai_worker_v0_1"
 MAX_PCAP_SIZE_BYTES = 2 * 1024 * 1024 * 1024
@@ -43,6 +49,8 @@ REVIEW_STATUS_COMPATIBILITY = {
 HYBRID_CLASSIFICATIONS = frozenset({
     "reconnaissance_consistent",
     "anomalous_not_reconnaissance",
+    "ambiguous_incomplete_capture",
+    "normal_or_insufficient_evidence",
     "unavailable_missing_calibration",
 })
 
@@ -484,16 +492,46 @@ def _validate_generated_rule_artifacts(
     model_sha256: str,
 ) -> None:
     """Validate the generated rule as a review-only, provenance-bound pair."""
-    rule_path = output_dir / "ml-generated.rules"
-    metadata_path = output_dir / "ml-generated.metadata.json"
+    artifact_families = {
+        SYN_PACKET_COUNT_FAMILY: (
+            output_dir / "ml-generated.rules",
+            output_dir / "ml-generated.metadata.json",
+            "ml_rule_metadata_v1",
+        ),
+        RST_RESPONSE_FAMILY: (
+            output_dir / "ml-generated-rst.rules",
+            output_dir / "ml-generated-rst.metadata.json",
+            "ml_rst_rule_metadata_v1",
+        ),
+    }
     generated = review.get("rule_generated_in_this_run") is True
 
     if not generated:
-        if rule_path.exists() or metadata_path.exists():
+        if any(
+            path.exists()
+            for rule_path, metadata_path, _ in artifact_families.values()
+            for path in (rule_path, metadata_path)
+        ):
             raise WorkerProcessingError(
                 "Rule artifacts exist without a generated-rule review claim"
             )
         return
+
+    present = {
+        family: pair
+        for family, pair in artifact_families.items()
+        if pair[0].exists() or pair[1].exists()
+    }
+    if SYN_PACKET_COUNT_FAMILY in present:
+        raise WorkerProcessingError(
+            "SYN packet-count candidate family is permanently quarantined"
+        )
+    if set(present) != {RST_RESPONSE_FAMILY}:
+        raise WorkerProcessingError(
+            "Generated rule artifacts must contain exactly one supported family"
+        )
+    family = RST_RESPONSE_FAMILY
+    rule_path, metadata_path, metadata_schema = artifact_families[family]
 
     try:
         if rule_path.is_symlink() or metadata_path.is_symlink():
@@ -509,8 +547,32 @@ def _validate_generated_rule_artifacts(
         raise WorkerProcessingError("Generated rule artifacts are malformed")
     rule_text = rule_text_with_newline[:-1]
     expected_rule_sha = hashlib.sha256(rule_text.encode("utf-8")).hexdigest()
+    calibration = metadata.get("normal_calibration_provenance")
+    validation = metadata.get("normal_validation_evidence")
+    development = metadata.get("development_evidence")
+    hybrid = metadata.get("hybrid_evidence")
     if (
-        metadata.get("schema_version") != "ml_rule_metadata_v1"
+        not is_verified_development_evidence(development)
+        or
+        not isinstance(hybrid, dict)
+        or hybrid.get("classification") != "reconnaissance_consistent"
+        or hybrid.get("python_only") is not True
+        or hybrid.get("suricata_signature_equivalent") is not False
+        or
+        not isinstance(calibration, dict)
+        or calibration.get("status") != "accepted"
+        or calibration.get("final_holdout_used") is not False
+        or calibration.get("frozen_before_holdouts") is not True
+        or not isinstance(validation, dict)
+        or not SHA256_PATTERN.fullmatch(str(validation.get("pcap_sha256", "")))
+        or validation.get("capture_integrity", {}).get("capture_complete") is not True
+    ):
+        raise WorkerProcessingError(
+            "RST candidate lacks verified development, Hybrid, calibration, or Normal validation evidence"
+        )
+    if (
+        metadata.get("schema_version") != metadata_schema
+        or metadata.get("candidate_family") != family
         or metadata.get("run_id") != run_id
         or metadata.get("pcap_sha256") != pcap_sha256.lower()
         or metadata.get("model_sha256") != model_sha256
@@ -521,12 +583,13 @@ def _validate_generated_rule_artifacts(
         or review.get("generated_rule") != rule_text
         or metadata.get("status") != review.get("status")
         or review.get("generated_rule_sid") is None
+        or review.get("generated_rule_family") != family
         or review.get("generated_rule_metadata", {}).get("rule_sha256") != expected_rule_sha
     ):
         raise WorkerProcessingError("Generated rule provenance or review-only safety mismatch")
 
     sids = [int(value) for value in re.findall(r"\bsid:(\d+);", rule_text)]
-    if len(sids) != 1 or sids[0] != review["generated_rule_sid"] or sids[0] in {9102001, 9102002}:
+    if len(sids) != 1 or sids[0] != review["generated_rule_sid"] or sids[0] in REJECTED_SIDS:
         raise WorkerProcessingError("Generated rule SID is invalid or rejected")
 
 

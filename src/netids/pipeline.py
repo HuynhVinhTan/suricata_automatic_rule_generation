@@ -1,7 +1,6 @@
 """One-command PCAP -> SYN features -> ML/DL -> review pipeline."""
 
 import argparse
-import hashlib
 import ipaddress
 import json
 import subprocess
@@ -12,10 +11,11 @@ from netids.app import run as run_inference
 from netids.lab_runtime import sha256
 import csv
 from netids.rulegen import (
-    build_syn_burst_review_rule,
+    RST_RESPONSE_FAMILY,
     collect_sids,
-    generate_ml_rule,
-    write_ml_rule_artifacts,
+    build_syn_burst_review_rule,
+    generate_rst_rule,
+    write_rst_rule_artifacts,
 )
 from netids.port_diversity import analyze_port_diversity, read_pcap_syn
 from netids.hybrid_review import calibrate_hybrid_thresholds, evaluate_hybrid
@@ -69,6 +69,81 @@ def _hybrid_reference_evidence(private_root, provenance):
             ),
             "max_rst_count_per_window": rst["max_rst_count_per_window"],
         })
+    return evidence
+
+
+def _candidate_generation_decision(
+    *, candidate_gate_passed, normal_test_counts, attack_counts, attach_candidate
+):
+    """Select a candidate family without converting Hybrid evidence to SYN counts."""
+    if not candidate_gate_passed:
+        return {
+            "family": None,
+            "rejection": None,
+            "matches_previous_failed_candidate": False,
+        }
+    if not normal_test_counts:
+        rejection = "missing_normal_validation"
+    elif not attack_counts:
+        rejection = "missing_attack_inference_evidence"
+    else:
+        rejection = None
+    return {
+        "family": RST_RESPONSE_FAMILY,
+        "rejection": rejection,
+        "matches_previous_failed_candidate": False,
+    }
+
+
+def _rst_evidence_sidecars(private_root):
+    candidate_dir = private_root / "lab-rule-candidates" / RST_RESPONSE_FAMILY
+    return (
+        candidate_dir / "development-evidence.json",
+        candidate_dir / "normal-validation-rst.json",
+    )
+
+
+def _load_rst_validation_evidence(private_root):
+    """Load a signed-by-hash Normal RST validation sidecar, never holdout data."""
+    _, validation_path = _rst_evidence_sidecars(private_root)
+    if not validation_path.is_file():
+        raise ValueError("missing independent RST validation evidence")
+    with validation_path.open("r", encoding="utf-8") as stream:
+        evidence = json.load(stream)
+    if not isinstance(evidence, dict):
+        raise ValueError("RST validation evidence must be an object")
+    if evidence.get("scope") != "G4_DEVELOPMENT_VALIDATION_ONLY":
+        raise ValueError("RST validation evidence has an invalid scope")
+    if evidence.get("final_acceptance") is not False:
+        raise ValueError("RST validation evidence is not development-only")
+    pcap_sha256 = evidence.get("pcap_sha256")
+    if not isinstance(pcap_sha256, str) or len(pcap_sha256) != 64 or any(
+        character not in "0123456789abcdefABCDEF" for character in pcap_sha256
+    ):
+        raise ValueError("RST validation PCAP hash is invalid")
+    capture = evidence.get("capture_integrity")
+    if not isinstance(capture, dict):
+        raise ValueError("RST validation capture is incomplete")
+    if not _complete_capture_metadata(capture).get("packet_records_complete") is True:
+        raise ValueError("RST validation capture is incomplete")
+    if capture.get("snaplen_truncated") is not False or capture.get("capture_drops") is not False:
+        raise ValueError("RST validation capture is incomplete")
+    counts = evidence.get("rst_counts_by_window")
+    if not isinstance(counts, list) or not counts or any(type(value) is not int or value < 0 for value in counts):
+        raise ValueError("RST validation counts are missing")
+    return evidence, counts
+
+
+def _load_rst_development_evidence(private_root):
+    development_path, _ = _rst_evidence_sidecars(private_root)
+    if not development_path.is_file():
+        raise ValueError("missing verified RST development evidence")
+    with development_path.open("r", encoding="utf-8") as stream:
+        evidence = json.load(stream)
+    if not isinstance(evidence, dict) or evidence.get("scope") != "G4_DEVELOPMENT_ONLY":
+        raise ValueError("RST development evidence has an invalid scope")
+    if evidence.get("native_replay_tested") is not False or evidence.get("independent_final_acceptance") is not False:
+        raise ValueError("RST development evidence is not frozen before holdout")
     return evidence
 
 
@@ -454,6 +529,18 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         "passed": candidate_gate_passed,
         "rule_approval_authorized": False,
     }
+    review["alternative_candidate_family_review"] = {
+        "family": RST_RESPONSE_FAMILY,
+        "status": "integrated_gated" if candidate_gate_passed else "not_eligible",
+        "reason": (
+            "bounded_rst_signature_is_not_hybrid_equivalent"
+            if candidate_gate_passed
+            else "candidate_gate_not_passed"
+        ),
+        "requires_independent_native_replay": True,
+        "automatic_generation": False,
+        "hybrid_equivalent": False,
+    }
 
     normal_validation = (
         private_root / "lab-sessions" / "normal-batch-v01"
@@ -477,47 +564,94 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         for prediction in result.get("predictions", [])
         if prediction.get("both_anomaly") is True
     ]
-    existing_sids = collect_sids(
-        path.read_text(encoding="utf-8")
-        for path in private_root.rglob("*.rules")
-        if path.is_file()
+    generation = _candidate_generation_decision(
+        candidate_gate_passed=candidate_gate_passed,
+        normal_test_counts=normal_test_counts,
+        attack_counts=attack_counts,
+        attach_candidate=attach_candidate,
+    )
+    generation_rejection = generation["rejection"]
+    generation_family = generation["family"]
+    generated = None
+    generation_detail = None
+    with latency.stage("rule_generation"):
+        if candidate_gate_passed and generation_rejection is None:
+            try:
+                development = _load_rst_development_evidence(private_root)
+                validation, validation_counts = _load_rst_validation_evidence(private_root)
+                threshold_provenance = calibration_provenance.get(
+                    "threshold_provenance", {}
+                )
+                normal_calibration_provenance = {
+                    "status": calibration_provenance.get("status"),
+                    "manifest_sha256": calibration_provenance.get("manifest_sha256"),
+                    "method": threshold_provenance.get("method"),
+                    "final_holdout_used": threshold_provenance.get("final_holdout_used"),
+                    "frozen_before_holdouts": threshold_provenance.get("frozen_before_holdouts"),
+                    "calibration_decision_sha256": threshold_provenance.get(
+                        "calibration_decision_sha256"
+                    ),
+                }
+                attack_rst_counts = rst_evidence.get("rst_counts_by_window") or [
+                    rst_evidence.get("max_rst_count_per_window", 0)
+                ]
+                generated = generate_rst_rule(
+                    run_id=output_dir.name,
+                    pcap_sha256=expected_sha.lower(),
+                    model_sha256=result["model_sha256"],
+                    source_ip=src,
+                    destination_ip=dst,
+                    normal_cal_rst_counts=development["normal_cal_rst_counts"],
+                    normal_validation_rst_counts=validation_counts,
+                    attack_rst_counts=attack_rst_counts,
+                    ml_consensus=flagged > 0,
+                    port_diversity_triggered=review["port_diversity_evidence"][
+                        "triggered"
+                    ],
+                    rst_evidence=rst_evidence,
+                    existing_sids=collect_sids([candidate_text]),
+                    normal_calibration_provenance=normal_calibration_provenance,
+                    normal_validation_evidence=validation,
+                    development_evidence=development,
+                    hybrid_evidence=review["hybrid_review"],
+                )
+                if generated["rule"] is not None:
+                    write_rst_rule_artifacts(output_dir, generated)
+                else:
+                    generation_rejection = generated["rejection_reason"]
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                generation_rejection = "missing_or_invalid_rst_evidence"
+                generation_detail = str(exc)
+        elif candidate_gate_passed:
+            generation_detail = generation_rejection
+    if generated is None and candidate_gate_passed and generation_rejection is None:
+        generation_rejection = "missing_or_invalid_rst_evidence"
+    latency.record(
+        "local_artifact_validation",
+        status="not_measured" if generated is None else "review_only_artifacts_written",
     )
 
-    generated = None
-    generation_rejection = None
-    with latency.stage("rule_generation"):
-        if candidate_gate_passed and not normal_test_counts:
-            generation_rejection = "missing_normal_validation"
-        elif candidate_gate_passed and not attack_counts:
-            generation_rejection = "missing_attack_inference_evidence"
-        elif candidate_gate_passed:
-            generated = generate_ml_rule(
-                run_id=output_dir.name,
-                pcap_sha256=expected_sha,
-                model_sha256=result["model_sha256"],
-                destination_ip=dst,
-                normal_train_syn_counts=normal_counts_by_partition["normal-train"],
-                normal_cal_syn_counts=normal_counts_by_partition["normal-cal"],
-                normal_test_syn_counts=normal_test_counts,
-                attack_syn_counts=attack_counts,
-                existing_sids=existing_sids,
-            )
-            if generated["rule"] is not None:
-                write_ml_rule_artifacts(output_dir, generated)
-
-    if generated and generated.get("rule"):
-        with latency.stage("local_artifact_validation"):
-            if len(collect_sids([generated["rule"]])) != 1:
-                raise ValueError("Generated rule did not contain exactly one SID")
-            rule_bytes = (output_dir / "ml-generated.rules").read_bytes()
-            if generated["metadata"].get("rule_sha256") != hashlib.sha256(rule_bytes[:-1]).hexdigest():
-                raise ValueError("Generated rule artifact SHA256 mismatch")
-    else:
-        latency.record("local_artifact_validation", status="not_measured")
+    generated_rule = generated["rule"] if generated else None
+    generated_metadata = generated["metadata"] if generated else None
+    generation_status = generated.get("status") if generated else None
 
     review.update({
         "schema_version": "lab_rule_review_v0_2",
-        "generation_method": "normal_train_cal_syn_count_packet_filter",
+        "generation_method": (
+            "rst_response_evidence_gated"
+            if generation_family == RST_RESPONSE_FAMILY and generated_rule
+            else "rst_response_evidence_gated_rejected"
+            if generation_family == RST_RESPONSE_FAMILY
+            else "no_candidate_family_selected"
+        ),
+        "candidate_family": generation_family,
+        "candidate_family_status": (
+            "needs_review"
+            if generated_rule
+            else "rejected"
+            if generation_family == RST_RESPONSE_FAMILY
+            else None
+        ),
         "normal_train_cal_max_syn": normal_max,
         "proposed_syn_threshold": max(3, normal_max + 1),
         "normal_validation_csv_sha256": (
@@ -526,18 +660,21 @@ def run(pcap, expected_sha, src, dst, private_root, output_dir, capture_metadata
         "normal_validation_max_syn": (
             max(normal_test_counts) if normal_test_counts else None
         ),
-        "rule_generated_in_this_run": bool(generated and generated["rule"]),
-        "generated_rule": generated["rule"] if generated else None,
+        "rule_generated_in_this_run": bool(generated_rule),
+        "generated_rule": generated_rule,
         "generated_rule_sid": generated["sid"] if generated else None,
-        "generated_rule_metadata": generated["metadata"] if generated else None,
-        "matches_previous_failed_candidate": False,
-        "generation_rejection": generation_rejection or (
-            generated.get("rejection_reason") if generated else None
-        ),
+        "generated_rule_family": generation_family,
+        "generated_rule_metadata": generated_metadata,
+        "matches_previous_failed_candidate": generation[
+            "matches_previous_failed_candidate"
+        ],
+        "generation_rejection": generation_rejection,
+        "generation_detail": generation_detail,
         "status": (
-            "needs_review" if generated and generated["rule"]
+            generation_status
+            if generated_rule
             else "rejected_validation_failure"
-            if generation_rejection or generated
+            if generation_rejection
             else "no_candidate"
         ),
         "syntax_tested_in_this_run": False,

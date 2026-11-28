@@ -1,0 +1,130 @@
+{
+  "schema_version": "suricata_ai_frozen_input_manifest_v1",
+  "repository": "HuynhVinhTan/suricata_automatic_rule_generation",
+  "reviewed_source_commit": "67a4edd9e70bd2de68ca2236e14174a43053f3aa",
+  "candidate": {
+    "candidate_id": "bfd6891a14dd3e648737e0a43d20f602d160085cefc92aa5f7fcfa8d32e0f1f6",
+    "sid": 9103005,
+    "approved": false,
+    "deployable": false,
+    "deployed": false,
+    "source_commit": "c3aaa982fcb2d38b71d51ac9ae2af8a41b3e1dad",
+    "source_commit_is_ancestor": true,
+    "candidate_json": {
+      "path": "D:\\suricata-ai-project-worktrees\\g5r2-owner-signing\\candidate.json",
+      "sha256": "5a2c3e2b6c65eb056b08d047a897690eaef252c4715f5f94952c630a7eac8161",
+      "size_bytes": 14233,
+      "verified": true
+    },
+    "replay_attestation": {
+      "path": "D:\\suricata-ai-project-worktrees\\g5r2-owner-signing\\replay-attestation.json",
+      "sha256": "73a81eb8ef2c99a324ce1f720125d8b1f12eef50c0cd6b390efc5defc78f4989",
+      "size_bytes": 4845,
+      "signature_verified": true
+    }
+  },
+  "public_role_keys": {
+    "replay": {
+      "path": "D:\\suricata-ai-project-worktrees\\g5r2-owner-signing\\replay.pub.pem",
+      "sha256": "f22a5ba024a571f170ce22a4a8d688a18f5a7e57736d4f0321408792ea4dbacd",
+      "fingerprint": "77af3ee89e4b7a1cbb99369b19e244b0be70a44dfc745ab77a926d9ad98a7b92",
+      "pinned": true
+    },
+    "owner": {
+      "path": "D:\\suricata-ai-project-worktrees\\g5r2-owner-signing\\owner.pub.pem",
+      "sha256": "cb5e2c3613d110125bf573b6790407a27469c0c7c2154380764e39be25c4434e",
+      "fingerprint": "6ac452b8966780e1dacd1b1d19f6c6a83de2c83d24b95c7e5a6ce7610fd13f63",
+      "pinned": true
+    },
+    "runtime": {
+      "path": "D:\\suricata-ai-project-worktrees\\g5r2-owner-signing\\runtime.pub.pem",
+      "sha256": "89e49c2118c93fdba2c339d1ae95c7553fd7bbd122738283b3d4643326646a6b6",
+      "fingerprint": "35050afe9d85194fff5c889601ff8a3cab35b717e2edc42e1bac69bc6abd0c44",
+      "independent_role": true
+    },
+    "private_key_material_read_or_hashed": false
+  },
+  "development_evidence": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g4-rst-dev-20261124T075112Z-9d0b815b\\development-evidence.json",
+    "sha256": "ef290c65c85f2f33d662dee0e180c5af10c1538dfa391aac5a5062a87a4f0edb",
+    "size_bytes": 2382,
+    "verified": true
+  },
+  "metadata": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g4-rst-dev-20261124T075112Z-9d0b815b\\ml-generated-rst.metadata.json",
+    "sha256": "e9ade87456ed071741a8918cdccd6feba5ecf349ba8b3de8cfefa6efb891ffad",
+    "size_bytes": 1896,
+    "verified": true
+  },
+  "acceptance_freeze": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g4-rst-dev-20261124T075112Z-9d0b815b\\acceptance-freeze.json",
+    "sha256": "74ce643d782d525e83910138b32218bc69e8d97a6908e725f71dbbeab0fd9bd4",
+    "size_bytes": 4007,
+    "verified": true
+  },
+  "rule": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g4-rst-dev-20261124T075112Z-9d0b815b\\ml-generated-rst.rules",
+    "sha256": "171c1405ad7019feebf588039a1479ceb70a3596b607e1ff122bb87667babb49",
+    "embedded_rule_content_sha256": "3e5255d90928ac65ff98df4669e365ba44249acbe27e0671275cf5a57ff5695e",
+    "size_bytes": 228,
+    "verified": true
+  },
+  "cohort_plan": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g4-holdout-20261124T084145Z-fd9f2786\\cohort-plan.json",
+    "sha256": "c82bfd9c5d085f9738d79d8afa588677f4e0943d0cbe814b3064ca88925b1ef0",
+    "size_bytes": 2186,
+    "verified_by_frozen_candidate_verifier": true
+  },
+  "cohort_results": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g4-holdout-20261124T084145Z-fd9f2786\\cohort-results.json",
+    "sha256": "443b42478b3bfbc0d66433fc5e582433426962fe54427278b584a5e5e859efaa",
+    "size_bytes": 5069,
+    "verified": true
+  },
+  "native_holdout_report": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g4-holdout-20261124T084145Z-fd9f2786\\native-holdout-replay.json",
+    "sha256": "dc63ceb3c36d040acc3bf8b3e7a4f3ae5710e672bb3a0d91de531eaf077d573f",
+    "size_bytes": 3742,
+    "verified": true,
+    "results": {"TP": 3, "FP": 0, "FN": 0, "TN": 3}
+  },
+  "baseline_comparison": {
+    "path": "D:\\suricata-ai-project-worktrees\\feat-complete-suricata-ai-e2e\\.runtime-staging\\g5-baseline-sid9103005\\baseline-comparison.json",
+    "sha256": "b21f5922f69dad56b48fa3adc0c55c82e9953af93316646d493994ab3f7f745b",
+    "verified_as_embedded_candidate_evidence": true,
+    "baseline_rules_sha256": "30d7a02cd85f7f7544231a91008a20dedbb15ff0e11ca388ac07aa8d564bf36b",
+    "raw_baseline_rules_rehashed_in_this_session": false
+  },
+  "calibration": {
+    "path": "D:\\suricata-ai-project-worktrees\\g5r4-observer-repair\\configs\\hybrid_normal_calibration.json",
+    "sha256": "da3b310aa6d0492f80a7e00138bf922a4ae287e380f847327760c63f0217a7d9",
+    "size_bytes": 2220,
+    "matches_frozen_digest": true,
+    "raw_calibration_decision_artifact": "NOT_RECOVERED"
+  },
+  "model": {
+    "vm_path": "/home/tanhv/suricata-ai-showcase/private/lab-models/lab_syn_anomaly_v0_1/models.joblib",
+    "expected_sha256": "206dadafc8d6cd96e21d838a52211d9b06d4a6ec541ea5c9a9ae8a6724ffbf5d",
+    "size_bytes": 41982,
+    "local_bytes_verified": false,
+    "reason": "VM3 access was not available; no substitute or retraining was performed"
+  },
+  "pcaps": [
+    {"case": "N1", "run_id": "capture-20261124T084151Z-3f1cd58c154c2528", "sha256": "58ad0bd5150c5fa7c56ea9c9531fda2e2240b84c0c1b0bc083bd0f311b5c4c0e", "bytes_verified_this_session": false},
+    {"case": "A1", "run_id": "capture-20261124T084302Z-5a0b32ad74afadb8", "sha256": "490016e1e33b07c10f4035eb0425d6e2427f814fd9da6ea9694dfd020c00b07e", "bytes_verified_this_session": false},
+    {"case": "N2", "run_id": "capture-20261124T084417Z-bd88394699af2c08", "sha256": "7af0d4524dec3c08c2bce4787cb329c568e3cac3e46e6d9e39e766814936dcdf", "bytes_verified_this_session": false},
+    {"case": "A2", "run_id": "capture-20261124T084647Z-127d1bad4c6ca17c", "sha256": "f089f8c93c0b31fedfc0a3f09b4f91bcbb9bc060c64ba475c79767fecd47c5c5", "bytes_verified_this_session": false},
+    {"case": "N3", "run_id": "capture-20261124T090352Z-287e0018439fa23a", "sha256": "85075147568ba52ebcae87c70727910d3839c22b34e56da976c843e25a8acf12", "bytes_verified_this_session": false},
+    {"case": "A3", "run_id": "capture-20261124T090513Z-2b3262e5b0271900", "sha256": "fd739e5f145a5608a2dc35c65749e86cd2f066c70211a6d0b943b7c08e7f9058", "bytes_verified_this_session": false}
+  ],
+  "historical_g5r4": {
+    "verdict": "FAILED_TERMINAL",
+    "raw_artifacts_accessible_this_session": false,
+    "failure_report_sha256": "9b36e42d5b5408b165b93c7c069c641a3955688bddc3c2bf21b729bb177f6af4",
+    "runtime_diagnostics_sha256": "b8c35e38d3fc697f588f9ec07d5ada2d068a84c367a805c4d93f877f39fc4e00",
+    "eve_sha256": "e65635e83256172fe945fffd0ff55662f23655cde1c90d452ca2982f208a8548",
+    "suricata_log_sha256": "5e733e20c202882b4386a6bd546d7abefdae475ca8fe5d84e3ff71e24ae5008d",
+    "historical_audit_records": 41,
+    "historical_audit_sha256": "a26548cd6fc18f56527ef17028f325b83c3cfc8582b4fe51351f243bc37069e9"
+  }
+}

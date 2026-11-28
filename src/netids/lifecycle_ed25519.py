@@ -22,9 +22,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 DOMAINS = frozenset({
+    "lab-demo-vm2-vm3-v1",
     "isolated-replay-v1",
     "isolated-owner-approval-v1",
     "isolated-runtime-v1",
+    "g5-frozen-replay-v1",
+    "g5-frozen-owner-v1",
+    "g5-frozen-runtime-v1",
 })
 _FIELD = "attestation_ed25519"
 _ALGO = "ed25519-v1"
@@ -70,6 +74,21 @@ def public_key_fingerprint(public_pem: bytes) -> str:
         format=serialization.PublicFormat.Raw,
     )
     return hashlib.sha256(raw).hexdigest()
+
+
+def private_key_matches_public(private_pem: bytes, password: bytes, public_pem: bytes) -> bool:
+    """Return whether an encrypted private key corresponds to the supplied public key."""
+    try:
+        private = serialization.load_pem_private_key(private_pem, password=password)
+        if not isinstance(private, Ed25519PrivateKey):
+            return False
+        derived = private.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return public_key_fingerprint(derived) == public_key_fingerprint(public_pem)
+    except (TypeError, ValueError, UnicodeError):
+        return False
 
 
 def sign_record(

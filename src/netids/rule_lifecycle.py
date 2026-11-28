@@ -17,6 +17,9 @@ from pathlib import Path
 
 from netids.lifecycle_attestation import verify_attestation
 from netids.lifecycle_ed25519 import verify_record as verify_ed25519_record
+from netids.privilege_separation import (
+    PrivilegeSeparationError, ensure_root_owned_audit, require_root_operator_if_supported,
+)
 from netids.rulegen import REJECTED_SIDS, collect_sids
 
 
@@ -73,8 +76,12 @@ class RuleLifecycle:
         replay_verification_key: bytes | None = None,
         owner_verification_key: bytes | None = None,
         attestation_mode: str = "ed25519",
+        replay_domain: str = "isolated-replay-v1",
+        owner_domain: str = "isolated-owner-approval-v1",
     ):
         self.audit_path = Path(audit_path)
+        if self.audit_path.name == "owner-once.jsonl":
+            require_root_operator_if_supported()
         raw_root = Path(isolated_root or self.audit_path.parent / "isolated-lab")
         if raw_root.is_symlink():
             raise LifecycleError("Isolated root must not be a symlink")
@@ -99,6 +106,8 @@ class RuleLifecycle:
         self.attestation_mode = attestation_mode
         self.replay_verification_key = replay_verification_key
         self.owner_verification_key = owner_verification_key
+        self.replay_domain = replay_domain
+        self.owner_domain = owner_domain
         if (
             isinstance(replay_verification_key, bytes)
             and replay_verification_key == owner_verification_key
@@ -133,6 +142,12 @@ class RuleLifecycle:
         return records
 
     def _audit(self, event: str, candidate: dict, **details) -> None:
+        if self.audit_path.name == "owner-once.jsonl":
+            try:
+                require_root_operator_if_supported()
+                ensure_root_owned_audit(self.audit_path)
+            except PrivilegeSeparationError:
+                raise
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.audit_path.with_name(self.audit_path.name + ".lock")
         try:
@@ -159,10 +174,17 @@ class RuleLifecycle:
                 **details,
             }
             record["record_hash"] = _sha(_canonical(record) + previous)
-            with self.audit_path.open("a", encoding="utf-8") as target:
+            fd = os.open(
+                self.audit_path,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                0o600,
+            )
+            with os.fdopen(fd, "a", encoding="utf-8") as target:
                 target.write(_canonical(record) + "\n")
                 target.flush()
                 os.fsync(target.fileno())
+            if self.audit_path.name == "owner-once.jsonl":
+                ensure_root_owned_audit(self.audit_path)
         finally:
             lock_path.unlink(missing_ok=True)
 
@@ -212,6 +234,19 @@ class RuleLifecycle:
             expected_id = hashlib.sha256(
                 json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
+        elif candidate.get("schema_version") == "g5_frozen_rst_candidate_v1":
+            identity = {
+                key: candidate.get(key)
+                for key in (
+                    "sid", "rule_file_sha256", "freeze_sha256",
+                    "cohort_results_sha256", "native_holdout_report_sha256",
+                    "baseline_rules_sha256", "baseline_comparison_sha256",
+                    "cohort_cases_sha256",
+                )
+            }
+            expected_id = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
         else:
             expected_id = _sha(f"{candidate['run_id']}:{sid}:{candidate['rule_sha256']}")
         if candidate.get("candidate_id") != expected_id:
@@ -252,7 +287,7 @@ class RuleLifecycle:
         if state == "AWAITING_APPROVAL":
             evidence = candidate.get("validation")
             if not self._verified(
-                evidence, self.replay_verification_key, domain="isolated-replay-v1"
+                evidence, self.replay_verification_key, domain=self.replay_domain
             ):
                 raise LifecycleError("Authenticated replay evidence is required")
         return self._advance(candidate, state)
@@ -285,7 +320,7 @@ class RuleLifecycle:
         ):
             raise LifecycleError("Invalid isolated replay results")
         if not self._verified(
-            evidence, self.replay_verification_key, domain="isolated-replay-v1"
+            evidence, self.replay_verification_key, domain=self.replay_domain
         ):
             raise LifecycleError("Authenticated replay attestation required")
         self._audit("validation_recorded", candidate, attestation_sha256=_sha(_canonical(evidence)))
@@ -324,7 +359,7 @@ class RuleLifecycle:
             raise LifecycleError("Authorization expired, invalid or not yet valid")
         if not self._verified(
             authorization, self.owner_verification_key,
-            domain="isolated-owner-approval-v1",
+            domain=self.owner_domain,
         ):
             raise LifecycleError("Authenticated owner approval required")
 
@@ -379,7 +414,7 @@ class RuleLifecycle:
         )
         if not self._verified(
             candidate.get("validation"), self.replay_verification_key,
-            domain="isolated-replay-v1",
+            domain=self.replay_domain,
         ):
             raise LifecycleError("Replay evidence no longer trusted")
         target = self._target(lab_rules_dir)

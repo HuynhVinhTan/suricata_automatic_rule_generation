@@ -1,0 +1,31 @@
+{
+  "status": "COMPLETED",
+  "official_test_accessed": false,
+  "official_test_path": "data\\raw\\unsw-nb15\\UNSW_NB15_testing-set.csv",
+  "label_columns_excluded_from_model": [
+    "label",
+    "attack_cat"
+  ],
+  "model_features": [
+    "protocol_tcp",
+    "duration_log",
+    "packets_log",
+    "bytes_log"
+  ],
+  "direct_label_feature_overlap": [],
+  "exact_duplicate_raw_rows": 0,
+  "exact_duplicate_feature_rows": 68352,
+  "feature_groups_with_conflicting_binary_labels": 282,
+  "partition_feature_group_overlap": {
+    "development_vs_validation": 0,
+    "calibration_vs_development": 0,
+    "calibration_vs_validation": 0
+  },
+  "cv_group_definition": "Exact equality of all four transformed v02 feature values",
+  "host_time_leakage": {
+    "available_columns": [],
+    "status": "LIMITED_NOT_AVAILABLE",
+    "limitation": "UNSW-NB15 training contract does not expose a verified host/session/time identity; feature-disjoint is not host/time-disjoint."
+  },
+  "official_test_policy": "Frozen official test is not opened, fitted, tuned or scored by v03."
+}

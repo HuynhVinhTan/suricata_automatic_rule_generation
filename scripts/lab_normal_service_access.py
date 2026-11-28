@@ -48,11 +48,13 @@ def run(*, run_id, target, open_port, closed_ports, interval_seconds=2.0, timeou
         result = "error"
         status = None
         error = None
+        source_port = None
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.settimeout(timeout_seconds)
             if source_ip:
                 sock.bind((source_ip, 0))
+            source_port = sock.getsockname()[1]
             code = sock.connect_ex((target, port))
             if code != 0:
                 result = "rst_refused" if code in {111, 61, 10061} else "connect_error"
@@ -72,11 +74,18 @@ def run(*, run_id, target, open_port, closed_ports, interval_seconds=2.0, timeou
             error = f"{type(exc).__name__}:{getattr(exc, 'errno', None)}"
         finally:
             sock.close()
+        attempt_ended = _utc()
         attempts.append({
+            "attempt_id": f"{run_id}-{len(attempts) + 1:03d}",
             "timestamp_utc": attempt_started,
+            "attempt_end_utc": attempt_ended,
+            "source_ip": source_ip or "0.0.0.0",
+            "source_port": source_port,
             "target_ip": target,
+            "destination_ip": target,
             "destination_port": port,
             "path": path,
+            "protocol": "TCP",
             "result": result,
             "http_status": status,
             "error": error,

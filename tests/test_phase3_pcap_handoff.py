@@ -14,11 +14,14 @@ from backend import pcap_handoff as bridge
 
 SRC = "192.168.10.20"
 DST = "192.168.10.10"
+TARGET = "tanhv@192.168.10.30"
+CURRENT_INBOX = "/home/tanhv/suricata-ai-private/incoming-pcaps"
+HISTORICAL_INBOX = "/home/tanhv/suricata-ai-showcase/private/incoming-pcaps"
 
 
-def _packet(flags: int, payload: bytes = b"") -> bytes:
-    ip_src = bytes((192, 168, 10, 20))
-    ip_dst = bytes((192, 168, 10, 10))
+def _packet(flags: int, payload: bytes = b"", *, reverse: bool = False) -> bytes:
+    ip_src = bytes((192, 168, 10, 10 if reverse else 20))
+    ip_dst = bytes((192, 168, 10, 20 if reverse else 10))
     tcp = struct.pack(
         "!HHIIBBHHH", 50000, 18100, 1, 0, 0x50, flags, 8192, 0, 0
     ) + payload
@@ -73,6 +76,23 @@ def _create_bundle(opts, run_id):
     bridge.bundle(**{**opts, "run_id": run_id})
 
 
+def _write_sent_receipt(
+    outbox: Path, run_id: str, *, remote_inbox: str = HISTORICAL_INBOX,
+    ready_sha256: str | None = None, sent_at: str = "2026-11-10T00:00:00+00:00",
+):
+    ready = outbox / run_id / f"{run_id}.ready.json"
+    receipt = outbox / run_id / f"{run_id}.sent.json"
+    receipt.write_text(json.dumps({
+        "status": "sent",
+        "run_id": run_id,
+        "ready_sha256": ready_sha256 or hashlib.sha256(ready.read_bytes()).hexdigest(),
+        "remote": TARGET,
+        "remote_inbox": remote_inbox,
+        "sent_at": sent_at,
+    }))
+    return receipt
+
+
 def test_seal_and_receive_dry_run_are_verified(tmp_path):
     opts, inbox, private = _prepared(tmp_path)
     before = opts["pcap"].read_bytes()
@@ -93,6 +113,58 @@ def test_seal_and_receive_dry_run_are_verified(tmp_path):
     assert not (inbox / "lab-001.done.json").exists()
     with pytest.raises(FileExistsError):
         bridge.bundle(**opts)
+
+
+def test_bidirectional_pcap_records_are_audited_without_losing_client_syn(tmp_path):
+    pcap = tmp_path / "bidirectional.pcap"
+    pcap.write_bytes(_raw_pcap([_packet(0x02), _packet(0x14, reverse=True)]))
+
+    audit = bridge.audit_pcap(pcap, SRC, DST)
+
+    assert audit["packets"] == 2
+    assert audit["initial_syn"] == 1
+
+
+def test_capture_integrity_metadata_is_preserved_in_manifest(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+    bridge.bundle(
+        **opts,
+        capture_metadata={
+            "packet_records_complete": True,
+            "snaplen_truncated": False,
+            "capture_drops": False,
+            "tcpdump_statistics": {
+                "packets_captured": 2,
+                "packets_received_by_filter": 2,
+                "packets_dropped_by_kernel": 0,
+                "status": "verified",
+            },
+        },
+    )
+
+    _pcap, manifest, _ready, document = bridge.verified_bundle(
+        opts["outbox"] / "lab-001", "lab-001"
+    )
+    metadata = document["capture_metadata"]
+    assert metadata["packet_records_complete"] is True
+    assert metadata["snaplen_truncated"] is False
+    assert metadata["capture_drops"] is False
+    assert metadata["tcpdump_statistics"]["packets_dropped_by_kernel"] == 0
+    assert json.loads(manifest.read_text())["capture_metadata"] == metadata
+
+
+def test_inconsistent_capture_integrity_metadata_is_rejected(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+
+    with pytest.raises(bridge.HandoffError, match="capture integrity"):
+        bridge.bundle(
+            **opts,
+            capture_metadata={
+                "packet_records_complete": False,
+                "snaplen_truncated": False,
+                "capture_drops": False,
+            },
+        )
 
 
 def test_expected_count_gate_fails_before_creating_bundle(tmp_path):
@@ -166,20 +238,20 @@ def test_transfer_dry_run_never_invokes_ssh(tmp_path, monkeypatch):
     result = bridge.send(
         outbox=opts["outbox"], run_id="lab-001",
         remote_user="tanhv", remote_host="192.168.10.30",
-        remote_inbox="/home/tanhv/ai-inbox", execute=False,
+        remote_inbox=CURRENT_INBOX, execute=False,
     )
     assert result["status"] == "validated_dry_run"
     with pytest.raises(ValueError):
         bridge.send(
             outbox=opts["outbox"], run_id="lab-001",
             remote_user="tanhv", remote_host="192.168.10.30",
-            remote_inbox="/home/tanhv/../../etc", execute=True,
+            remote_inbox="/home/tanhv/ai-inbox", execute=True,
         )
     with pytest.raises(bridge.HandoffError, match="designated lab VM3"):
         bridge.send(
             outbox=opts["outbox"], run_id="lab-001",
             remote_user="tanhv", remote_host="192.168.10.99",
-            remote_inbox="/home/tanhv/ai-inbox", execute=True,
+            remote_inbox=CURRENT_INBOX, execute=True,
         )
 
 
@@ -196,12 +268,122 @@ def test_transfer_publishes_ready_last_with_strict_ssh(tmp_path, monkeypatch):
     assert bridge.send(
         outbox=opts["outbox"], run_id="lab-001",
         remote_user="tanhv", remote_host="192.168.10.30",
-        remote_inbox="/home/tanhv/ai-inbox", execute=True,
+        remote_inbox=CURRENT_INBOX, execute=True,
     )["status"] == "transferred"
     assert len(commands) == 5  # SSH preflight, three staged scp files, SSH finalize
     assert commands[-1][-1].count("ln -T -- ") == 3
-    assert commands[-1][-1].index("ln -T -- /home/tanhv/ai-inbox/lab-001.pcap.partial") < commands[-1][-1].index("ln -T -- /home/tanhv/ai-inbox/lab-001.ready.json.partial")
+    assert commands[-1][-1].index(f"ln -T -- {CURRENT_INBOX}/lab-001.pcap.partial") < commands[-1][-1].index(f"ln -T -- {CURRENT_INBOX}/lab-001.ready.json.partial")
     assert all(".partial" in commands[i][-1] for i in (1, 2, 3))
+    assert all(CURRENT_INBOX in " ".join(command) for command in commands)
+
+
+@pytest.mark.parametrize("receipt_inbox", [HISTORICAL_INBOX, CURRENT_INBOX])
+def test_existing_valid_receipt_is_already_sent_without_ssh_or_rewrite(
+    tmp_path, monkeypatch, receipt_inbox,
+):
+    opts, _, _ = _prepared(tmp_path)
+    bridge.bundle(**opts)
+    receipt = _write_sent_receipt(opts["outbox"], "lab-001", remote_inbox=receipt_inbox)
+    before = receipt.read_bytes()
+    calls = []
+
+    def no_network(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("already-sent validation must not invoke SSH or SCP")
+
+    monkeypatch.setattr(bridge.subprocess, "run", no_network)
+    result = bridge.send(
+        outbox=opts["outbox"], run_id="lab-001",
+        remote_user="tanhv", remote_host="192.168.10.30",
+        remote_inbox=CURRENT_INBOX, execute=True,
+    )
+    assert result["status"] == "already_sent"
+    assert calls == []
+    assert receipt.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("receipt_inbox", "sent_at", "extra"),
+    [
+        ("/home/tanhv/unknown/incoming-pcaps", "2026-11-10T00:00:00+00:00", {}),
+        (HISTORICAL_INBOX, "not-a-timestamp", {}),
+        (HISTORICAL_INBOX, "2026-11-10T00:00:00+00:00", {"unexpected": True}),
+    ],
+)
+def test_invalid_receipt_fields_fail_closed(tmp_path, receipt_inbox, sent_at, extra):
+    opts, _, _ = _prepared(tmp_path)
+    bridge.bundle(**opts)
+    receipt = _write_sent_receipt(
+        opts["outbox"], "lab-001", remote_inbox=receipt_inbox, sent_at=sent_at,
+    )
+    if extra:
+        data = json.loads(receipt.read_text())
+        data.update(extra)
+        receipt.write_text(json.dumps(data))
+    with pytest.raises(bridge.HandoffError, match="receipt|destination|inconsistent"):
+        bridge.send(
+            outbox=opts["outbox"], run_id="lab-001",
+            remote_user="tanhv", remote_host="192.168.10.30",
+            remote_inbox=CURRENT_INBOX, execute=False,
+        )
+
+
+def test_malformed_receipt_fails_closed(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+    bridge.bundle(**opts)
+    receipt = opts["outbox"] / "lab-001" / "lab-001.sent.json"
+    receipt.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(bridge.HandoffError, match="JSON"):
+        bridge.send(
+            outbox=opts["outbox"], run_id="lab-001",
+            remote_user="tanhv", remote_host="192.168.10.30",
+            remote_inbox=CURRENT_INBOX, execute=False,
+        )
+
+
+def test_symlink_receipt_fails_closed(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+    bridge.bundle(**opts)
+    receipt = opts["outbox"] / "lab-001" / "lab-001.sent.json"
+    target = tmp_path / "receipt-target.json"
+    target.write_text("{}", encoding="utf-8")
+    try:
+        receipt.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks unavailable")
+    with pytest.raises(bridge.HandoffError, match="symlink"):
+        bridge.send(
+            outbox=opts["outbox"], run_id="lab-001",
+            remote_user="tanhv", remote_host="192.168.10.30",
+            remote_inbox=CURRENT_INBOX, execute=False,
+        )
+
+
+def test_wrong_remote_user_is_rejected(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+    bridge.bundle(**opts)
+    with pytest.raises(bridge.HandoffError, match="designated lab VM3"):
+        bridge.send(
+            outbox=opts["outbox"], run_id="lab-001",
+            remote_user="other", remote_host="192.168.10.30",
+            remote_inbox=CURRENT_INBOX, execute=False,
+        )
+
+
+def test_send_all_ready_rejects_receipt_without_ready_bundle(tmp_path):
+    opts, _, _ = _prepared(tmp_path)
+    folder = opts["outbox"] / "orphan"
+    folder.mkdir()
+    (folder / "orphan.sent.json").write_text(json.dumps({
+        "status": "sent", "run_id": "orphan", "ready_sha256": "0" * 64,
+        "remote": TARGET, "remote_inbox": HISTORICAL_INBOX,
+        "sent_at": "2026-11-10T00:00:00+00:00",
+    }))
+    assert bridge.main([
+        "send", "--outbox", str(opts["outbox"]), "--all-ready",
+        "--remote-user", "tanhv", "--remote-host", "192.168.10.30",
+        "--remote-inbox", CURRENT_INBOX,
+    ]) == 1
 
 
 def test_receiver_execute_and_idempotent_receipt(tmp_path, monkeypatch):
@@ -340,19 +522,14 @@ def test_failed_index_does_not_claim_completion(tmp_path, monkeypatch):
 
 def test_send_all_ready_counts_pending_not_historical(tmp_path, monkeypatch, capsys):
     opts, _, _ = _prepared(tmp_path)
-    run_ids = [f"lab-{index:02d}" for index in range(1, 14)]
+    run_ids = [f"lab-{index:02d}" for index in range(1, 13)]
     for run_id in run_ids:
         _create_bundle(opts, run_id)
-    for run_id in run_ids[:11]:
-        ready = opts["outbox"] / run_id / f"{run_id}.ready.json"
-        (opts["outbox"] / run_id / f"{run_id}.sent.json").write_text(json.dumps({
-            "status": "sent",
-            "run_id": run_id,
-            "ready_sha256": hashlib.sha256(ready.read_bytes()).hexdigest(),
-            "remote": "tanhv@192.168.10.30",
-            "remote_inbox": "/home/tanhv/ai-inbox",
-            "sent_at": "2026-11-10T00:00:00+00:00",
-        }))
+    for index, run_id in enumerate(run_ids[:10]):
+        _write_sent_receipt(
+            opts["outbox"], run_id,
+            remote_inbox=HISTORICAL_INBOX if index < 7 else CURRENT_INBOX,
+        )
     selected = []
     monkeypatch.setattr(
         bridge, "send",
@@ -361,9 +538,9 @@ def test_send_all_ready_counts_pending_not_historical(tmp_path, monkeypatch, cap
     assert bridge.main([
         "send", "--outbox", str(opts["outbox"]), "--all-ready",
         "--remote-user", "tanhv", "--remote-host", "192.168.10.30",
-        "--remote-inbox", "/home/tanhv/ai-inbox",
+        "--remote-inbox", CURRENT_INBOX,
     ]) == 0
-    assert selected == run_ids[11:]
+    assert selected == run_ids[10:]
     assert json.loads(capsys.readouterr().out)[0]["status"] == "dry"
 
 
@@ -373,19 +550,13 @@ def test_send_all_ready_fails_on_invalid_historical_receipt(
     opts, _, _ = _prepared(tmp_path)
     _create_bundle(opts, "lab-old")
     receipt = opts["outbox"] / "lab-old" / "lab-old.sent.json"
-    receipt.write_text(json.dumps({
-        "status": "sent",
-        "run_id": "lab-old",
-        "ready_sha256": "0" * 64,
-        "remote": "tanhv@192.168.10.30",
-        "remote_inbox": "/home/tanhv/ai-inbox",
-    }))
+    _write_sent_receipt(opts["outbox"], "lab-old", ready_sha256="0" * 64)
     called = []
     monkeypatch.setattr(bridge, "send", lambda **kwargs: called.append(kwargs))
     assert bridge.main([
         "send", "--outbox", str(opts["outbox"]), "--all-ready",
         "--remote-user", "tanhv", "--remote-host", "192.168.10.30",
-        "--remote-inbox", "/home/tanhv/ai-inbox",
+        "--remote-inbox", CURRENT_INBOX,
     ]) == 1
     assert called == []
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
@@ -404,7 +575,7 @@ def test_send_all_ready_limits_pending_runs_to_ten(tmp_path, monkeypatch):
     assert bridge.main([
         "send", "--outbox", str(opts["outbox"]), "--all-ready",
         "--remote-user", "tanhv", "--remote-host", "192.168.10.30",
-        "--remote-inbox", "/home/tanhv/ai-inbox",
+        "--remote-inbox", CURRENT_INBOX,
     ]) == 0
     assert selected == run_ids[:10]
 

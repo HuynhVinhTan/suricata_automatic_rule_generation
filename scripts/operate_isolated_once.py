@@ -1,7 +1,7 @@
 """Owner-gated, one-shot VM1 isolated Suricata activation and verified rollback.
 
 This must be invoked LOCALLY on VM1 after the owner separately signs an
-authorization on Windows. It never uses SSH, systemctl writes, sudo, iptables,
+authorization on Windows. It never uses SSH, service-control writes, sudo, iptables,
 network interfaces other than lo, or a production rules/config path.
 """
 
@@ -25,6 +25,7 @@ from netids.isolated_suricata_runtime import (
     ROOT, VM1_HOST, IsolatedSuricataRuntime, is_verified_vm1_host,
 )
 from netids.rule_lifecycle import RuleLifecycle, LifecycleError
+from netids.privilege_separation import require_root_operator_if_supported
 from netids.candidate_record import (
     expected_candidate_runtime_id, verify_candidate_record,
     verify_signed_replay_evidence,
@@ -78,21 +79,6 @@ def _write_failure_report(path: Path, report: dict) -> None:
         raise
 
 
-def _systemd(service: str) -> tuple[str, str]:
-    result = subprocess.run(
-        ["systemctl", "show", "-p", "ActiveState", "-p", "MainPID", service],
-        check=False, capture_output=True, text=True, timeout=20,
-    )
-    if result.returncode:
-        raise OperationError(f"Cannot inspect {service} service")
-    lines = dict(
-        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
-    )
-    if lines.get("ActiveState") != "active" or not lines.get("MainPID", "0").isdigit():
-        raise OperationError(f"{service} is not active")
-    return lines["ActiveState"], lines["MainPID"]
-
-
 def production_snapshot(production_yaml: Path, production_rules: Path, *, forbidden_sid: int = SID) -> dict:
     """Read-only production proof; never reopen or modify service files."""
     if not is_verified_vm1_host():
@@ -121,8 +107,6 @@ def production_snapshot(production_yaml: Path, production_rules: Path, *, forbid
         for entry in config.get(section, []):
             if isinstance(entry, dict) and entry.get("interface") == "lo":
                 raise OperationError("Production Suricata captures lo; activation forbidden")
-    suricata_state, suricata_pid = _systemd("suricata")
-    filebeat_state, filebeat_pid = _systemd("filebeat")
     capabilities = subprocess.run(
         ["getcap", "-v", "/usr/bin/tcpdump"],
         check=False, capture_output=True, text=True, timeout=15,
@@ -130,10 +114,6 @@ def production_snapshot(production_yaml: Path, production_rules: Path, *, forbid
     if capabilities.returncode or "cap_" in capabilities.stdout.lower():
         raise OperationError("tcpdump capability not verified as revoked")
     return {
-        "suricata_active": suricata_state,
-        "suricata_main_pid": suricata_pid,
-        "filebeat_active": filebeat_state,
-        "filebeat_main_pid": filebeat_pid,
         "production_yaml_sha256": sha256_file(production_yaml),
         "production_rules_sha256": sha256_file(production_rules),
         "tcpdump_capabilities_revoked": True,
@@ -267,6 +247,10 @@ def execute_one_time(
 ) -> dict:
     if not is_verified_vm1_host():
         raise OperationError("Owner authorization is only for verified VM1")
+    try:
+        require_root_operator_if_supported()
+    except RuntimeError as exc:
+        raise OperationError(str(exc)) from exc
     if Path(audit_path).resolve() != ROOT / "audit" / "owner-once.jsonl":
         raise OperationError("Activation audit must use the fixed one-time VM1 ledger")
     candidate = _read_json(candidate_file)
@@ -307,6 +291,7 @@ def execute_one_time(
         attack_sha256=attack_digest,
         normal_pcap=normal_pcap,
         normal_sha256=normal_digest,
+        attempt_id=proposed["run_id"],
     )
     started = datetime.now(timezone.utc)
     outcome = "FAILED"
@@ -365,6 +350,10 @@ def execute_candidate_one_time(
     if not is_verified_vm1_host():
         raise OperationError("Owner authorization is only for verified VM1")
     try:
+        require_root_operator_if_supported()
+    except RuntimeError as exc:
+        raise OperationError(str(exc)) from exc
+    try:
         root = _validate_isolated_root(Path(isolated_root))
     except ValueError as exc:
         raise OperationError("Candidate isolated root is missing or unsafe") from exc
@@ -410,7 +399,7 @@ def execute_candidate_one_time(
             config=isolated_yaml, attack_pcap=attack_pcap, attack_sha256=attack_sha256,
             normal_pcap=normal_pcap, normal_sha256=normal_sha256,
             candidate_sid=candidate["sid"], candidate_rule_sha256=candidate["rule_sha256"],
-            root=root,
+            root=root, attempt_id=proposed["run_id"],
         )
         staged = lifecycle.stage(proposed, root / "rules", activate=True, runtime=runtime)
         if staged.get("status") != "active_in_isolated_lab":
@@ -460,6 +449,15 @@ def execute_candidate_one_time(
             "candidate_id": candidate["candidate_id"], "run_id": candidate["run_id"],
             "sid": candidate["sid"], "rule_sha256": candidate["rule_sha256"],
             "failure_reason": str(operation_error), "rollback_verified": False,
+            "failure_phase": getattr(runtime, "failure_phase", None) if runtime is not None else "operator",
+            "primary_failure_phase": (
+                getattr(runtime, "primary_failure_phase", None)
+                if runtime is not None else "operator"
+            ),
+            "primary_failure_reason": (
+                getattr(runtime, "primary_failure_reason", None)
+                if runtime is not None else None
+            ),
             "production_before": before, "production_after": after,
             "lifecycle_audit_records": audit_records,
             "lifecycle_audit_sha256": audit_sha,

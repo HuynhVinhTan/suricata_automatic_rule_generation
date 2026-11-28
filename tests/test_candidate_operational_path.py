@@ -62,7 +62,7 @@ def _manifest(tmp_path, candidate):
 
 def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeypatch, tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
-    root = tmp_path / "isolated-candidate-9103012"
+    root = tmp_path / "isolated-candidate-9103013"
     root.mkdir()
     monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
@@ -78,7 +78,7 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
             logdir = Path(argv[argv.index("-l") + 1])
             is_attack = "attack" in str(argv)
             logdir.mkdir(parents=True, exist_ok=True)
-            event = {"event_type": "alert", "alert": {"signature_id": 9103012}}
+            event = {"event_type": "alert", "alert": {"signature_id": 9103013}}
             if not is_attack:
                 event = {"event_type": "flow", "flow": {"state": "established"}}
             (logdir / "eve.json").write_text(json.dumps(event) + "\n", encoding="utf-8")
@@ -96,14 +96,14 @@ def test_candidate_replay_signer_executes_gates_and_signs_only_fresh_eve(monkeyp
         replay_public_pem=public, suricata_binary="suricata",
     )
     assert verify_record(signed, public, domain="isolated-replay-v1")
-    assert signed["sid"] == 9103012
+    assert signed["sid"] == 9103013
     assert {case["scenario"] for case in signed["cases"]} == {"attack", "normal"}
     assert len(list((root / "replay-evidence" / "signing-runs").iterdir())) == 1
 
 
 def test_candidate_replay_signer_rejects_discovery_case_before_suricata(monkeypatch, tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
-    root = tmp_path / "isolated-candidate-9103012"
+    root = tmp_path / "isolated-candidate-9103013"
     root.mkdir()
     monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
@@ -198,7 +198,7 @@ def test_candidate_isolated_root_rejects_root_and_parent_symlinks(monkeypatch, t
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", workspace, raising=False)
-    valid = workspace / "isolated-candidate-9103012"
+    valid = workspace / "isolated-candidate-9103013"
     valid.mkdir()
     assert _validate_isolated_root(valid) == valid.resolve()
     root_link = workspace / "isolated-candidate-link"
@@ -213,14 +213,14 @@ def test_candidate_isolated_root_rejects_root_and_parent_symlinks(monkeypatch, t
     with pytest.raises(CandidateReplayError, match="symlink"):
         _validate_isolated_root(root_link)
     with pytest.raises(CandidateReplayError, match="symlink"):
-        _validate_isolated_root(parent_link / "isolated-candidate-9103012")
+        _validate_isolated_root(parent_link / "isolated-candidate-9103013")
 
 
 def test_candidate_isolated_root_rejects_lexical_traversal(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", workspace, raising=False)
-    target = tmp_path / "isolated-candidate-9103012"
+    target = tmp_path / "isolated-candidate-9103013"
     target.mkdir()
     with pytest.raises(CandidateReplayError, match="traversal"):
         _validate_isolated_root(workspace / ".." / target.name)
@@ -232,7 +232,7 @@ def test_candidate_isolated_root_rejects_off_workspace_directory(monkeypatch, tm
     monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", workspace, raising=False)
     outside = tmp_path / "outside"
     outside.mkdir()
-    candidate_named_outside = outside / "isolated-candidate-9103012"
+    candidate_named_outside = outside / "isolated-candidate-9103013"
     candidate_named_outside.mkdir()
     with pytest.raises(CandidateReplayError, match="approved workspace"):
         _validate_isolated_root(candidate_named_outside)
@@ -240,7 +240,7 @@ def test_candidate_isolated_root_rejects_off_workspace_directory(monkeypatch, tm
 
 def test_candidate_replay_signer_rejects_unpinned_replay_key(monkeypatch, tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
-    root = tmp_path / "isolated-candidate-9103012"
+    root = tmp_path / "isolated-candidate-9103013"
     root.mkdir()
     monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
@@ -259,7 +259,7 @@ def test_candidate_replay_signer_rejects_unpinned_replay_key(monkeypatch, tmp_pa
 
 def test_candidate_replay_false_positive_gate_cannot_issue_attestation(monkeypatch, tmp_path):
     candidate, artifact, calibration, baseline = _candidate(tmp_path)
-    root = tmp_path / "isolated-candidate-9103012"
+    root = tmp_path / "isolated-candidate-9103013"
     root.mkdir()
     monkeypatch.setattr(candidate_replay, "APPROVED_VM1_ISOLATED_WORKSPACE", tmp_path)
     config = _config(root)
@@ -278,7 +278,7 @@ def test_candidate_replay_false_positive_gate_cannot_issue_attestation(monkeypat
             logdir = Path(argv[argv.index("-l") + 1])
             logdir.mkdir(parents=True, exist_ok=True)
             (logdir / "eve.json").write_text(
-                json.dumps({"event_type": "alert", "alert": {"signature_id": 9103012}}) + "\n",
+                json.dumps({"event_type": "alert", "alert": {"signature_id": 9103013}}) + "\n",
                 encoding="utf-8",
             )
         return SimpleNamespace(returncode=0, stdout="This is Suricata 8.0.3", stderr="")
@@ -321,7 +321,7 @@ def test_candidate_owner_authorization_binds_runtime_and_replay(tmp_path):
     }
     from netids.lifecycle_ed25519 import sign_record
     signed_replay = sign_record(replay, replay_private, PASSWORD, domain="isolated-replay-v1")
-    isolated_root = "/isolated/9103012"
+    isolated_root = "/isolated/9103013"
     runtime_id = expected_candidate_runtime_id(
         candidate, target_vm="suricata-vm1", interface="lo", isolated_root=isolated_root,
     )
@@ -333,7 +333,7 @@ def test_candidate_owner_authorization_binds_runtime_and_replay(tmp_path):
         target_vm="suricata-vm1", interface="lo", isolated_root=isolated_root,
         nonce="a" * 32,
     )
-    assert approval["sid"] == 9103012
+    assert approval["sid"] == 9103013
     assert approval["runtime_id"] == runtime_id
     assert verify_record(approval, owner_public, domain="isolated-owner-approval-v1")
     with pytest.raises(ValueError, match="replay attestation"):

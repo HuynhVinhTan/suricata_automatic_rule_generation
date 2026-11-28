@@ -21,7 +21,10 @@ CAPTURE_ROOT = Path("/var/lib/suricata-ai-capture")
 OUTBOX = Path("/home/tanhv/suricata-ai-outbox")
 TCPDUMP = "/usr/bin/tcpdump"
 INTERFACE = "ens33"
-BPF_FILTER = "tcp and src host 192.168.10.20 and dst host 192.168.10.10"
+BPF_FILTER = (
+    "tcp and host 192.168.10.20 and host 192.168.10.10 "
+    "and (port 18080 or portrange 18100-18123)"
+)
 SOURCE_IP = "192.168.10.20"
 DESTINATION_IP = "192.168.10.10"
 SNAPLEN = 262144
@@ -149,7 +152,35 @@ def _stop(process: subprocess.Popen, *, grace: int) -> int:
         raise CaptureError("tcpdump did not stop within the shutdown grace period") from exc
 
 
-def _start_capture(pcap_path: Path, duration_seconds: int) -> int:
+def _tcpdump_statistics(stderr: str) -> dict[str, int | bool | None | str]:
+    patterns = {
+        "packets_captured": r"^\s*(\d+)\s+packets captured\s*$",
+        "packets_received_by_filter": r"^\s*(\d+)\s+packets received by filter\s*$",
+        "packets_dropped_by_kernel": r"^\s*(\d+)\s+packets dropped by kernel\s*$",
+    }
+    result: dict[str, int | bool | None | str] = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, stderr, flags=re.MULTILINE)
+        result[key] = int(match.group(1)) if match else None
+    result["status"] = "verified" if all(
+        result[key] is not None for key in patterns
+    ) else "unverified"
+    return result
+
+
+def _read_stderr(process: subprocess.Popen) -> str:
+    stream = getattr(process, "stderr", None)
+    if stream is None:
+        return ""
+    value = stream.read()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _start_capture(
+    pcap_path: Path, duration_seconds: int,
+) -> tuple[int, dict[str, int | bool | None | str]]:
     process = subprocess.Popen(
         [
             TCPDUMP, "-i", INTERFACE, "-s", str(SNAPLEN), "-n", "-U",
@@ -157,16 +188,18 @@ def _start_capture(pcap_path: Path, duration_seconds: int) -> int:
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         close_fds=True,
         shell=False,
+        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
         preexec_fn=_size_limit_preexec(MAX_PCAP_BYTES),
     )
     try:
         try:
-            return process.wait(timeout=duration_seconds)
+            return_code = process.wait(timeout=duration_seconds)
         except subprocess.TimeoutExpired:
-            return _stop(process, grace=STOP_GRACE_SECONDS)
+            return_code = _stop(process, grace=STOP_GRACE_SECONDS)
+        return return_code, _tcpdump_statistics(_read_stderr(process))
     except KeyboardInterrupt:
         _stop(process, grace=STOP_GRACE_SECONDS)
         raise
@@ -219,7 +252,7 @@ def _capture_unlocked(
     pcap_path = run_dir / "capture.pcap"
     try:
         try:
-            return_code = _start_capture(pcap_path, duration_seconds)
+            return_code, tcpdump_stats = _start_capture(pcap_path, duration_seconds)
         except KeyboardInterrupt:
             _write_status(run_dir, _status(run_id, "interrupted", "Capture interrupted; partial evidence retained"))
             return {"status": "interrupted", "run_id": run_id}
@@ -261,7 +294,32 @@ def _capture_unlocked(
             expected_sha256=sha256,
             expected_syn=audit["initial_syn"],
             capture_kind="raw",
+            capture_metadata={
+                "interface": INTERFACE,
+                "bpf_filter": BPF_FILTER,
+                "packet_records_complete": True,
+                "snaplen_truncated": False,
+                "capture_drops": (
+                    None
+                    if tcpdump_stats["packets_dropped_by_kernel"] is None
+                    else tcpdump_stats["packets_dropped_by_kernel"] > 0
+                ),
+                "tcpdump_statistics": tcpdump_stats,
+            },
         )
+        result["capture_integrity"] = {
+            key: result_metadata
+            for key, result_metadata in (
+                ("packet_records_complete", True),
+                ("snaplen_truncated", False),
+                ("capture_drops", (
+                    None
+                    if tcpdump_stats["packets_dropped_by_kernel"] is None
+                    else tcpdump_stats["packets_dropped_by_kernel"] > 0
+                )),
+            )
+        }
+        result["tcpdump_statistics"] = tcpdump_stats
         summary = {key: value for key, value in result.items() if key not in {"status", "run_id"}}
         _write_status(
             run_dir,

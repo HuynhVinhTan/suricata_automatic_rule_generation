@@ -1,0 +1,49 @@
+{
+  "status": "COMPLETED",
+  "raw_rows": 175341,
+  "processed_rows": 143229,
+  "removed_rows": 32112,
+  "retention_rate": 0.8168597190617141,
+  "removal_reasons": {
+    "unsupported_protocol": 32112,
+    "negative_or_nonfinite_numeric": 0,
+    "invalid_binary_label": 0
+  },
+  "raw_duplicate_rows_reported_not_removed": 0,
+  "processed_duplicate_feature_rows_reported_not_removed": 68352,
+  "quality_audit": {
+    "nan_counts_by_physical_column": {
+      "dur": 0,
+      "spkts": 0,
+      "dpkts": 0,
+      "sbytes": 0,
+      "dbytes": 0
+    },
+    "inf_counts_by_physical_column": {
+      "dur": 0,
+      "spkts": 0,
+      "dpkts": 0,
+      "sbytes": 0,
+      "dbytes": 0
+    },
+    "negative_counts_by_physical_column": {
+      "dur": 0,
+      "spkts": 0,
+      "dpkts": 0,
+      "sbytes": 0,
+      "dbytes": 0
+    },
+    "invalid_binary_label_rows": 0,
+    "unsupported_protocol_rows": 32112,
+    "exact_duplicate_raw_rows": 0,
+    "exact_duplicate_feature_rows": 68352,
+    "rows_excluded_by_contract": 32112
+  },
+  "policy": {
+    "raw_preserved": true,
+    "imputation": "none",
+    "clipping": "none",
+    "duplicate_deletion": "none",
+    "invalid_rows": "excluded only when the existing UNSW flow contract failed"
+  }
+}
